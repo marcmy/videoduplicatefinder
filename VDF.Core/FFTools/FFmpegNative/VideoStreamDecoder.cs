@@ -113,7 +113,20 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			ffmpeg.avformat_close_input(&pFormatContext);
 		}
 
+		static bool HasUsableFrame(AVFrame* frame, bool requireDataPointer) {
+			if (frame == null)
+				return false;
+			if (frame->width <= 0 || frame->height <= 0)
+				return false;
+			if (frame->format < 0)
+				return false;
+			if (requireDataPointer && frame->data[0] == null)
+				return false;
+			return true;
+		}
+
 		public bool TryDecodeFrame(out AVFrame frame, TimeSpan position) {
+			frame = default;
 			ffmpeg.av_frame_unref(_pFrame);
 			ffmpeg.av_frame_unref(_pReceivedFrame);
 
@@ -126,6 +139,9 @@ namespace VDF.Core.FFTools.FFmpegNative {
 
 			ffmpeg.avcodec_flush_buffers(_pCodecContext);
 
+			bool gotFrame = false;
+			bool requireDataPointerBeforeTransfer = _pCodecContext->hw_device_ctx == null;
+
 			// Decode forward from keyframe until we reach the target PTS.
 			// Cap iterations to prevent infinite loops on corrupt files.
 			const int maxIterations = 10_000;
@@ -134,10 +150,8 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				do {
 					ffmpeg.av_packet_unref(_pPacket);
 					error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
-					if (error == ffmpeg.AVERROR_EOF) {
-						frame = *_pFrame;
+					if (error == ffmpeg.AVERROR_EOF)
 						return false;
-					}
 					error.ThrowExceptionIfError();
 				} while (_pPacket->stream_index != _streamIndex);
 
@@ -151,25 +165,38 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				error = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
 				if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
 					continue;
-				if (error < 0) {
-					frame = *_pFrame;
+				if (error < 0)
 					return false;
+
+				if (!HasUsableFrame(_pFrame, requireDataPointerBeforeTransfer)) {
+					ffmpeg.av_frame_unref(_pFrame);
+					continue;
 				}
 
 				// Check if we've reached or passed the target position
-				if (_pFrame->pts >= targetPts || _pFrame->pts == ffmpeg.AV_NOPTS_VALUE)
+				if (_pFrame->pts >= targetPts || _pFrame->pts == ffmpeg.AV_NOPTS_VALUE) {
+					gotFrame = true;
 					break;
+				}
 
 				// Not at target yet - discard this frame and decode the next
 				ffmpeg.av_frame_unref(_pFrame);
 			}
 
+			if (!gotFrame)
+				return false;
+
 			if (_pCodecContext->hw_device_ctx != null) {
 				ffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError();
+				if (!HasUsableFrame(_pReceivedFrame, requireDataPointer: true))
+					return false;
 				frame = *_pReceivedFrame;
 			}
-			else
+			else {
+				if (!HasUsableFrame(_pFrame, requireDataPointer: true))
+					return false;
 				frame = *_pFrame;
+			}
 
 			return true;
 		}
