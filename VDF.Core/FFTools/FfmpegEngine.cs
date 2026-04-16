@@ -36,6 +36,11 @@ namespace VDF.Core.FFTools {
 		private static readonly SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder jpegEncoder = new();
 		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
 
+		static unsafe bool HasUsableDecodedFrame(AVFrame frame) =>
+			frame.width > 0 &&
+			frame.height > 0 &&
+			frame.format >= 0 &&
+			frame.data[0] != null;
 
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
 
@@ -71,6 +76,8 @@ namespace VDF.Core.FFTools {
 					// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
 					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
 						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+					if (!HasUsableDecodedFrame(srcFrame))
+						throw new Exception($"Decoded frame is invalid for '{settings.File}' at pos={settings.Position}. frame={srcFrame.width}x{srcFrame.height}, format={(AVPixelFormat)srcFrame.format}");
 
 					AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
 						? (AVPixelFormat)srcFrame.format
