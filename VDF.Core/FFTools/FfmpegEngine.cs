@@ -42,14 +42,39 @@ namespace VDF.Core.FFTools {
 			frame.format >= 0 &&
 			frame.data[0] != null;
 
+		static bool IsAsfFamilyFormat(string? formatName, string? formatLongName) {
+			if (!string.IsNullOrWhiteSpace(formatName)) {
+				foreach (var token in formatName.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+					if (token.Equals("asf", StringComparison.OrdinalIgnoreCase) ||
+						token.StartsWith("asf_", StringComparison.OrdinalIgnoreCase))
+						return true;
+				}
+			}
+
+			return !string.IsNullOrWhiteSpace(formatLongName) &&
+				formatLongName.Contains("Advanced / Active Streaming Format", StringComparison.OrdinalIgnoreCase);
+		}
+
+		static bool IsAsfFamilyExtension(string filePath) {
+			string extension = Path.GetExtension(filePath);
+			return extension.Equals(".asf", StringComparison.OrdinalIgnoreCase) ||
+				extension.Equals(".wmv", StringComparison.OrdinalIgnoreCase) ||
+				extension.Equals(".wma", StringComparison.OrdinalIgnoreCase) ||
+				extension.Equals(".dvr-ms", StringComparison.OrdinalIgnoreCase);
+		}
+
+		static bool ShouldForceProcessModeForNative(string filePath, string? formatName = null, string? formatLongName = null) =>
+			IsAsfFamilyFormat(formatName, formatLongName) || IsAsfFamilyExtension(filePath);
+
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
 
 			const int N = 32;
 			const int ExpectedBytes = N * N;
 			bool isGrayByte = settings.GrayScale == 1;
+			bool useNativeBinding = UseNativeBinding && !settings.ForceProcessMode;
 
 			try {
-				if (UseNativeBinding) {
+				if (useNativeBinding) {
 
 
 					AVHWDeviceType HWDevice = HardwareAccelerationMode switch {
@@ -295,6 +320,11 @@ namespace VDF.Core.FFTools {
 		}
 		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging) {
 			int tooDarkCounter = 0;
+			bool forceProcessMode = UseNativeBinding && ShouldForceProcessModeForNative(videoFile.Path, videoFile.mediaInfo?.FormatName, videoFile.mediaInfo?.FormatLongName);
+			if (forceProcessMode) {
+				string formatDisplay = !string.IsNullOrWhiteSpace(videoFile.mediaInfo?.FormatName) ? videoFile.mediaInfo!.FormatName : Path.GetExtension(videoFile.Path);
+				Logger.Instance.Info($"Skipping native FFmpeg binding for '{videoFile.Path}' because container '{formatDisplay}' is routed through process mode.");
+			}
 
 			for (int i = 0; i < positions.Count; i++) {
 				double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
@@ -305,6 +335,7 @@ namespace VDF.Core.FFTools {
 					File = videoFile.Path,
 					Position = TimeSpan.FromSeconds(position),
 					GrayScale = 1,
+					ForceProcessMode = forceProcessMode,
 				}, extendedLogging);
 				if (data == null) {
 					videoFile.Flags.Set(EntryFlags.ThumbnailError);
@@ -356,6 +387,7 @@ namespace VDF.Core.FFTools {
 				Position = position,
 				GrayScale = 0,
 				Fullsize = (byte)(maxWidth == 0 ? 1 : 0),
+				ForceProcessMode = UseNativeBinding && ShouldForceProcessModeForNative(filePath),
 			};
 			var raw = GetThumbnail(maxWidth == 0 ? settings : settings with { Fullsize = 1 }, extendedLogging);
 			if (raw == null || raw.Length == 0) return null;
@@ -380,5 +412,6 @@ namespace VDF.Core.FFTools {
 		public byte Fullsize;
 		public string File;
 		public TimeSpan Position;
+		public bool ForceProcessMode;
 	}
 }
