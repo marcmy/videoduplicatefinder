@@ -145,6 +145,11 @@ namespace VDF.Core.FFTools {
 				Streams = new MediaInfo.StreamInfo[streams.Count]
 			};
 
+			if (format.TryGetValue("format_name", out var formatNameObj) && formatNameObj is string formatName)
+				info.FormatName = formatName;
+			if (format.TryGetValue("format_long_name", out var formatLongNameObj) && formatLongNameObj is string formatLongName)
+				info.FormatLongName = formatLongName;
+
 			if (format.TryGetValue("duration", out var durationObj) && durationObj is string durationStr) {
 				/*
 				 * Trim miliseconds here as we would have done it later anyway.
