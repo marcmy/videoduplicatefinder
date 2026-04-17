@@ -34,6 +34,7 @@ namespace VDF.Core.FFTools {
 		public static string CustomFFArguments = string.Empty;
 		public static bool UseNativeBinding;
 		private static readonly SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder jpegEncoder = new();
+		private static readonly object nativeThumbnailLock = new();
 		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
 
 		static unsafe bool HasUsableDecodedFrame(AVFrame frame) =>
@@ -75,117 +76,116 @@ namespace VDF.Core.FFTools {
 
 			try {
 				if (useNativeBinding) {
+					lock (nativeThumbnailLock) {
+						AVHWDeviceType HWDevice = HardwareAccelerationMode switch {
+							FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
+							FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
+							FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
+							FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
+							FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
+							FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+							FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
+							FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
+							//FFHardwareAccelerationMode.opencl => AVHWDeviceType.AV_HWDEVICE_TYPE_OPENCL, OpenCL support is irrelevant for frame extraction
+							FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
+							FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
+							_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+						};
 
+						using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
 
-					AVHWDeviceType HWDevice = HardwareAccelerationMode switch {
-						FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
-						FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
-						FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
-						FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
-						FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
-						FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-						FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
-						FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
-						//FFHardwareAccelerationMode.opencl => AVHWDeviceType.AV_HWDEVICE_TYPE_OPENCL, OpenCL support is irrelevant for frame extraction
-						FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
-						FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
-						_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
-					};
+						Size sourceSize = vsd.FrameSize;
 
-					using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
+						// Decode first so we know the real source pixel format. For HW decode
+						// we can't know this up front — the downloaded sw_format depends on
+						// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
+						if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
+							throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+						if (!HasUsableDecodedFrame(srcFrame))
+							throw new Exception($"Decoded frame is invalid for '{settings.File}' at pos={settings.Position}. frame={srcFrame.width}x{srcFrame.height}, format={(AVPixelFormat)srcFrame.format}");
 
-					Size sourceSize = vsd.FrameSize;
+						AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
+							? (AVPixelFormat)srcFrame.format
+							: vsd.PixelFormat;
+						if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
+							throw new Exception($"Invalid source pixel format {srcPixFmt}");
 
-					// Decode first so we know the real source pixel format. For HW decode
-					// we can't know this up front — the downloaded sw_format depends on
-					// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
-					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
-						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
-					if (!HasUsableDecodedFrame(srcFrame))
-						throw new Exception($"Decoded frame is invalid for '{settings.File}' at pos={settings.Position}. frame={srcFrame.width}x{srcFrame.height}, format={(AVPixelFormat)srcFrame.format}");
+						if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+							throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
 
-					AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
-						? (AVPixelFormat)srcFrame.format
-						: vsd.PixelFormat;
-					if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
-						throw new Exception($"Invalid source pixel format {srcPixFmt}");
+						Size destinationSize = isGrayByte ? new Size(N, N) :
+							settings.Fullsize == 1 ?
+								sourceSize :
+								new Size(100, Convert.ToInt32(sourceSize.Height * (100 / (double)sourceSize.Width)));
 
-					if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
-						throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+						AVPixelFormat destinationPixelFrmt = isGrayByte ?
+							AVPixelFormat.AV_PIX_FMT_GRAY8 :
+							AVPixelFormat.AV_PIX_FMT_BGRA;
 
-					Size destinationSize = isGrayByte ? new Size(N, N) :
-						settings.Fullsize == 1 ?
-							sourceSize :
-							new Size(100, Convert.ToInt32(sourceSize.Height * (100 / (double)sourceSize.Width)));
+						using var vfc = new VideoFrameConverter(
+											sourceSize: sourceSize,
+											sourcePixelFormat: srcPixFmt,
+											destinationSize: destinationSize,
+											destinationPixelFormat: destinationPixelFrmt,
+											quality: VideoFrameConverter.ScaleQuality.Bicubic,
+											bitExact: false);
 
-					AVPixelFormat destinationPixelFrmt = isGrayByte ?
-						AVPixelFormat.AV_PIX_FMT_GRAY8 :
-						AVPixelFormat.AV_PIX_FMT_BGRA;
+						AVFrame convertedFrame = vfc.Convert(srcFrame);
 
-					using var vfc = new VideoFrameConverter(
-										sourceSize: sourceSize,
-										sourcePixelFormat: srcPixFmt,
-										destinationSize: destinationSize,
-										destinationPixelFormat: destinationPixelFrmt,
-										quality: VideoFrameConverter.ScaleQuality.Bicubic,
-										bitExact: false);
+						if (convertedFrame.data[0] == null)
+							throw new Exception("Converted frame has no data[0] (null).");
 
-					AVFrame convertedFrame = vfc.Convert(srcFrame);
+						if (isGrayByte) {
+							int width = convertedFrame.width; // should be 32
+							if (convertedFrame.linesize[0] < width)
+								throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
+							int height = convertedFrame.height; // should be 32
+							int srcStride = convertedFrame.linesize[0]; // can be >= width (padding)
+							IntPtr srcPtr = (IntPtr)convertedFrame.data[0];
 
-					if (convertedFrame.data[0] == null)
-						throw new Exception("Converted frame has no data[0] (null).");
+							if (width != N || height != N)
+								throw new Exception($"Unexpected size {width}x{height}, expected {N}x{N}.");
 
-
-					if (isGrayByte) {
-						int width = convertedFrame.width; // should be 32
-						if (convertedFrame.linesize[0] < width)
-							throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
-						int height = convertedFrame.height; // should be 32
-						int srcStride = convertedFrame.linesize[0]; // can be >= width (padding)
-						IntPtr srcPtr = (IntPtr)convertedFrame.data[0];
-
-						if (width != N || height != N)
-							throw new Exception($"Unexpected size {width}x{height}, expected {N}x{N}.");
-
-						byte[] outBuf = new byte[width * height]; // 1024
-						fixed (byte* destPtr = outBuf) {
-							byte* sourcePtr = (byte*)srcPtr;
-							for (int y = 0; y < height; y++) {
-								// Source: y*stride bytes offset; Target: y*width bytes
-								Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * width), width, width);
-							}
-						}
-						return outBuf;
-					}
-					else {
-						int width = convertedFrame.width;
-						int height = convertedFrame.height;
-						if (width <= 0 || height <= 0)
-							throw new Exception($"Invalid converted frame dimensions {width}x{height}.");
-						long totalBytesLong = (long)width * height * 4;
-						if (totalBytesLong > 200_000_000) // ~200 MB sanity cap
-							throw new Exception($"Frame too large: {width}x{height} ({totalBytesLong} bytes).");
-						var totalBytes = (int)totalBytesLong;
-						var rgbaBytes = new byte[totalBytes];
-						int stride = convertedFrame.linesize[0];
-						if (stride < width * 4)
-							throw new Exception($"Invalid stride ({stride}) for width {width}.");
-						fixed (byte* destPtr = rgbaBytes) {
-							byte* sourcePtr = convertedFrame.data[0];
-							if (stride == width * 4) {
-								Buffer.MemoryCopy(sourcePtr, destPtr, totalBytes, totalBytes);
-							}
-							else {
-								var byteWidth = width * 4;
-								for (var y = 0; y < height; y++) {
-									Buffer.MemoryCopy(sourcePtr + (y * stride), destPtr + (y * byteWidth), byteWidth, byteWidth);
+							byte[] outBuf = new byte[width * height]; // 1024
+							fixed (byte* destPtr = outBuf) {
+								byte* sourcePtr = (byte*)srcPtr;
+								for (int y = 0; y < height; y++) {
+									// Source: y*stride bytes offset; Target: y*width bytes
+									Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * width), width, width);
 								}
 							}
+							return outBuf;
 						}
-						var image = Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(rgbaBytes, width, height);
-						using MemoryStream stream = new();
-						image.Save(stream, jpegEncoder);
-						return stream.ToArray();
+						else {
+							int width = convertedFrame.width;
+							int height = convertedFrame.height;
+							if (width <= 0 || height <= 0)
+								throw new Exception($"Invalid converted frame dimensions {width}x{height}.");
+							long totalBytesLong = (long)width * height * 4;
+							if (totalBytesLong > 200_000_000) // ~200 MB sanity cap
+								throw new Exception($"Frame too large: {width}x{height} ({totalBytesLong} bytes).");
+							var totalBytes = (int)totalBytesLong;
+							var rgbaBytes = new byte[totalBytes];
+							int stride = convertedFrame.linesize[0];
+							if (stride < width * 4)
+								throw new Exception($"Invalid stride ({stride}) for width {width}.");
+							fixed (byte* destPtr = rgbaBytes) {
+								byte* sourcePtr = convertedFrame.data[0];
+								if (stride == width * 4) {
+									Buffer.MemoryCopy(sourcePtr, destPtr, totalBytes, totalBytes);
+								}
+								else {
+									var byteWidth = width * 4;
+									for (var y = 0; y < height; y++) {
+										Buffer.MemoryCopy(sourcePtr + (y * stride), destPtr + (y * byteWidth), byteWidth, byteWidth);
+									}
+								}
+							}
+							var image = Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(rgbaBytes, width, height);
+							using MemoryStream stream = new();
+							image.Save(stream, jpegEncoder);
+							return stream.ToArray();
+						}
 					}
 				}
 			}
@@ -258,12 +258,6 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add(item);
 			psi.ArgumentList.Add("pipe:1"); // stdout
 
-			////https://docs.microsoft.com/en-us/dotnet/csharp/how-to/concatenate-multiple-strings#string-literals
-			//string ffmpegArguments = $" -hide_banner -loglevel {(extendedLogging ? "error" : "quiet")}" +
-			//	$" -y -hwaccel {HardwareAccelerationMode} -ss {settings.Position} -i \"{FFToolsUtils.LongPathFix(settings.File)}\"" +
-			//	$" -t 1 -f {(isGrayByte ? "rawvideo -pix_fmt gray" : "mjpeg")} -vframes 1" +
-			//	$" {(isGrayByte ? "-s 16x16" : (settings.Fullsize == 1 ? string.Empty : "-vf scale=100:-1"))} {CustomFFArguments} \"-\"";
-
 			using var process = new Process {
 				StartInfo = psi
 			};
@@ -286,14 +280,14 @@ namespace VDF.Core.FFTools {
 					throw new TimeoutException($"FFmpeg timed out on file: {settings.File}");
 				}
 				else if (extendedLogging)
-					process.WaitForExit(); // Because of asynchronous event handlers, see: https://github.com/dotnet/runtime/issues/18789
+					process.WaitForExit();
 
 				if (process.ExitCode != 0)
 					throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}");
 
 				bytes = ms.ToArray();
 				if (bytes.Length == 0)
-					bytes = null;   // Makes subsequent checks easier
+					bytes = null;
 				else if (isGrayByte && bytes.Length != ExpectedBytes) {
 					errOut += $"{Environment.NewLine}graybytes length != {ExpectedBytes} (got {bytes.Length})";
 					bytes = null;
@@ -318,9 +312,20 @@ namespace VDF.Core.FFTools {
 			}
 			return bytes;
 		}
+
 		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging) {
 			int tooDarkCounter = 0;
-			bool forceProcessMode = UseNativeBinding && ShouldForceProcessModeForNative(videoFile.Path, videoFile.mediaInfo?.FormatName, videoFile.mediaInfo?.FormatLongName);
+
+			if (UseNativeBinding && videoFile.mediaInfo != null &&
+				string.IsNullOrWhiteSpace(videoFile.mediaInfo.FormatName) &&
+				string.IsNullOrWhiteSpace(videoFile.mediaInfo.FormatLongName)) {
+				var refreshedMediaInfo = FFProbeEngine.GetMediaInfo(videoFile.Path, extendedLogging);
+				if (refreshedMediaInfo != null)
+					videoFile.mediaInfo = refreshedMediaInfo;
+			}
+
+			bool forceProcessMode = UseNativeBinding &&
+				ShouldForceProcessModeForNative(videoFile.Path, videoFile.mediaInfo?.FormatName, videoFile.mediaInfo?.FormatLongName);
 			if (forceProcessMode) {
 				string formatDisplay = !string.IsNullOrWhiteSpace(videoFile.mediaInfo?.FormatName) ? videoFile.mediaInfo!.FormatName : Path.GetExtension(videoFile.Path);
 				Logger.Instance.Info($"Skipping native FFmpeg binding for '{videoFile.Path}' because container '{formatDisplay}' is routed through process mode.");
@@ -377,10 +382,6 @@ namespace VDF.Core.FFTools {
 			return tokens;
 		}
 
-		/// <summary>
-		/// Extracts a single JPEG thumbnail from a video file at the given position.
-		/// Returns null if extraction fails.
-		/// </summary>
 		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false) {
 			var settings = new FfmpegSettings {
 				File = filePath,
