@@ -28,6 +28,12 @@ namespace VDF.Core {
 		[ProtoMember(2)]
 		public TimeSpan Duration { get; set; }
 
+		[ProtoMember(3)]
+		public string FormatName { get; set; }
+
+		[ProtoMember(4)]
+		public string FormatLongName { get; set; }
+
 		[ProtoContract]
 		public class StreamInfo {
 
