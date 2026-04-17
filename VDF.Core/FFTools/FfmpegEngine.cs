@@ -94,24 +94,25 @@ namespace VDF.Core.FFTools {
 
 						using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
 
-						Size sourceSize = vsd.FrameSize;
+						Size decoderSourceSize = vsd.FrameSize;
 
-						// Decode first so we know the real source pixel format. For HW decode
-						// we can't know this up front — the downloaded sw_format depends on
-						// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
+						// Decode first so we know the real source frame metadata.
 						if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
-							throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+							throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={decoderSourceSize.Width}x{decoderSourceSize.Height}");
 						if (!HasUsableDecodedFrame(srcFrame))
 							throw new Exception($"Decoded frame is invalid for '{settings.File}' at pos={settings.Position}. frame={srcFrame.width}x{srcFrame.height}, format={(AVPixelFormat)srcFrame.format}");
 
-						AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
-							? (AVPixelFormat)srcFrame.format
-							: vsd.PixelFormat;
+						Size sourceSize = new(srcFrame.width, srcFrame.height);
+						if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+							throw new Exception($"Invalid decoded frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+
+						AVPixelFormat srcPixFmt = (AVPixelFormat)srcFrame.format;
 						if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
 							throw new Exception($"Invalid source pixel format {srcPixFmt}");
 
-						if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
-							throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+						if (sourceSize != decoderSourceSize || (!vsd.IsHardwareDecode && vsd.PixelFormat != AVPixelFormat.AV_PIX_FMT_NONE && vsd.PixelFormat != srcPixFmt)) {
+							Logger.Instance.Info($"Native FFmpeg decode metadata mismatch for '{settings.File}': decoder={decoderSourceSize.Width}x{decoderSourceSize.Height}/{vsd.PixelFormat}, frame={sourceSize.Width}x{sourceSize.Height}/{srcPixFmt}");
+						}
 
 						Size destinationSize = isGrayByte ? new Size(N, N) :
 							settings.Fullsize == 1 ?
@@ -136,23 +137,21 @@ namespace VDF.Core.FFTools {
 							throw new Exception("Converted frame has no data[0] (null).");
 
 						if (isGrayByte) {
-							int width = convertedFrame.width; // should be 32
+							int width = convertedFrame.width;
 							if (convertedFrame.linesize[0] < width)
 								throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
-							int height = convertedFrame.height; // should be 32
-							int srcStride = convertedFrame.linesize[0]; // can be >= width (padding)
+							int height = convertedFrame.height;
+							int srcStride = convertedFrame.linesize[0];
 							IntPtr srcPtr = (IntPtr)convertedFrame.data[0];
 
 							if (width != N || height != N)
 								throw new Exception($"Unexpected size {width}x{height}, expected {N}x{N}.");
 
-							byte[] outBuf = new byte[width * height]; // 1024
+							byte[] outBuf = new byte[width * height];
 							fixed (byte* destPtr = outBuf) {
 								byte* sourcePtr = (byte*)srcPtr;
-								for (int y = 0; y < height; y++) {
-									// Source: y*stride bytes offset; Target: y*width bytes
+								for (int y = 0; y < height; y++)
 									Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * width), width, width);
-								}
 							}
 							return outBuf;
 						}
@@ -162,7 +161,7 @@ namespace VDF.Core.FFTools {
 							if (width <= 0 || height <= 0)
 								throw new Exception($"Invalid converted frame dimensions {width}x{height}.");
 							long totalBytesLong = (long)width * height * 4;
-							if (totalBytesLong > 200_000_000) // ~200 MB sanity cap
+							if (totalBytesLong > 200_000_000)
 								throw new Exception($"Frame too large: {width}x{height} ({totalBytesLong} bytes).");
 							var totalBytes = (int)totalBytesLong;
 							var rgbaBytes = new byte[totalBytes];
@@ -176,9 +175,8 @@ namespace VDF.Core.FFTools {
 								}
 								else {
 									var byteWidth = width * 4;
-									for (var y = 0; y < height; y++) {
+									for (var y = 0; y < height; y++)
 										Buffer.MemoryCopy(sourcePtr + (y * stride), destPtr + (y * byteWidth), byteWidth, byteWidth);
-									}
 								}
 							}
 							var image = Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(rgbaBytes, width, height);
@@ -205,7 +203,6 @@ namespace VDF.Core.FFTools {
 
 			psi.ArgumentList.Add("-hide_banner");
 			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add((extendedLogging ? "error" : "quiet"));
-
 			psi.ArgumentList.Add("-nostdin");
 
 			if (HardwareAccelerationMode != FFHardwareAccelerationMode.none) {
@@ -213,13 +210,9 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
 
-			// -ss before -i (faster seek, may be less accurate; OK for frame sampling)
 			psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
 			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));
 
-			// Parse CustomFFArguments up front so we can detect a user-supplied -vf and merge it
-			// into our own filter chain rather than letting a second -vf silently override the
-			// scale filter (last -vf wins in ffmpeg). See: https://github.com/0x90d/videoduplicatefinder/issues/588
 			string? userVfFilter = null;
 			var remainingCustomArgs = new List<string>();
 			if (!string.IsNullOrWhiteSpace(CustomFFArguments)) {
@@ -232,7 +225,6 @@ namespace VDF.Core.FFTools {
 				}
 			}
 
-			// Filter chain: scale + gray
 			if (isGrayByte) {
 				string vfChain = $"scale={N}:{N}:flags=bicubic,format=gray";
 				if (userVfFilter != null) vfChain = $"{userVfFilter},{vfChain}";
@@ -253,10 +245,9 @@ namespace VDF.Core.FFTools {
 			}
 
 			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
-
 			foreach (var item in remainingCustomArgs)
 				psi.ArgumentList.Add(item);
-			psi.ArgumentList.Add("pipe:1"); // stdout
+			psi.ArgumentList.Add("pipe:1");
 
 			using var process = new Process {
 				StartInfo = psi
