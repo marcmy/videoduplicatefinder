@@ -20,17 +20,65 @@ global using System.IO;
 global using System.Threading.Tasks;
 using System.CommandLine;
 using System.Linq;
+using System.Text;
 using Avalonia;
 using ReactiveUI.Avalonia;
 using VDF.GUI.Utils;
 
 namespace VDF.GUI {
 	class Program {
+		static readonly string CrashLogPath = Path.Combine(
+			Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+			"VideoDuplicateFinder",
+			"unhandled-crash.log");
+
+		static void WriteCrashLog(string source, Exception? ex, bool terminating, object? extra = null) {
+			try {
+				Directory.CreateDirectory(Path.GetDirectoryName(CrashLogPath)!);
+				var sb = new StringBuilder();
+				sb.AppendLine(new string('=', 80));
+				sb.AppendLine($"UTC: {DateTime.UtcNow:O}");
+				sb.AppendLine($"Source: {source}");
+				sb.AppendLine($"Terminating: {terminating}");
+				sb.AppendLine($"Process: {Environment.ProcessPath}");
+				sb.AppendLine($"OS: {Environment.OSVersion}");
+				sb.AppendLine($".NET: {Environment.Version}");
+				if (extra != null) {
+					sb.AppendLine("Extra:");
+					sb.AppendLine(extra.ToString());
+				}
+				if (ex != null) {
+					sb.AppendLine("Exception:");
+					sb.AppendLine(ex.ToString());
+				}
+				File.AppendAllText(CrashLogPath, sb.ToString(), Encoding.UTF8);
+			}
+			catch { }
+		}
+
+		static void RegisterUnhandledExceptionLogging() {
+			AppDomain.CurrentDomain.UnhandledException += (_, e) => {
+				WriteCrashLog(
+					source: "AppDomain.CurrentDomain.UnhandledException",
+					ex: e.ExceptionObject as Exception,
+					terminating: e.IsTerminating,
+					extra: e.ExceptionObject);
+			};
+
+			TaskScheduler.UnobservedTaskException += (_, e) => {
+				WriteCrashLog(
+					source: "TaskScheduler.UnobservedTaskException",
+					ex: e.Exception,
+					terminating: false);
+			};
+		}
+
 		// Initialization code. Don't use any Avalonia, third-party APIs or any
 		// SynchronizationContext-reliant code before AppMain is called: things aren't initialized
 		// yet and stuff might break.
 		[STAThread]
 		public static int Main(string[] args) {
+			RegisterUnhandledExceptionLogging();
 
 			Option<FileInfo> settingsOption = new("--settings", new[] { "-s" }) {
 				Description = "Path to a settings file to load and save."
@@ -52,14 +100,26 @@ namespace VDF.GUI {
 					}
 				}
 
-				BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+				try {
+					BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+				}
+				catch (Exception ex) {
+					WriteCrashLog("Program.Main.StartWithClassicDesktopLifetime", ex, terminating: true);
+					throw;
+				}
 			});
 			var parseResult = rootCommand.Parse(args);
 			// If help requested OR parse errors -> we want console output
 			if (parseResult.Errors.Count > 0 || args.Contains("-h") || args.Contains("--help") || args.Contains("-?")) {
 				ConsoleAttach.EnsureConsole();
 			}
-			return rootCommand.Parse(args).Invoke();
+			try {
+				return rootCommand.Parse(args).Invoke();
+			}
+			catch (Exception ex) {
+				WriteCrashLog("Program.Main.Invoke", ex, terminating: true);
+				throw;
+			}
 		}
 
 		// Avalonia configuration, don't remove; also used by visual designer.
