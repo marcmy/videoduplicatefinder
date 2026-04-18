@@ -67,6 +67,7 @@ namespace VDF.Core {
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
 		DateTime lastCheckpointTime = DateTime.MinValue;
 		readonly object checkpointLock = new();
+		readonly ConcurrentDictionary<string, byte> pHashRepairLogged = new();
 
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
@@ -81,6 +82,7 @@ namespace VDF.Core {
 		void ResetExcludedLogging() {
 			excludedReasonCounts.Clear();
 			excludedReasonLoggedCounts.Clear();
+			pHashRepairLogged.Clear();
 		}
 		void LogExcludedFile(FileEntry entry, string reason) {
 			if (!Settings.LogExcludedFiles)
@@ -128,7 +130,6 @@ namespace VDF.Core {
 			var interval = TimeSpan.FromMinutes(Settings.DatabaseCheckpointIntervalMinutes);
 			if (DateTime.UtcNow - lastCheckpointTime < interval) return;
 			lock (checkpointLock) {
-				// Re-check after acquiring lock to avoid duplicate saves from racing threads
 				if (DateTime.UtcNow - lastCheckpointTime < interval) return;
 				lastCheckpointTime = DateTime.UtcNow;
 				DatabaseUtils.SaveDatabase();
@@ -188,7 +189,6 @@ namespace VDF.Core {
 
 		void PrepareSearch() {
 			ResetExcludedLogging();
-			//Using VDF.GUI we know fftools exist at this point but VDF.Core might be used in other projects as well
 			if (!Settings.UseNativeFfmpegBinding && !FFmpegExists)
 				throw new FFNotFoundException("Cannot find FFmpeg");
 			if (!FFprobeExists)
@@ -265,7 +265,6 @@ namespace VDF.Core {
 						fEntry = new(file);
 					}
 					catch (Exception e) {
-						//https://github.com/0x90d/videoduplicatefinder/issues/237
 						Logger.Instance.Info($"Skipped file '{file}' because of {e}");
 						continue;
 					}
@@ -274,7 +273,6 @@ namespace VDF.Core {
 					else if (fEntry.DateCreated != dbEntry.DateCreated ||
 							fEntry.DateModified != dbEntry.DateModified ||
 							fEntry.FileSize != dbEntry.FileSize) {
-						// -> Modified or different file
 						DatabaseUtils.Database.Remove(dbEntry);
 						DatabaseUtils.Database.Add(fEntry);
 					}
@@ -284,8 +282,6 @@ namespace VDF.Core {
 			Logger.Instance.Info($"Files in database: {DatabaseUtils.Database.Count:N0} ({DatabaseUtils.Database.Count - oldFileCount:N0} files added)");
 		});
 
-		// Check if entry should be excluded from the scan for any reason
-		// Returns true if the entry is invalid (should be excluded)
 		bool InvalidEntry(FileEntry entry, out bool reportProgress, out string? reason) {
 			reportProgress = true;
 			reason = null;
@@ -300,10 +296,6 @@ namespace VDF.Core {
 			}
 
 			if (!Settings.ScanAgainstEntireDatabase) {
-				/* Skip non-included file before checking if it exists
-				 * This greatly improves performance if the file is on
-				 * a disconnected network/mobile drive
-				 */
 				if (Settings.IncludeSubDirectories == false) {
 					if (!Settings.IncludeList.Contains(entry.Folder)) {
 						reportProgress = false;
@@ -316,7 +308,6 @@ namespace VDF.Core {
 						return false;
 					if (entry.Folder.Length == f.Length)
 						return true;
-					//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
 					string relativePath = Path.GetRelativePath(f, entry.Folder);
 					return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
 				})) {
@@ -386,7 +377,7 @@ namespace VDF.Core {
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
 		public static void RemoveFromDatabase(FileEntry dbEntry) => DatabaseUtils.Database.Remove(dbEntry);
 		public static void UpdateFilePathInDatabase(string newPath, FileEntry dbEntry) => DatabaseUtils.UpdateFilePath(newPath, dbEntry);
-#pragma warning disable CS8601 // Possible null reference assignment
+#pragma warning disable CS8601
 		public static bool GetFromDatabase(string path, out FileEntry? dbEntry) {
 			if (!File.Exists(path)) {
 				dbEntry = null;
@@ -394,11 +385,9 @@ namespace VDF.Core {
 			}
 			return DatabaseUtils.Database.TryGetValue(new FileEntry(path), out dbEntry);
 		}
-#pragma warning restore CS8601 // Possible null reference assignment
+#pragma warning restore CS8601
 		public static void BlackListFileEntry(string filePath) => DatabaseUtils.BlacklistFileEntry(filePath);
 
-		// Returns true if folderPath is covered by blacklistEntry.
-		// Supports wildcard patterns (*, ?) in blacklistEntry — see https://github.com/0x90d/videoduplicatefinder/issues/582
 		static bool IsBlackListed(string folderPath, string blacklistEntry) {
 			bool hasWildcard = blacklistEntry.IndexOfAny(['*', '?']) >= 0;
 			if (!hasWildcard) {
@@ -406,11 +395,9 @@ namespace VDF.Core {
 					return false;
 				if (folderPath.Length == blacklistEntry.Length)
 					return true;
-				//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
 				string relativePath = Path.GetRelativePath(blacklistEntry, folderPath);
 				return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
 			}
-			// Wildcard pattern without path separators: match against each individual segment of folderPath
 			bool hasSeparator = blacklistEntry.Contains(Path.DirectorySeparatorChar) ||
 			                    blacklistEntry.Contains(Path.AltDirectorySeparatorChar);
 			if (!hasSeparator) {
@@ -418,7 +405,6 @@ namespace VDF.Core {
 					StringSplitOptions.RemoveEmptyEntries);
 				return segments.Any(s => System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(blacklistEntry, s));
 			}
-			// Wildcard pattern with path separators: match against the full path
 			return System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(blacklistEntry, folderPath);
 		}
 
@@ -453,7 +439,6 @@ namespace VDF.Core {
 								return false;
 							if (entry.Folder.Length == f.Length)
 								return true;
-							//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
 							string relativePath = Path.GetRelativePath(f, entry.Folder);
 							return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
 						})) {
@@ -482,7 +467,6 @@ namespace VDF.Core {
 							}
 						}
 						if (hasAllInformation) {
-							// Thumbnails are cached but audio fingerprint might still be needed
 							if (Settings.EnablePartialClipDetection &&
 								!entry.IsImage &&
 								!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
@@ -506,11 +490,8 @@ namespace VDF.Core {
 
 						entry.mediaInfo = info;
 					}
-					// This is for people upgrading from an older VDF version
-					// Or if you create a new database, start and immediately stop the scan and then try to scan again
 					entry.grayBytes ??= new Dictionary<double, byte[]?>();
 					entry.PHashes ??= new Dictionary<double, ulong?>();
-
 
 					if (entry.IsImage && entry.grayBytes.Count == 0) {
 						if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate))
@@ -521,8 +502,6 @@ namespace VDF.Core {
 							entry.invalid = true;
 					}
 
-					// Audio fingerprint — videos only, only when enabled,
-					// skipped if already cached or flagged as having no audio track.
 					if (Settings.EnablePartialClipDetection &&
 						!entry.IsImage &&
 						!entry.Flags.Has(EntryFlags.NoAudioTrack) &&
@@ -541,25 +520,22 @@ namespace VDF.Core {
 			}
 		}
 
-	
-	static void ExtractAudioFingerprint(FileEntry entry, CancellationToken ct = default) {
-		uint[]? fp = FFTools.ChromaprintEngine.ExtractFingerprint(entry.Path, false, ct);
-		if (fp == null) {
-			// null = extraction failed (error or no audio stream)
-			entry.Flags.Set(EntryFlags.AudioFingerprintError);
-			entry.AudioFingerprint = Array.Empty<uint>();
+		static void ExtractAudioFingerprint(FileEntry entry, CancellationToken ct = default) {
+			uint[]? fp = FFTools.ChromaprintEngine.ExtractFingerprint(entry.Path, false, ct);
+			if (fp == null) {
+				entry.Flags.Set(EntryFlags.AudioFingerprintError);
+				entry.AudioFingerprint = Array.Empty<uint>();
+			}
+			else if (fp.Length == 0) {
+				entry.Flags.Set(EntryFlags.NoAudioTrack);
+				entry.AudioFingerprint = Array.Empty<uint>();
+			}
+			else {
+				entry.AudioFingerprint = fp;
+			}
 		}
-		else if (fp.Length == 0) {
-			// FFmpeg ran but produced no samples (file has no usable audio)
-			entry.Flags.Set(EntryFlags.NoAudioTrack);
-			entry.AudioFingerprint = Array.Empty<uint>();
-		}
-		else {
-			entry.AudioFingerprint = fp;
-		}
-	}
 
-	Dictionary<double, byte[]?> CreateFlippedGrayBytes(FileEntry entry) {
+		Dictionary<double, byte[]?> CreateFlippedGrayBytes(FileEntry entry) {
 			Dictionary<double, byte[]?>? flippedGrayBytes = new();
 			if (entry.IsImage)
 				flippedGrayBytes.Add(0, DatabaseUtils.DbVersion < 2 ? GrayBytesUtils.FlipGrayScale16x16(entry.grayBytes[0]!) : GrayBytesUtils.FlipGrayScale(entry.grayBytes[0]!));
@@ -572,7 +548,6 @@ namespace VDF.Core {
 			return flippedGrayBytes;
 		}
 
-		/// <summary>Returns true if the last <paramref name="depth"/> path segments of both folder paths are equal (case-insensitive).</summary>
 	static bool SameFolderAtDepth(ReadOnlySpan<char> a, ReadOnlySpan<char> b, int depth) {
 		for (int i = 0; i < depth; i++) {
 			while (a.Length > 0 && (a[^1] == Path.DirectorySeparatorChar || a[^1] == Path.AltDirectorySeparatorChar))
@@ -603,7 +578,30 @@ namespace VDF.Core {
 		return true;
 	}
 
-	bool CheckIfDuplicate(FileEntry entry, Dictionary<double, byte[]?>? grayBytes, FileEntry compItem, out float difference) {
+		bool TryGetOrComputePHash(FileEntry entry, Dictionary<double, byte[]?> grayBytes, double index, out ulong phash) {
+			phash = default;
+			lock (entry.PHashes) {
+				if (entry.PHashes.TryGetValue(index, out ulong? existing) && existing.HasValue) {
+					phash = existing.Value;
+					return true;
+				}
+				if (!grayBytes.TryGetValue(index, out var gray) || gray == null || gray.Length != 32 * 32) {
+					string logKey = $"{entry.Path}|{index:F6}";
+					if (pHashRepairLogged.TryAdd(logKey, 0))
+						Logger.Instance.Info($"Cannot repair pHash for '{entry.Path}' at {index:F6}s because graybytes are missing or invalid.");
+					entry.PHashes.Remove(index);
+					return false;
+				}
+				phash = pHash.PerceptualHash.ComputePHashFromGray32x32(gray);
+				entry.PHashes[index] = phash;
+				string repairedKey = $"{entry.Path}|{index:F6}";
+				if (pHashRepairLogged.TryAdd(repairedKey, 0))
+					Logger.Instance.Info($"Repaired cached pHash for '{entry.Path}' at {index:F6}s.");
+				return true;
+			}
+		}
+
+		bool CheckIfDuplicate(FileEntry entry, Dictionary<double, byte[]?>? grayBytes, FileEntry compItem, out float difference) {
 			grayBytes ??= entry.grayBytes;
 			float differenceLimit = 1.0f - Settings.Percent / 100f;
 			bool ignoreBlackPixels = Settings.IgnoreBlackPixels;
@@ -622,22 +620,17 @@ namespace VDF.Core {
 
 				double entryIndex = GetGrayBytesIndex(entry, positionList[0]);
 				double compIndex = GetGrayBytesIndex(compItem, positionList[0]);
-				if (!entry.PHashes.TryGetValue(entryIndex, out ulong? phash))
-					phash = pHash.PerceptualHash.ComputePHashFromGray32x32(grayBytes[entryIndex]);
-				if (!compItem.PHashes.TryGetValue(compIndex, out ulong? phash_comp))
-					phash_comp = pHash.PerceptualHash.ComputePHashFromGray32x32(compItem.grayBytes[compIndex]);
-				if (phash == null || phash_comp == null) {
+				if (!TryGetOrComputePHash(entry, grayBytes, entryIndex, out ulong phash) ||
+					!TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, out ulong phash_comp)) {
 					Logger.Instance.Info($"Failed to compute pHash for {entry.Path} or {compItem.Path}");
 					difference = 1f;
 					return false;
 				}
-				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash.Value, phash_comp.Value, out float similarity, differenceLimitpHash, strict: true);
+				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
 				difference = 1f - similarity;
 				return isDup;
 
 			}
-
-
 
 			differenceLimit *= positionList.Count;
 			float diffSum = 0;
@@ -649,7 +642,7 @@ namespace VDF.Core {
 							GrayBytesUtils.PercentageDifference(
 								grayBytes[GetGrayBytesIndex(entry, positionList[j])]!,
 								compItem.grayBytes[GetGrayBytesIndex(compItem, positionList[j])]!);
-				if (diffSum > differenceLimit) // already exceeding maximum tolerated diff -> exit early
+				if (diffSum > differenceLimit)
 					return false;
 			}
 			difference = diffSum / positionList.Count;
@@ -658,12 +651,9 @@ namespace VDF.Core {
 
 		void ScanForDuplicates() {
 			Dictionary<string, DuplicateItem>? duplicateDict = new();
-			// Maps GroupId -> representative FileEntry for that group.
-			// Used to prevent merging groups whose representatives aren't similar.
 			Dictionary<Guid, FileEntry> groupRepresentatives = new();
 			int mergesBlocked = 0;
 
-			//Exclude existing database entries which not met current scan settings
 			List<FileEntry> ScanList = new();
 
 			Logger.Instance.Info("Prepare list of items to compare...");
@@ -677,11 +667,8 @@ namespace VDF.Core {
 
 			InitProgress(ScanList.Count);
 
-			// Duration buckets are keyed by whole seconds to keep percent-based tolerance intact.
 			const int bucketSizeSeconds = 1;
-			// Avoid bucket overhead for small datasets; fall back to the linear path.
 			const int bucketActivationThreshold = 5000;
-			// scanIndex preserves original ordering so we can skip symmetric comparisons.
 			var scanIndex = new Dictionary<FileEntry, int>(ScanList.Count);
 			var imageEntries = new List<FileEntry>();
 			var videoEntries = new List<FileEntry>();
@@ -696,7 +683,6 @@ namespace VDF.Core {
 					continue;
 				}
 				videoEntries.Add(entry);
-				// Bucket by duration seconds for candidate reduction in the large-data path.
 				int bucketKey = (int)Math.Floor(entry.mediaInfo!.Duration.TotalSeconds / bucketSizeSeconds);
 				if (!videoBuckets.TryGetValue(bucketKey, out var bucket)) {
 					bucket = new List<FileEntry>();
@@ -711,46 +697,32 @@ namespace VDF.Core {
 					bool foundComp = duplicateDict.TryGetValue(compItem.Path, out DuplicateItem? existingComp);
 
 					if (foundBase && foundComp) {
-						//this happens with 4+ identical items:
-						//first, 2+ duplicate groups are found independently, they are merged in this branch
 						if (existingBase!.GroupId != existingComp!.GroupId) {
-							// Before merging two groups, verify that the representative
-							// of each group is similar to the other group's representative.
-							// This prevents daisy-chain merging where a single bridging
-							// pair pulls two unrelated groups together.
 							if (groupRepresentatives.TryGetValue(existingBase.GroupId, out var repBase) &&
 								groupRepresentatives.TryGetValue(existingComp.GroupId, out var repComp) &&
 								!CheckIfDuplicate(repBase, null, repComp, out _)) {
 								mergesBlocked++;
-								return; // Representatives aren't similar — don't merge.
+								return;
 							}
 							Guid groupID = existingComp!.GroupId;
-							foreach (DuplicateItem? dup in duplicateDict.Values.Where(c =>
-								c.GroupId == groupID))
+							foreach (DuplicateItem? dup in duplicateDict.Values.Where(c => c.GroupId == groupID))
 								dup.GroupId = existingBase.GroupId;
-							// Keep the representative of the absorbing group; remove the merged one.
 							groupRepresentatives.Remove(groupID);
 						}
 					}
 					else if (foundBase) {
-						// New item joining an existing group — verify it matches the representative.
-						if (groupRepresentatives.TryGetValue(existingBase!.GroupId, out var rep) &&
-							!CheckIfDuplicate(rep, null, compItem, out _)) {
+						if (groupRepresentatives.TryGetValue(existingBase!.GroupId, out var rep) && !CheckIfDuplicate(rep, null, compItem, out _)) {
 							mergesBlocked++;
 							return;
 						}
-						duplicateDict.TryAdd(compItem.Path,
-							new DuplicateItem(compItem, difference, existingBase!.GroupId, flags));
+						duplicateDict.TryAdd(compItem.Path, new DuplicateItem(compItem, difference, existingBase!.GroupId, flags));
 					}
 					else if (foundComp) {
-						// New item joining an existing group — verify it matches the representative.
-						if (groupRepresentatives.TryGetValue(existingComp!.GroupId, out var rep) &&
-							!CheckIfDuplicate(rep, null, entry, out _)) {
+						if (groupRepresentatives.TryGetValue(existingComp!.GroupId, out var rep) && !CheckIfDuplicate(rep, null, entry, out _)) {
 							mergesBlocked++;
 							return;
 						}
-						duplicateDict.TryAdd(entry.Path,
-							new DuplicateItem(entry, difference, existingComp!.GroupId, flags));
+						duplicateDict.TryAdd(entry.Path, new DuplicateItem(entry, difference, existingComp!.GroupId, flags));
 					}
 					else {
 						var groupId = Guid.NewGuid();
@@ -765,8 +737,7 @@ namespace VDF.Core {
 				flags = DuplicateFlags.None;
 				difference = 0;
 				bool isDuplicate = CheckIfDuplicate(entry, null, compItem, out difference);
-				if (Settings.CompareHorizontallyFlipped &&
-					CheckIfDuplicate(entry, flippedGrayBytes, compItem, out float flippedDifference)) {
+				if (Settings.CompareHorizontallyFlipped && CheckIfDuplicate(entry, flippedGrayBytes, compItem, out float flippedDifference)) {
 					if (!isDuplicate || flippedDifference < difference) {
 						flags |= DuplicateFlags.Flipped;
 						isDuplicate = true;
@@ -776,7 +747,6 @@ namespace VDF.Core {
 				return isDuplicate;
 			}
 
-			// Convert percent-based duration tolerance into seconds, clamped by optional min/max.
 			double GetDurationToleranceSeconds(double durationSeconds) {
 				double percentSeconds = durationSeconds * Settings.PercentDurationDifference / 100d;
 				double toleranceSeconds = percentSeconds;
@@ -789,7 +759,6 @@ namespace VDF.Core {
 				return Math.Max(0d, toleranceSeconds);
 			}
 
-			// Compare one entry against candidate buckets (bucketed path).
 			void CompareEntry(FileEntry entry, int entryIndex, IEnumerable<int> candidateBucketKeys) {
 				while (pauseTokenSource.IsPaused) Thread.Sleep(50);
 
@@ -820,20 +789,14 @@ namespace VDF.Core {
 								continue;
 						}
 
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly && !SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly && SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
 
 						isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, out difference, out flags);
 
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
+						if (isDuplicate && entry.FileSize == compItem.FileSize && entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration && Settings.ExcludeHardLinks && HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
 							isDuplicate = false;
 						}
 
@@ -844,7 +807,6 @@ namespace VDF.Core {
 				IncrementProgress(entry.Path);
 			}
 
-			// Images are always compared linearly; bucketing is only applied to videos.
 			void CompareImages() {
 				Action<int> compareAction = i => {
 					var entry = imageEntries[i];
@@ -855,18 +817,13 @@ namespace VDF.Core {
 						var compItem = imageEntries[n];
 						float difference = 0;
 						DuplicateFlags flags;
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly && !SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly && SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
 						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, out difference, out flags);
 
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
+						if (isDuplicate && entry.FileSize == compItem.FileSize && Settings.ExcludeHardLinks && HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
 							isDuplicate = false;
 						}
 
@@ -888,7 +845,6 @@ namespace VDF.Core {
 				catch (OperationCanceledException) { }
 			}
 
-			// Linear compare path for small datasets to avoid bucket bookkeeping overhead.
 			void CompareVideosLinear() {
 				Action<int> compareAction = i => {
 					while (pauseTokenSource.IsPaused) Thread.Sleep(50);
@@ -912,19 +868,13 @@ namespace VDF.Core {
 						if (diffSeconds > allowedSeconds)
 							continue;
 
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly && !SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly && SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
 							continue;
 
 						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, out difference, out flags);
-						if (isDuplicate &&
-							entry.FileSize == compItem.FileSize &&
-							entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration &&
-							Settings.ExcludeHardLinks &&
-							HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
+						if (isDuplicate && entry.FileSize == compItem.FileSize && entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration && Settings.ExcludeHardLinks && HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
 							isDuplicate = false;
 						}
 
@@ -951,11 +901,9 @@ namespace VDF.Core {
 				CompareImages();
 
 				if (videoEntries.Count < bucketActivationThreshold) {
-					// Small dataset: keep the simpler linear path.
 					CompareVideosLinear();
 				}
 				else {
-					// Large dataset: use buckets to reduce candidate comparisons.
 					var smallBuckets = videoBuckets.Where(kvp => kvp.Value.Count < largeBucketThreshold).ToList();
 					var largeBuckets = videoBuckets.Where(kvp => kvp.Value.Count >= largeBucketThreshold).ToList();
 
@@ -994,25 +942,13 @@ namespace VDF.Core {
 			SplitDaisyChainGroups();
 		}
 
-
-		/// <summary>
-		/// Phase 2 comparison: find pairs where a shorter video is a partial clip of a longer one,
-		/// using audio fingerprint sliding-window matching.  Results are added to Duplicates.
-		/// The comparison loop runs in parallel; grouping is applied sequentially afterward.
-		/// </summary>
 		void ScanForPartialDuplicates() {
 			Logger.Instance.Info("Partial clip detection: building fingerprint index...");
 
-			// Build a quick lookup for paths already covered by visual duplicate groups.
-			var alreadyGrouped = new HashSet<string>(
-				Duplicates.Select(d => d.Path),
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+			var alreadyGrouped = new HashSet<string>(Duplicates.Select(d => d.Path), CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
-			// Collect eligible videos: not an image, has a usable fingerprint, not already grouped.
 			var videos = DatabaseUtils.Database
-				.Where(e => !e.invalid && !e.IsImage &&
-						e.AudioFingerprint != null && e.AudioFingerprint.Length >= 2 &&
-						!alreadyGrouped.Contains(e.Path))
+				.Where(e => !e.invalid && !e.IsImage && e.AudioFingerprint != null && e.AudioFingerprint.Length >= 2 && !alreadyGrouped.Contains(e.Path))
 				.OrderByDescending(e => e.mediaInfo?.Duration ?? TimeSpan.Zero)
 				.ToList();
 
@@ -1025,7 +961,6 @@ namespace VDF.Core {
 
 			float simThreshold = (float)Settings.PartialClipSimilarityThreshold;
 
-			// --- Parallel phase: compute all matches without mutating shared state ---
 			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
 			int pairsChecked = 0;
 
@@ -1045,13 +980,9 @@ namespace VDF.Core {
 						double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
 						if (clipSec < 1.0) continue;
 
-						// Pre-filter 1: clip must be at least PartialClipMinRatio of source
 						if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
-
-						// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
 						if (clipSec / sourceSec >= 0.95) continue;
 
-						// Fingerprint block sanity (each block ≈ 1 second)
 						uint[] fpSource = source.AudioFingerprint!;
 						uint[] fpClip = clip.AudioFingerprint!;
 						if (fpClip.Length >= fpSource.Length) continue;
@@ -1064,11 +995,8 @@ namespace VDF.Core {
 					}
 				});
 
-			// --- Sequential phase: build groups from matches (preserving longest-source-first order) ---
-			var sourceGroupId = new Dictionary<string, Guid>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-			var assignedClips = new HashSet<string>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+			var sourceGroupId = new Dictionary<string, Guid>(CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+			var assignedClips = new HashSet<string>(CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 			int matchesFound = 0;
 
 			foreach (var (si, ci, sim, offsetSec) in matches.OrderBy(m => m.sourceIdx).ThenBy(m => m.clipIdx)) {
@@ -1101,14 +1029,6 @@ namespace VDF.Core {
 			Logger.Instance.Info($"Partial clip detection: checked {pairsChecked} pair(s), found {matchesFound} match(es).");
 		}
 
-		/// <summary>
-		/// Slides <paramref name="shorter"/> over <paramref name="longer"/> and returns the
-		/// best average Hamming similarity (0–1) and the offset (in seconds / blocks) at which
-		/// it occurs.  Uses SIMD-accelerated XOR where available and skips offsets early when
-		/// the accumulated Hamming distance already exceeds what could beat the current best.
-		/// </summary>
-		/// <param name="minSim">Minimum similarity the caller cares about (e.g. the user threshold).
-		/// Offsets that cannot reach this value are skipped via early exit.</param>
 		internal static (float similarity, int offsetBlocks) SlidingWindowCompare(uint[] shorter, uint[] longer, float minSim = 0f) {
 			int lenS = shorter.Length;
 			int lenL = longer.Length;
@@ -1119,14 +1039,12 @@ namespace VDF.Core {
 			int bestOffset = 0;
 
 			for (int offset = 0; offset <= maxOffset; offset++) {
-				// The maximum number of differing bits we can tolerate and still
-				// beat the current best (or the caller's minimum threshold).
 				int maxAllowedBits = (int)((1f - Math.Max(bestSim, minSim)) * totalBitsCapacity);
 
 				int totalBits = HammingDistance(shorter, longer, offset, lenS, maxAllowedBits);
 
 				if (totalBits > maxAllowedBits)
-					continue; // early exit triggered inside HammingDistance
+					continue;
 
 				float sim = 1f - (float)totalBits / totalBitsCapacity;
 				if (sim > bestSim) {
@@ -1138,19 +1056,11 @@ namespace VDF.Core {
 			return (bestSim, bestOffset);
 		}
 
-		/// <summary>
-		/// Computes the Hamming distance (total differing bits) between
-		/// <paramref name="a"/>[0..len) and <paramref name="b"/>[offset..offset+len).
-		/// Uses 256-bit or 128-bit SIMD for the XOR when hardware support is available.
-		/// Returns early (with a value &gt; <paramref name="maxAllowedBits"/>) when the
-		/// running total exceeds the budget, avoiding unnecessary work on non-matching offsets.
-		/// </summary>
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		static int HammingDistance(uint[] a, uint[] b, int offset, int len, int maxAllowedBits) {
 			int totalBits = 0;
 			int k = 0;
 
-			// --- Vector256 path (8 × uint per iteration) ---
 			if (Vector256.IsHardwareAccelerated && len >= 8) {
 				ref uint aRef = ref MemoryMarshal.GetArrayDataReference(a);
 				ref uint bRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(b), offset);
@@ -1172,7 +1082,6 @@ namespace VDF.Core {
 					if (totalBits > maxAllowedBits) return totalBits;
 				}
 			}
-			// --- Vector128 path (4 × uint per iteration, e.g. ARM NEON) ---
 			else if (Vector128.IsHardwareAccelerated && len >= 4) {
 				ref uint aRef = ref MemoryMarshal.GetArrayDataReference(a);
 				ref uint bRef = ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(b), offset);
@@ -1191,7 +1100,6 @@ namespace VDF.Core {
 				}
 			}
 
-			// --- Scalar remainder ---
 			for (; k < len; k++) {
 				totalBits += BitOperations.PopCount(a[k] ^ b[offset + k]);
 			}
@@ -1199,25 +1107,12 @@ namespace VDF.Core {
 			return totalBits;
 		}
 
-		/// <summary>
-		/// Post-processes duplicate groups to break apart "daisy chains" where transitive
-		/// merging created groups containing items that aren't actually similar to each other.
-		/// For each group with 3+ members, builds a pairwise similarity graph, then
-		/// iteratively prunes members that are similar to fewer than half the group.
-		/// Pruned items are re-clustered into their own groups if they still have matches.
-		/// </summary>
 		void SplitDaisyChainGroups() {
-			// Build a fast lookup from path -> FileEntry for re-comparing pairs.
-			var dbLookup = new Dictionary<string, FileEntry>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+			var dbLookup = new Dictionary<string, FileEntry>(CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 			foreach (FileEntry fe in DatabaseUtils.Database)
 				dbLookup[fe.Path] = fe;
 
-			// Group duplicates by GroupId; only process groups with 3+ members.
-			var groups = Duplicates
-				.GroupBy(d => d.GroupId)
-				.Where(g => g.Count() >= 3)
-				.ToList();
+			var groups = Duplicates.GroupBy(d => d.GroupId).Where(g => g.Count() >= 3).ToList();
 
 			if (groups.Count == 0) return;
 
@@ -1228,7 +1123,6 @@ namespace VDF.Core {
 				var members = group.ToList();
 				int n = members.Count;
 
-				// Resolve FileEntry for each member; skip group if any entry is missing.
 				var entries = new FileEntry[n];
 				bool allFound = true;
 				for (int i = 0; i < n; i++) {
@@ -1240,7 +1134,6 @@ namespace VDF.Core {
 				}
 				if (!allFound) continue;
 
-				// Build pairwise similarity matrix.
 				var similar = new bool[n, n];
 				for (int i = 0; i < n; i++) {
 					similar[i, i] = true;
@@ -1251,8 +1144,6 @@ namespace VDF.Core {
 					}
 				}
 
-				// Iterative pruning: remove the least-connected member until every
-				// remaining member is similar to at least half of the other members.
 				var active = new List<int>(Enumerable.Range(0, n));
 				var pruned = new List<int>();
 
@@ -1275,8 +1166,7 @@ namespace VDF.Core {
 						}
 					}
 
-					// Prune if the least-connected member is similar to fewer than half.
-					int requiredConnections = (active.Count - 1 + 1) / 2; // ceiling of (count-1)/2
+					int requiredConnections = (active.Count - 1 + 1) / 2;
 					if (worstConnections < requiredConnections) {
 						pruned.Add(active[worstIdx]);
 						active.RemoveAt(worstIdx);
@@ -1288,14 +1178,12 @@ namespace VDF.Core {
 
 				groupsSplit++;
 
-				// Assign a new GroupId to the surviving core group (if 2+ members remain).
 				if (active.Count >= 2) {
 					var coreGroupId = Guid.NewGuid();
 					foreach (int idx in active)
 						members[idx].GroupId = coreGroupId;
 				}
 				else {
-					// Core collapsed to a single item — remove it too.
 					foreach (int idx in active) {
 						Duplicates.Remove(members[idx]);
 						itemsRemoved++;
@@ -1303,8 +1191,6 @@ namespace VDF.Core {
 					active.Clear();
 				}
 
-				// Re-cluster pruned items among themselves: form groups from connected
-				// components using the same similarity matrix.
 				var visited = new HashSet<int>();
 				foreach (int seed in pruned) {
 					if (visited.Contains(seed)) continue;
@@ -1324,8 +1210,6 @@ namespace VDF.Core {
 					}
 
 					if (component.Count >= 2) {
-						// Recursively validate this sub-group too: apply the same
-						// majority-pruning before accepting it.
 						var subActive = new List<int>(component);
 						bool subChanged = true;
 						while (subChanged && subActive.Count >= 2) {
@@ -1346,7 +1230,6 @@ namespace VDF.Core {
 							}
 							int subRequired = (subActive.Count - 1 + 1) / 2;
 							if (subWorstConn < subRequired) {
-								// Remove this item entirely — it doesn't fit anywhere.
 								Duplicates.Remove(members[subActive[subWorstIdx]]);
 								itemsRemoved++;
 								subActive.RemoveAt(subWorstIdx);
@@ -1367,7 +1250,6 @@ namespace VDF.Core {
 						}
 					}
 					else {
-						// Single pruned item with no matches among other pruned items.
 						Duplicates.Remove(members[component[0]]);
 						itemsRemoved++;
 					}
@@ -1379,19 +1261,14 @@ namespace VDF.Core {
 		}
 
 		void LogGroupStatistics() {
-			var groupSizes = Duplicates
-				.GroupBy(d => d.GroupId)
-				.Select(g => g.Count())
-				.ToList();
+			var groupSizes = Duplicates.GroupBy(d => d.GroupId).Select(g => g.Count()).ToList();
 			if (groupSizes.Count == 0) return;
 			int totalItems = groupSizes.Sum();
 			int maxSize = groupSizes.Max();
 			double avgSize = groupSizes.Average();
 			int groupsOver5 = groupSizes.Count(s => s > 5);
 			int groupsOver10 = groupSizes.Count(s => s > 10);
-			Logger.Instance.Info($"Group statistics: {groupSizes.Count} groups, {totalItems} items, " +
-				$"avg size {avgSize:F1}, max size {maxSize}, " +
-				$"groups with >5 items: {groupsOver5}, >10 items: {groupsOver10}");
+			Logger.Instance.Info($"Group statistics: {groupSizes.Count} groups, {totalItems} items, avg size {avgSize:F1}, max size {maxSize}, groups with >5 items: {groupsOver5}, >10 items: {groupsOver10}");
 		}
 
 		public async void CleanupDatabase() {
@@ -1404,18 +1281,9 @@ namespace VDF.Core {
 		public static bool ExportDataBaseToJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ExportDatabaseToJson(jsonFile, options);
 		public static bool ImportDataBaseFromJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ImportDatabaseFromJson(jsonFile, options);
 
-		/// <summary>
-		/// Extracts a single JPEG thumbnail from a video or image file on demand.
-		/// Intended for web endpoints that need higher resolution than the default 100px scan thumbnails.
-		/// </summary>
-		/// <param name="filePath">Absolute path to the media file.</param>
-		/// <param name="position">Seek position (ignored for images).</param>
-		/// <param name="maxWidth">Target width in pixels. 0 = original resolution.</param>
-		/// <returns>JPEG bytes, or null on failure.</returns>
 		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0) {
 			if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
 
-			// For images, load and resize directly
 			var ext = Path.GetExtension(filePath);
 			if (IsImageExtension(ext)) {
 				try {
@@ -1431,7 +1299,6 @@ namespace VDF.Core {
 				catch { return null; }
 			}
 
-			// For videos, delegate to FFmpeg
 			return FfmpegEngine.ExtractThumbnailJpeg(filePath, position, maxWidth);
 		}
 
@@ -1512,14 +1379,13 @@ namespace VDF.Core {
 					int current = Interlocked.Increment(ref done);
 					if (sw.ElapsedMilliseconds > 300)
 						if (Interlocked.Exchange(ref lastNotified, current) < current) {
-							sw.Restart(); // only this thread resets the stopwatch
+							sw.Restart();
 							ThumbnailProgress?.Invoke(current, total);
 						}
 
 					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
 					if (needsThumbnails && entry.IsImage) {
-						//For images it doesn't make sense to load the actual image more than once
 						timeStamps = new(0);
 						list = new List<Image>(1);
 						try {
@@ -1570,24 +1436,20 @@ namespace VDF.Core {
 
 				using var byteStream = File.OpenRead(imageFile.Path);
 				using var bitmapImage = Image.Load(byteStream);
-				//Set some props while we already loaded the image
 				imageFile.mediaInfo = new MediaInfo {
 					Streams = new[] {
 							new MediaInfo.StreamInfo {Height = bitmapImage.Height, Width = bitmapImage.Width}
 						}
 				};
 
-				// Extract EXIF creation date if enabled
 				if (useExifIfAvailable) {
 					var exifProfile = bitmapImage.Metadata.ExifProfile;
 					if (exifProfile != null) {
-						// Try DateTimeOriginal first (when photo was taken)						
 						if (exifProfile.TryGetValue(ExifTag.DateTimeOriginal, out var dateTimeOriginal) && !string.IsNullOrWhiteSpace(dateTimeOriginal.Value)) {
 							if (TryParseExifDateTime(dateTimeOriginal.Value, out DateTime exifDate)) {
 								imageFile.DateCreated = exifDate;
 							}
 						}
-						// Fallback to DateTime if DateTimeOriginal is not available
 						else {
 							if (exifProfile.TryGetValue(ExifTag.DateTime, out var dateTime) && !string.IsNullOrWhiteSpace(dateTime.Value)) {
 								if (TryParseExifDateTime(dateTime.Value, out DateTime exifDate)) {
@@ -1598,15 +1460,10 @@ namespace VDF.Core {
 					}
 				}
 
-
-				int size = DatabaseUtils.DbVersion < 2 ?
-								16 :
-								GrayBytesUtils.Side;
+				int size = DatabaseUtils.DbVersion < 2 ? 16 : GrayBytesUtils.Side;
 				bitmapImage.Mutate(a => a.Resize(size, size));
 
-				var d = DatabaseUtils.DbVersion < 2 ?
-							GrayBytesUtils.GetGrayScaleValues16x16(bitmapImage) :
-							GrayBytesUtils.GetGrayScaleValues(bitmapImage);
+				var d = DatabaseUtils.DbVersion < 2 ? GrayBytesUtils.GetGrayScaleValues16x16(bitmapImage) : GrayBytesUtils.GetGrayScaleValues(bitmapImage);
 				if (d == null) {
 					imageFile.Flags.Set(EntryFlags.TooDark);
 					Logger.Instance.Info($"ERROR: Graybytes too dark of: {imageFile.Path}");
@@ -1617,20 +1474,16 @@ namespace VDF.Core {
 				return true;
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info(
-					$"Exception, file: {imageFile.Path}, reason: {ex.Message}, stacktrace {ex.StackTrace}");
+				Logger.Instance.Info($"Exception, file: {imageFile.Path}, reason: {ex.Message}, stacktrace {ex.StackTrace}");
 				imageFile.Flags.Set(EntryFlags.ThumbnailError);
 				return false;
 			}
 		}
 
 		static bool TryParseExifDateTime(string exifDateTime, out DateTime result) {
-			// EXIF DateTime format: "YYYY:MM:DD HH:MM:SS"
 			result = DateTime.MinValue;
 
-			if (DateTime.TryParseExact(exifDateTime, "yyyy:MM:dd HH:mm:ss",
-				CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsedDate)) {
-				// Convert to UTC (assuming local time in EXIF)
+			if (DateTime.TryParseExact(exifDateTime, "yyyy:MM:dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsedDate)) {
 				result = DateTime.SpecifyKind(parsedDate, DateTimeKind.Utc);
 				return true;
 			}
@@ -1644,7 +1497,6 @@ namespace VDF.Core {
 				if (blackList.Contains(item.GroupId)) continue;
 				var groupItems = Duplicates.Where(a => a.GroupId == item.GroupId);
 				DuplicateItem bestMatch;
-				//Duration
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.Duration);
 					bestMatch = groupItems.First();
@@ -1655,7 +1507,6 @@ namespace VDF.Core {
 						otherItem.IsBestDuration = true;
 					}
 				}
-				//Size
 				groupItems = groupItems.OrderBy(d => d.SizeLong);
 				bestMatch = groupItems.First();
 				bestMatch.IsBestSize = true;
@@ -1664,7 +1515,6 @@ namespace VDF.Core {
 						break;
 					otherItem.IsBestSize = true;
 				}
-				//Fps
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.Fps);
 					bestMatch = groupItems.First();
@@ -1675,7 +1525,6 @@ namespace VDF.Core {
 						otherItem.IsBestFps = true;
 					}
 				}
-				//BitRateKbs
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.BitRateKbs);
 					bestMatch = groupItems.First();
@@ -1686,7 +1535,6 @@ namespace VDF.Core {
 						otherItem.IsBestBitRateKbs = true;
 					}
 				}
-				//AudioSampleRate
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.AudioSampleRate);
 					bestMatch = groupItems.First();
@@ -1697,7 +1545,6 @@ namespace VDF.Core {
 						otherItem.IsBestAudioSampleRate = true;
 					}
 				}
-				//AudioBitRateKbs
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.AudioBitRateKbs);
 					bestMatch = groupItems.First();
@@ -1708,7 +1555,6 @@ namespace VDF.Core {
 						otherItem.IsBestAudioBitRateKbs = true;
 					}
 				}
-				//HdrFormat
 				if (!groupItems.First().IsImage) {
 					groupItems = groupItems.OrderByDescending(d => d.HdrFormatRank);
 					bestMatch = groupItems.First();
@@ -1719,7 +1565,6 @@ namespace VDF.Core {
 						otherItem.IsBestHdrFormat = true;
 					}
 				}
-			//FrameSizeInt
 				groupItems = groupItems.OrderByDescending(d => d.FrameSizeInt);
 				bestMatch = groupItems.First();
 				bestMatch.IsBestFrameSize = true;
