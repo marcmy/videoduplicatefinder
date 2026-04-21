@@ -28,16 +28,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream and fetch branches
+      - name: Fetch origin branches
         run: |
-          git remote add upstream https://github.com/0x90d/videoduplicatefinder.git || true
-          git fetch origin
-          git fetch upstream
+          git fetch origin master
+          git fetch origin fix/native-swscale-dest-buffer-padding
 
-      - name: Merge latest upstream master
+      - name: Merge fork master into patched branch
         run: |
           git checkout fix/native-swscale-dest-buffer-padding
-          git merge --no-edit upstream/master
+          git merge --no-edit origin/master
 
       - name: Push updated branch
         run: |
