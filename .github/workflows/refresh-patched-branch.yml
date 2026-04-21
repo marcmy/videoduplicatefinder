@@ -1,0 +1,44 @@
+name: Refresh patched branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-patched-branch
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout patched branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/native-swscale-dest-buffer-padding
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch branches
+        run: |
+          git remote add upstream https://github.com/0x90d/videoduplicatefinder.git || true
+          git fetch origin
+          git fetch upstream
+
+      - name: Merge latest upstream master
+        run: |
+          git checkout fix/native-swscale-dest-buffer-padding
+          git merge --no-edit upstream/master
+
+      - name: Push updated branch
+        run: |
+          git push origin fix/native-swscale-dest-buffer-padding
