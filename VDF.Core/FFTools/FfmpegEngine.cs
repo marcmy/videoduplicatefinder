@@ -36,6 +36,9 @@ namespace VDF.Core.FFTools {
 		private static readonly SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder jpegEncoder = new();
 		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
 
+		private static void LogNativeTiming(string file, TimeSpan position, bool isGrayByte, bool hwDecode, long openMs, long decodeMs, long convertMs, long copyMs, long totalMs) {
+			Logger.Instance.Info($"Native FFmpeg timing on '{file}' @ {position}: mode={(isGrayByte ? "gray32" : "thumb")}, hw={(hwDecode ? "on" : "off")}, open={openMs}ms, decode={decodeMs}ms, convert={convertMs}ms, copy={copyMs}ms, total={totalMs}ms");
+		}
 
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
 
@@ -45,7 +48,11 @@ namespace VDF.Core.FFTools {
 
 			try {
 				if (UseNativeBinding) {
-
+					var totalSw = Stopwatch.StartNew();
+					long openMs = 0;
+					long decodeMs = 0;
+					long convertMs = 0;
+					long copyMs = 0;
 
 					AVHWDeviceType HWDevice = HardwareAccelerationMode switch {
 						FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
@@ -62,15 +69,19 @@ namespace VDF.Core.FFTools {
 						_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
 					};
 
+					var phaseSw = Stopwatch.StartNew();
 					using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
+					openMs = phaseSw.ElapsedMilliseconds;
 
 					Size sourceSize = vsd.FrameSize;
 
+					phaseSw.Restart();
 					// Decode first so we know the real source pixel format. For HW decode
 					// we can't know this up front — the downloaded sw_format depends on
 					// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
 					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
 						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+					decodeMs = phaseSw.ElapsedMilliseconds;
 
 					AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
 						? (AVPixelFormat)srcFrame.format
@@ -90,20 +101,22 @@ namespace VDF.Core.FFTools {
 						AVPixelFormat.AV_PIX_FMT_GRAY8 :
 						AVPixelFormat.AV_PIX_FMT_BGRA;
 
+					phaseSw.Restart();
 					using var vfc = new VideoFrameConverter(
 										sourceSize: sourceSize,
 										sourcePixelFormat: srcPixFmt,
 										destinationSize: destinationSize,
 										destinationPixelFormat: destinationPixelFrmt,
-										quality: VideoFrameConverter.ScaleQuality.Bicubic,
+										quality: isGrayByte ? VideoFrameConverter.ScaleQuality.FastBilinear : VideoFrameConverter.ScaleQuality.Bicubic,
 										bitExact: false);
 
 					AVFrame convertedFrame = vfc.Convert(srcFrame);
+					convertMs = phaseSw.ElapsedMilliseconds;
 
 					if (convertedFrame.data[0] == null)
 						throw new Exception("Converted frame has no data[0] (null).");
 
-
+					phaseSw.Restart();
 					if (isGrayByte) {
 						int width = convertedFrame.width; // should be 32
 						if (convertedFrame.linesize[0] < width)
@@ -113,7 +126,7 @@ namespace VDF.Core.FFTools {
 						IntPtr srcPtr = (IntPtr)convertedFrame.data[0];
 
 						if (width != N || height != N)
-							throw new Exception($"Unexpected size {width}x{height}, expected {N}x{N}.");
+							throw new Exception($"Unexpected size {width}x{height}, expected {N}.");
 
 						byte[] outBuf = new byte[width * height]; // 1024
 						fixed (byte* destPtr = outBuf) {
@@ -123,6 +136,8 @@ namespace VDF.Core.FFTools {
 								Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * width), width, width);
 							}
 						}
+						copyMs = phaseSw.ElapsedMilliseconds;
+						LogNativeTiming(settings.File, settings.Position, isGrayByte, vsd.IsHardwareDecode, openMs, decodeMs, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						return outBuf;
 					}
 					else {
@@ -150,6 +165,8 @@ namespace VDF.Core.FFTools {
 								}
 							}
 						}
+						copyMs = phaseSw.ElapsedMilliseconds;
+						LogNativeTiming(settings.File, settings.Position, isGrayByte, vsd.IsHardwareDecode, openMs, decodeMs, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						var image = Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(rgbaBytes, width, height);
 						using MemoryStream stream = new();
 						image.Save(stream, jpegEncoder);
@@ -225,12 +242,6 @@ namespace VDF.Core.FFTools {
 			foreach (var item in remainingCustomArgs)
 				psi.ArgumentList.Add(item);
 			psi.ArgumentList.Add("pipe:1"); // stdout
-
-			////https://docs.microsoft.com/en-us/dotnet/csharp/how-to/concatenate-multiple-strings#string-literals
-			//string ffmpegArguments = $" -hide_banner -loglevel {(extendedLogging ? "error" : "quiet")}" +
-			//	$" -y -hwaccel {HardwareAccelerationMode} -ss {settings.Position} -i \"{FFToolsUtils.LongPathFix(settings.File)}\"" +
-			//	$" -t 1 -f {(isGrayByte ? "rawvideo -pix_fmt gray" : "mjpeg")} -vframes 1" +
-			//	$" {(isGrayByte ? "-s 16x16" : (settings.Fullsize == 1 ? string.Empty : "-vf scale=100:-1"))} {CustomFFArguments} \"-\"";
 
 			using var process = new Process {
 				StartInfo = psi
