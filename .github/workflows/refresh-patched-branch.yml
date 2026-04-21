@@ -20,7 +20,7 @@ jobs:
       - name: Checkout patched branch
         uses: actions/checkout@v5
         with:
-          ref: fix/native-swscale-dest-buffer-padding
+          ref: build/native-swscale-dest-buffer-padding
           fetch-depth: 0
 
       - name: Configure git
@@ -31,13 +31,13 @@ jobs:
       - name: Fetch origin branches
         run: |
           git fetch origin master
-          git fetch origin fix/native-swscale-dest-buffer-padding
+          git fetch origin build/native-swscale-dest-buffer-padding
 
       - name: Merge fork master into patched branch
         run: |
-          git checkout fix/native-swscale-dest-buffer-padding
+          git checkout build/native-swscale-dest-buffer-padding
           git merge --no-edit origin/master
 
       - name: Push updated branch
         run: |
-          git push origin fix/native-swscale-dest-buffer-padding
+          git push origin build/native-swscale-dest-buffer-padding
