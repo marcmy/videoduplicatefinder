@@ -23,19 +23,24 @@ namespace VDF.Core.FFTools {
 			Logger.Instance.Info($"Native FFmpeg timing on '{file}' @ {position}: mode={(isGrayByte ? "gray32" : "thumb")}, hw={(hwDecode ? "on" : "off")}, open={openMs}ms, decode={decodeMs}ms, convert={convertMs}ms, copy={copyMs}ms, total={totalMs}ms");
 		}
 
-		static AVHWDeviceType GetConfiguredHardwareDeviceType() => HardwareAccelerationMode switch {
-			FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
-			FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
-			FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
-			FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
-			FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
-			FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-			FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
-			FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
-			FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
-			FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
-			_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
-		};
+		static AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {
+			if (!enableHardwareAcceleration)
+				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+
+			return HardwareAccelerationMode switch {
+				FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
+				FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
+				FFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,
+				FFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
+				FFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
+				FFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+				FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
+				FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
+				FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
+				FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
+				_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+			};
+		}
 
 		static unsafe byte[] ExtractGray32FromFrame(AVFrame convertedFrame) {
 			const int N = 32;
@@ -101,7 +106,7 @@ namespace VDF.Core.FFTools {
 		static unsafe bool TryGetGrayBytesFromVideoNativeBatch(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, ref int tooDarkCounter) {
 			try {
 				var openSw = Stopwatch.StartNew();
-				using var vsd = new VideoStreamDecoder(videoFile.Path, GetConfiguredHardwareDeviceType());
+				using var vsd = new VideoStreamDecoder(videoFile.Path, GetConfiguredHardwareDeviceType(enableHardwareAcceleration: false));
 				long openMs = openSw.ElapsedMilliseconds;
 				VideoFrameConverter? converter = null;
 				Size converterSourceSize = default;
@@ -132,13 +137,14 @@ namespace VDF.Core.FFTools {
 			const int N = 32;
 			const int ExpectedBytes = N * N;
 			bool isGrayByte = settings.GrayScale == 1;
+			bool enableHardwareAcceleration = !isGrayByte;
 
 			try {
 				if (UseNativeBinding) {
 					var totalSw = Stopwatch.StartNew();
 					long openMs = 0, decodeMs = 0, convertMs = 0, copyMs = 0;
 					var phaseSw = Stopwatch.StartNew();
-					using var vsd = new VideoStreamDecoder(settings.File, GetConfiguredHardwareDeviceType());
+					using var vsd = new VideoStreamDecoder(settings.File, GetConfiguredHardwareDeviceType(enableHardwareAcceleration));
 					openMs = phaseSw.ElapsedMilliseconds;
 
 					Size sourceSize = vsd.FrameSize;
@@ -218,7 +224,7 @@ namespace VDF.Core.FFTools {
 			psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add(extendedLogging ? "error" : "quiet");
 			psi.ArgumentList.Add("-nostdin");
 
-			if (HardwareAccelerationMode != FFHardwareAccelerationMode.none) {
+			if (enableHardwareAcceleration && HardwareAccelerationMode != FFHardwareAccelerationMode.none) {
 				psi.ArgumentList.Add("-hwaccel");
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
