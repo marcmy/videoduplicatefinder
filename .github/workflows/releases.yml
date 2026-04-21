@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - fix/native-swscale-dest-buffer-padding
+      - build/native-swscale-dest-buffer-padding
     
 jobs:
   cleanup:
