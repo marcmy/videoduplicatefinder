@@ -1,6 +1,10 @@
 name: Docker (Web UI)
 
-on: [push]
+on:
+  push:
+    branches:
+      - perf/native-hwaccel-from-crashfix
+  workflow_dispatch:
 
 jobs:
   build-and-push:
