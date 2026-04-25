@@ -40,6 +40,12 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			return error;
 		}
 
+		public static int ThrowExceptionIfError(this int error, string operation) {
+			if (error < 0)
+				throw new FFInvalidExitCodeException($"{operation} failed: {Av_strerror(error) ?? "Unknown error"}");
+			return error;
+		}
+
 		private static bool FindFFmpegLibraryFiles() {
 			try {
 
@@ -132,6 +138,13 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				ffmpegLibraryFound = FindFFmpegLibraryFiles();
 				return ffmpegLibraryFound;
 			}
+		}
+
+		internal static void AddOptionalFilterLibraryVersionMapEntries() {
+			// FFmpeg.AutoGen 8's avfilter resolver can request postproc as a dependency
+			// even though it is not included in the default LibraryVersionMap.
+			if (!ffmpeg.LibraryVersionMap.ContainsKey("postproc"))
+				ffmpeg.LibraryVersionMap["postproc"] = 59;
 		}
 
 		static bool CheckForFfmpegLibraryFilesInFolder(string path) {
