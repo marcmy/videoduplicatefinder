@@ -73,9 +73,37 @@ jobs:
           dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputWeb"
           # Pack files
           if [ "${{ matrix.target }}" == "win-x64" ]; then
+            bundleDir="Bundle-${{ matrix.target }}"
+            mkdir -p "$bundleDir"
+            cp -a outputGUI/. "$bundleDir/"
+            copy_unique() {
+              src="$1"
+              while IFS= read -r -d '' file; do
+                rel="${file#$src/}"
+                dest="$bundleDir/$rel"
+                mkdir -p "$(dirname "$dest")"
+                if [ -e "$dest" ]; then
+                  if ! cmp -s "$file" "$dest"; then
+                    echo "Bundle conflict: '$rel' differs between publish outputs." >&2
+                    exit 1
+                  fi
+                else
+                  cp -a "$file" "$dest"
+                fi
+              done < <(find "$src" -type f -print0)
+            }
+            copy_unique outputCLI
+            copy_unique outputWeb
+            for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
+              if [ ! -f "$bundleDir/$exe" ]; then
+                echo "Bundle is missing required executable: $exe" >&2
+                exit 1
+              fi
+            done
             7z a -tzip "GUI-${{ matrix.target }}.zip" "./outputGUI/*"
             7z a -tzip "CLI-${{ matrix.target }}.zip" "./outputCLI/*"
             7z a -tzip "Web-${{ matrix.target }}.zip" "./outputWeb/*"
+            7z a -tzip "Bundle-${{ matrix.target }}.zip" "./$bundleDir"
           elif [[ "${{ matrix.target }}" == osx-* ]]; then
             # Wrap the GUI in a proper macOS .app bundle
             mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
@@ -95,7 +123,7 @@ jobs:
             tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
           fi
           # Clean up
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "Video Duplicate Finder.app"
+          rm -rf "outputGUI" "outputCLI" "outputWeb" "Bundle-${{ matrix.target }}" "Video Duplicate Finder.app"
           
     - name: Publish
       uses: softprops/action-gh-release@v2
@@ -105,6 +133,7 @@ jobs:
             GUI-*
             CLI-*
             Web-*
+            Bundle-*
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
             Last build based on ${{ steps.vars.outputs.sha_short }}
