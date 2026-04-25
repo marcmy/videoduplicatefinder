@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - build/native-swscale-dest-buffer-padding
+      - perf/native-hwaccel-from-crashfix
     
 jobs:
   cleanup:
