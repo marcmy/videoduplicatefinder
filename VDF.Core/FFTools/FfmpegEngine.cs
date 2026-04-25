@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using FFmpeg.AutoGen;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
@@ -24,6 +25,7 @@ namespace VDF.Core.FFTools {
 		static bool d3d11GrayByteGpuScaleDisabled;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
+		static readonly SemaphoreSlim NativeD3D11GrayByteGate = new(1, 1);
 		public static FFHardwareAccelerationMode HardwareAccelerationMode;
 		public static string CustomFFArguments = string.Empty;
 		public static bool UseNativeBinding;
@@ -584,7 +586,7 @@ namespace VDF.Core.FFTools {
 			results.Add(CreateGrayByteResult(request, data));
 		}
 
-		static unsafe bool TryGetGrayBytesFromVideoNativeBatch(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, List<GrayByteResult> results, bool allowD3D11GpuScale = true, bool forceCpuDecode = false, string? forcedCpuPolicy = null) {
+		static unsafe bool TryGetGrayBytesFromVideoNativeBatch(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, List<GrayByteResult> results, bool allowD3D11GpuScale = true, bool forceCpuDecode = false, string? forcedCpuPolicy = null, bool d3d11GateHeld = false) {
 			int requestedSamples = 0;
 			string hardwarePolicy = "unresolved";
 			try {
@@ -605,6 +607,16 @@ namespace VDF.Core.FFTools {
 					if (hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA && ShouldBypassD3D11GrayByteForFamily(videoFile, out _)) {
 						hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 						hardwarePolicy = "d3d11-adaptive-cpu-family-bypass";
+					}
+				}
+				if (hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA && !d3d11GateHeld) {
+					Logger.Instance.Info($"Native FFmpeg D3D11 graybyte extraction waiting for process-local D3D11 gate on '{videoFile.Path}'. hwPolicy={hardwarePolicy}");
+					NativeD3D11GrayByteGate.Wait();
+					try {
+						return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale, forceCpuDecode, forcedCpuPolicy, d3d11GateHeld: true);
+					}
+					finally {
+						NativeD3D11GrayByteGate.Release();
 					}
 				}
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
@@ -675,7 +687,7 @@ namespace VDF.Core.FFTools {
 						List<GrayByteResult> d3d11Results = new(results);
 						results.Clear();
 						var cpuProbeSw = Stopwatch.StartNew();
-						bool cpuProbeSucceeded = TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "d3d11-adaptive-cpu-probe");
+						bool cpuProbeSucceeded = TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "d3d11-adaptive-cpu-probe", d3d11GateHeld: d3d11GateHeld);
 						long cpuTotalMs = cpuProbeSw.ElapsedMilliseconds;
 						if (cpuProbeSucceeded && cpuTotalMs < d3d11TotalMs) {
 							CompleteD3D11GrayByteCpuProbe(videoFile, probeFamilyKey, d3d11TotalMs, cpuTotalMs);
@@ -693,13 +705,13 @@ namespace VDF.Core.FFTools {
 				if (e is D3D11SoftwareFrameFallbackException && !forceCpuDecode) {
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction detected software frames under D3D11 on '{videoFile.Path}', retrying native batch with CPU decode. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
-					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
+					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, d3d11GateHeld: d3d11GateHeld);
 				}
 				if (allowD3D11GpuScale && IsD3D11GrayByteGpuScaleFailure(e)) {
 					DisableD3D11GrayByteGpuScale(e.Message);
 					Logger.Instance.Info($"Native FFmpeg D3D11 GPU-scale graybyte extraction failed on '{videoFile.Path}', retrying native batch with full-frame hardware transfer. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 360)}");
 					results.Clear();
-					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, false);
+					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, false, d3d11GateHeld: d3d11GateHeld);
 				}
 				Logger.Instance.Info($"Native FFmpeg batched graybyte extraction failed on '{videoFile.Path}', falling back to per-sample path for missing samples. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {e.Message}");
 				return false;
