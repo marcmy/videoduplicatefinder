@@ -890,16 +890,26 @@ namespace VDF.Core.FFTools {
 			}
 			return bytes;
 		}
-
-		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging) {
+		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, Action<int>? onSampleComplete = null) {
 			List<GrayByteRequest> requests = GetMissingGrayByteRequests(videoFile, positions, maxSamplingDurationSeconds);
 			int missingPositions = requests.Count;
+			int completedSamples = 0;
+			void ReportCompletedSample() => onSampleComplete?.Invoke(++completedSamples);
+
+			for (int i = 0; i < positions.Count; i++) {
+				double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
+				if (videoFile.grayBytes.ContainsKey(position))
+					ReportCompletedSample();
+			}
+
 			if (missingPositions == 0) return true;
 
 			int tooDarkCounter = 0;
 			List<GrayByteResult> stagedResults = new(missingPositions);
 			if (UseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults)) {
 				CommitGrayByteResults(videoFile, stagedResults, ref tooDarkCounter);
+				foreach (GrayByteResult _ in stagedResults)
+					ReportCompletedSample();
 				if (tooDarkCounter == missingPositions) {
 					videoFile.Flags.Set(EntryFlags.TooDark);
 					Logger.Instance.Info($"ERROR: Graybytes too dark of: {videoFile.Path}");
@@ -910,6 +920,7 @@ namespace VDF.Core.FFTools {
 
 			tooDarkCounter = 0;
 			HashSet<double> stagedIndexes = stagedResults.Select(result => result.Index).ToHashSet();
+			int reportedStagedResults = 0;
 			foreach (GrayByteRequest request in requests) {
 				if (stagedIndexes.Contains(request.Index)) continue;
 
@@ -925,6 +936,8 @@ namespace VDF.Core.FFTools {
 				}
 				stagedResults.Add(CreateGrayByteResult(request, data));
 				stagedIndexes.Add(request.Index);
+				reportedStagedResults++;
+				ReportCompletedSample();
 			}
 			if (stagedResults.Count != missingPositions) {
 				videoFile.Flags.Set(EntryFlags.ThumbnailError);
@@ -932,6 +945,8 @@ namespace VDF.Core.FFTools {
 			}
 
 			CommitGrayByteResults(videoFile, stagedResults, ref tooDarkCounter);
+			for (int i = reportedStagedResults; i < stagedResults.Count; i++)
+				ReportCompletedSample();
 			if (tooDarkCounter == missingPositions) {
 				videoFile.Flags.Set(EntryFlags.TooDark);
 				Logger.Instance.Info($"ERROR: Graybytes too dark of: {videoFile.Path}");
