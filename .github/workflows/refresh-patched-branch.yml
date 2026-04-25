@@ -1,0 +1,43 @@
+name: Refresh perf branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-perf-branch
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout perf branch
+        uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch origin branches
+        run: |
+          git fetch origin master
+          git fetch origin perf/native-hwaccel-from-crashfix
+
+      - name: Merge fork master into perf branch
+        run: |
+          git checkout perf/native-hwaccel-from-crashfix
+          git merge --no-edit origin/master
+
+      - name: Push updated branch
+        run: |
+          git push origin perf/native-hwaccel-from-crashfix
