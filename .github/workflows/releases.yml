@@ -2,6 +2,11 @@ name: Build releases
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Refresh perf branch
+    types:
+      - completed
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
@@ -12,9 +17,12 @@ concurrency:
     
 jobs:
   cleanup:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
       - name: Delete old release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -56,6 +64,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
+      with:
+        ref: perf/native-hwaccel-from-crashfix
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
