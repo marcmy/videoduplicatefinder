@@ -1,4 +1,4 @@
-name: Refresh patched branch
+name: Refresh perf branch
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: refresh-patched-branch
+  group: refresh-perf-branch
   cancel-in-progress: false
 
 jobs:
@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout patched branch
+      - name: Checkout perf branch
         uses: actions/checkout@v5
         with:
-          ref: build/native-swscale-dest-buffer-padding
+          ref: perf/native-hwaccel-from-crashfix
           fetch-depth: 0
 
       - name: Configure git
@@ -31,13 +31,13 @@ jobs:
       - name: Fetch origin branches
         run: |
           git fetch origin master
-          git fetch origin build/native-swscale-dest-buffer-padding
+          git fetch origin perf/native-hwaccel-from-crashfix
 
-      - name: Merge fork master into patched branch
+      - name: Merge fork master into perf branch
         run: |
-          git checkout build/native-swscale-dest-buffer-padding
+          git checkout perf/native-hwaccel-from-crashfix
           git merge --no-edit origin/master
 
       - name: Push updated branch
         run: |
-          git push origin build/native-swscale-dest-buffer-padding
+          git push origin perf/native-hwaccel-from-crashfix
