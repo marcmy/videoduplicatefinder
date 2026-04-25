@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
+
+concurrency:
+  group: build-releases
+  cancel-in-progress: true
     
 jobs:
   cleanup:
