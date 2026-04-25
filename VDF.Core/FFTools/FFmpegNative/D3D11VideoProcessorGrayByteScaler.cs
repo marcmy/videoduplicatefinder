@@ -28,6 +28,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 	sealed unsafe class D3D11VideoProcessorGrayByteScaler : IDisposable {
 		const int GraySize = 32;
 		const int PendingDownloadSlots = 3;
+		static readonly object D3D11ContextLock = new();
 		VorticeID3D11Device? _device;
 		VorticeID3D11DeviceContext? _deviceContext;
 		VorticeID3D11VideoDevice? _videoDevice;
@@ -86,48 +87,52 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			if (sourceFrame.data[0] == null)
 				throw new FFInvalidExitCodeException("D3D11 video processor graybyte scaler requires frame data[0] texture.");
 
-			using VorticeID3D11Texture2D sourceTexture = AddRefTexture((nint)sourceFrame.data[0]);
-			Texture2DDescription sourceDescription = sourceTexture.Description;
-			Format format = sourceDescription.Format;
-			if (!IsSupportedFormat(format))
-				throw new FFInvalidExitCodeException($"D3D11 video processor graybyte scaler does not support source texture format {format}.");
+			lock (D3D11ContextLock) {
+				using VorticeID3D11Texture2D sourceTexture = AddRefTexture((nint)sourceFrame.data[0]);
+				Texture2DDescription sourceDescription = sourceTexture.Description;
+				Format format = sourceDescription.Format;
+				if (!IsSupportedFormat(format))
+					throw new FFInvalidExitCodeException($"D3D11 video processor graybyte scaler does not support source texture format {format}.");
 
-			using VorticeID3D11Device sourceDevice = sourceTexture.Device;
-			Signature signature = new(sourceDevice.NativePointer, (int)sourceDescription.Width, (int)sourceDescription.Height, format);
-			if (_processor == null || !_signature.Equals(signature))
-				BuildPipeline(sourceDevice, signature);
+				using VorticeID3D11Device sourceDevice = sourceTexture.Device;
+				Signature signature = new(sourceDevice.NativePointer, (int)sourceDescription.Width, (int)sourceDescription.Height, format);
+				if (_processor == null || !_signature.Equals(signature))
+					BuildPipeline(sourceDevice, signature);
 
-			if (_videoContext == null || _processor == null || _outputView == null || _stagingTextures == null)
-				throw new FFInvalidExitCodeException("D3D11 video processor graybyte scaler was not initialized.");
+				if (_videoContext == null || _processor == null || _outputView == null || _stagingTextures == null)
+					throw new FFInvalidExitCodeException("D3D11 video processor graybyte scaler was not initialized.");
 
-			VorticeID3D11Texture2D stagingTexture = _stagingTextures[_nextStagingTextureIndex];
-			_nextStagingTextureIndex = (_nextStagingTextureIndex + 1) % _stagingTextures.Length;
+				VorticeID3D11Texture2D stagingTexture = _stagingTextures[_nextStagingTextureIndex];
+				_nextStagingTextureIndex = (_nextStagingTextureIndex + 1) % _stagingTextures.Length;
 
-			uint sourceArraySlice = GetTextureArraySlice(sourceFrame);
-			using ID3D11VideoProcessorInputView inputView = CreateInputView(sourceTexture, sourceArraySlice);
+				uint sourceArraySlice = GetTextureArraySlice(sourceFrame);
+				using ID3D11VideoProcessorInputView inputView = CreateInputView(sourceTexture, sourceArraySlice);
 
-			var phaseSw = Stopwatch.StartNew();
-			var sourceRect = new Vortice.RawRect(0, 0, signature.Width, signature.Height);
-			var destinationRect = new Vortice.RawRect(0, 0, GraySize, GraySize);
-			_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
-			_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destinationRect);
-			_videoContext.VideoProcessorSetStreamAutoProcessingMode(_processor, 0, false);
-			_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, destinationRect);
-			var stream = new VideoProcessorStream {
-				Enable = true,
-				OutputIndex = 0,
-				InputFrameOrField = 0,
-				InputSurface = inputView
-			};
-			_videoContext.VideoProcessorBlt(_processor, _outputView, 0, 1, new[] { stream }).CheckError();
-			_deviceContext!.CopyResource(stagingTexture, _outputTexture);
-			return new PendingDownload(stagingTexture, format, phaseSw.ElapsedMilliseconds);
+				var phaseSw = Stopwatch.StartNew();
+				var sourceRect = new Vortice.RawRect(0, 0, signature.Width, signature.Height);
+				var destinationRect = new Vortice.RawRect(0, 0, GraySize, GraySize);
+				_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
+				_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destinationRect);
+				_videoContext.VideoProcessorSetStreamAutoProcessingMode(_processor, 0, false);
+				_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, destinationRect);
+				var stream = new VideoProcessorStream {
+					Enable = true,
+					OutputIndex = 0,
+					InputFrameOrField = 0,
+					InputSurface = inputView
+				};
+				_videoContext.VideoProcessorBlt(_processor, _outputView, 0, 1, new[] { stream }).CheckError();
+				_deviceContext!.CopyResource(stagingTexture, _outputTexture);
+				return new PendingDownload(stagingTexture, format, phaseSw.ElapsedMilliseconds);
+			}
 		}
 
 		internal byte[] DownloadGray32(PendingDownload pending, out D3D11GrayByteScaleTiming timing) {
-			byte[] data = CopyLumaPlaneToGray(pending.StagingTexture, pending.Format, out long mapMs, out long copyMs);
-			timing = new D3D11GrayByteScaleTiming(pending.FilterMs, 0, mapMs, copyMs, 1);
-			return data;
+			lock (D3D11ContextLock) {
+				byte[] data = CopyLumaPlaneToGray(pending.StagingTexture, pending.Format, out long mapMs, out long copyMs);
+				timing = new D3D11GrayByteScaleTiming(pending.FilterMs, 0, mapMs, copyMs, 1);
+				return data;
+			}
 		}
 
 		void BuildPipeline(VorticeID3D11Device sourceDevice, Signature signature) {
@@ -185,12 +190,14 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				phaseSw.Restart();
 				byte[] output = new byte[GraySize * GraySize];
 				if (format == Format.NV12) {
+					ValidateMappedTexture(mapped.DataPointer, mapped.RowPitch, GraySize, format);
 					for (int y = 0; y < GraySize; y++) {
 						IntPtr row = IntPtr.Add(mapped.DataPointer, y * (int)mapped.RowPitch);
 						System.Runtime.InteropServices.Marshal.Copy(row, output, y * GraySize, GraySize);
 					}
 				}
 				else {
+					ValidateMappedTexture(mapped.DataPointer, mapped.RowPitch, GraySize * 2, format);
 					for (int y = 0; y < GraySize; y++) {
 						byte* row = (byte*)mapped.DataPointer + (y * mapped.RowPitch);
 						for (int x = 0; x < GraySize; x++)
@@ -203,6 +210,13 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			finally {
 				_deviceContext.Unmap(stagingTexture, 0);
 			}
+		}
+
+		static void ValidateMappedTexture(IntPtr dataPointer, uint rowPitch, int minimumRowPitch, Format format) {
+			if (dataPointer == IntPtr.Zero)
+				throw new FFInvalidExitCodeException($"D3D11 video processor graybyte scaler mapped {format} staging texture with a null data pointer.");
+			if (rowPitch < minimumRowPitch)
+				throw new FFInvalidExitCodeException($"D3D11 video processor graybyte scaler mapped {format} staging texture with row pitch {rowPitch}, expected at least {minimumRowPitch}.");
 		}
 
 		static bool IsSupportedFormat(Format format) => format == Format.NV12 || format == Format.P010;
@@ -222,29 +236,31 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		void ReleasePipeline() {
-			_outputView?.Dispose();
-			if (_stagingTextures != null) {
-				foreach (VorticeID3D11Texture2D stagingTexture in _stagingTextures)
-					stagingTexture.Dispose();
+			lock (D3D11ContextLock) {
+				_outputView?.Dispose();
+				if (_stagingTextures != null) {
+					foreach (VorticeID3D11Texture2D stagingTexture in _stagingTextures)
+						stagingTexture.Dispose();
+				}
+				_outputTexture?.Dispose();
+				_processor?.Dispose();
+				_enumerator?.Dispose();
+				_videoContext?.Dispose();
+				_videoDevice?.Dispose();
+				_deviceContext?.Dispose();
+				_device?.Dispose();
+				_outputView = null;
+				_stagingTextures = null;
+				_outputTexture = null;
+				_processor = null;
+				_enumerator = null;
+				_videoContext = null;
+				_videoDevice = null;
+				_deviceContext = null;
+				_device = null;
+				_signature = default;
+				_nextStagingTextureIndex = 0;
 			}
-			_outputTexture?.Dispose();
-			_processor?.Dispose();
-			_enumerator?.Dispose();
-			_videoContext?.Dispose();
-			_videoDevice?.Dispose();
-			_deviceContext?.Dispose();
-			_device?.Dispose();
-			_outputView = null;
-			_stagingTextures = null;
-			_outputTexture = null;
-			_processor = null;
-			_enumerator = null;
-			_videoContext = null;
-			_videoDevice = null;
-			_deviceContext = null;
-			_device = null;
-			_signature = default;
-			_nextStagingTextureIndex = 0;
 		}
 
 		public void Dispose() => ReleasePipeline();

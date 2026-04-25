@@ -150,7 +150,7 @@ namespace VDF.Core.FFTools {
 				d3d11GrayByteGpuScaleDisabled = true;
 			}
 
-			Logger.Instance.Info($"D3D11 GPU-scale graybyte path disabled for this process after FFmpeg rejected the scale graph. Native graybytes will retry with hardware decode plus full-frame transfer. Reason: {normalizedReason}");
+			Logger.Instance.Info($"D3D11 GPU-scale graybyte path disabled for this process after the GPU-scale path failed. Native graybytes will retry with hardware decode plus full-frame transfer. Reason: {normalizedReason}");
 		}
 
 		static string NormalizeLogReason(string reason, int maxLength) {
@@ -690,8 +690,7 @@ namespace VDF.Core.FFTools {
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
 				}
 				if (allowD3D11GpuScale && IsD3D11GrayByteGpuScaleFailure(e)) {
-					if (IsD3D11GrayByteGpuScaleGraphFailure(e))
-						DisableD3D11GrayByteGpuScale(e.Message);
+					DisableD3D11GrayByteGpuScale(e.Message);
 					Logger.Instance.Info($"Native FFmpeg D3D11 GPU-scale graybyte extraction failed on '{videoFile.Path}', retrying native batch with full-frame hardware transfer. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 360)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, false);
