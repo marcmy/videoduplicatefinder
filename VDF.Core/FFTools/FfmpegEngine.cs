@@ -15,6 +15,7 @@ namespace VDF.Core.FFTools {
 		const int TimeoutDuration = 15_000;
 		const string ForceNativeGrayByteCpuEnvVar = "VDF_FORCE_NATIVE_GRAYBYTE_CPU";
 		const string DisableNativeGrayByteGpuScaleEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE";
+		const string EnableNativeGrayByteD3D11TinyDownloadEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_TINY_DOWNLOAD";
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
 		const string D3D11GrayByteGpuScaleDisabledPolicy = "requested-gpu-scale-disabled-after-failure";
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
@@ -307,6 +308,11 @@ namespace VDF.Core.FFTools {
 			unavailableReason = string.Empty;
 			if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
 				return false;
+
+			if (!IsEnvFlagEnabled(EnableNativeGrayByteD3D11TinyDownloadEnvVar)) {
+				hardwarePolicy = $"d3d11-video-processor-gray32-disabled-unless-{EnableNativeGrayByteD3D11TinyDownloadEnvVar}";
+				return false;
+			}
 
 			if (IsEnvFlagEnabled(DisableNativeGrayByteGpuScaleEnvVar)) {
 				hardwarePolicy = $"requested-gpu-scale-disabled-by-{DisableNativeGrayByteGpuScaleEnvVar}";
