@@ -25,16 +25,22 @@ sealed class FfmpegStaticStateGuard : IDisposable {
 	readonly bool _useNativeBinding;
 	readonly FFHardwareAccelerationMode _hwMode;
 	readonly string _customArgs;
+	readonly string? _forceNativeGrayByteCpu;
+	readonly string? _disableNativeGrayByteGpuScale;
 
 	public FfmpegStaticStateGuard() {
 		_useNativeBinding = FfmpegEngine.UseNativeBinding;
 		_hwMode = FfmpegEngine.HardwareAccelerationMode;
 		_customArgs = FfmpegEngine.CustomFFArguments;
+		_forceNativeGrayByteCpu = Environment.GetEnvironmentVariable("VDF_FORCE_NATIVE_GRAYBYTE_CPU");
+		_disableNativeGrayByteGpuScale = Environment.GetEnvironmentVariable("VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE");
 	}
 
 	public void Dispose() {
 		FfmpegEngine.UseNativeBinding = _useNativeBinding;
 		FfmpegEngine.HardwareAccelerationMode = _hwMode;
 		FfmpegEngine.CustomFFArguments = _customArgs;
+		Environment.SetEnvironmentVariable("VDF_FORCE_NATIVE_GRAYBYTE_CPU", _forceNativeGrayByteCpu);
+		Environment.SetEnvironmentVariable("VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE", _disableNativeGrayByteGpuScale);
 	}
 }
