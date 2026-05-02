@@ -19,8 +19,11 @@ namespace VDF.Core {
 	public enum FolderMatchMode { None, SameFolderOnly, DifferentFolderOnly }
 
 	public sealed class Settings {
-		public HashSet<string> IncludeList { get; } = new HashSet<string>();
-		public HashSet<string> BlackList { get; } = new HashSet<string>();
+		// Settable so System.Text.Json can populate these from --settings JSON; without
+		// a setter STJ silently leaves them empty even with IncludeFields=true (read-only
+		// collection properties aren't repopulated by the default object converter).
+		public HashSet<string> IncludeList { get; set; } = new HashSet<string>();
+		public HashSet<string> BlackList { get; set; } = new HashSet<string>();
 
 		public bool IgnoreReadOnlyFolders;
 		public bool IgnoreReparsePoints;
@@ -88,5 +91,26 @@ namespace VDF.Core {
 		/// 0 = disabled (only save at phase boundaries). Default 5.
 		/// </summary>
 		public int DatabaseCheckpointIntervalMinutes = 5;
+
+		/// <summary>
+		/// Returns the allowed duration tolerance in seconds for a video of the given duration,
+		/// based on <see cref="PercentDurationDifference"/>, <see cref="DurationDifferenceMinSeconds"/>,
+		/// and <see cref="DurationDifferenceMaxSeconds"/>. When the percent rule is disabled (0%),
+		/// the seconds bounds act as a flat tolerance so users can run a seconds-only comparison.
+		/// </summary>
+		internal double GetDurationToleranceSeconds(double durationSeconds) {
+			if (PercentDurationDifference > 0) {
+				double toleranceSeconds = durationSeconds * PercentDurationDifference / 100d;
+				if (DurationDifferenceMinSeconds > 0)
+					toleranceSeconds = Math.Max(toleranceSeconds, DurationDifferenceMinSeconds);
+				if (DurationDifferenceMaxSeconds > 0)
+					toleranceSeconds = Math.Min(toleranceSeconds, DurationDifferenceMaxSeconds);
+				return Math.Max(0d, toleranceSeconds);
+			}
+			// Percent rule disabled: tolerance comes solely from the seconds bounds. Without a
+			// percent term, Max would otherwise pin the tolerance to 0; instead take the largest
+			// enabled bound so a seconds-only setup behaves like a flat tolerance.
+			return Math.Max(0d, Math.Max(DurationDifferenceMinSeconds, DurationDifferenceMaxSeconds));
+		}
 	}
 }
