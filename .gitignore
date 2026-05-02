@@ -265,3 +265,10 @@ __pycache__/
 # BenchmarkDotNet output (HTML/CSV/MD/JSON reports + intermediate build dirs)
 BenchmarkDotNet.Artifacts/
 BenchmarkLogs/
+
+# private/local logs
+_big_logs/
+*.log
+log-hard.txt
+log-soft.txt
+log.txt
