@@ -301,7 +301,7 @@
 	"Message.CopyFailed": "Kopieren einiger Dateien fehlgeschlagen. Bitte Log prüfen!",
 	"Message.CustomDatabaseFolderMissing": "Der benutzerdefinierte Datenbankordner existiert nicht!",
 	"Message.DatabaseCleaned": "Datenbank bereinigt!",
-	"Message.DeleteFromDiskPrompt": "Dateien auch von der FESTPLATTE löschen?",
+	"Message.DeleteFromDiskPrompt": "Was soll mit den markierten Dateien geschehen?\n\nJa — Dateien von der Festplatte löschen (in den Papierkorb verschieben)\nNein — nur aus der Liste entfernen (Dateien behalten)\nAbbrechen — nichts tun",
 	"Message.DiscardResultsPrompt": "Möchten Sie die Ergebnisse verwerfen und einen neuen Scan starten?",
 	"Message.Done": "Fertig!",
 	"Message.ExportDatabaseFailed": "Export der Datenbank fehlgeschlagen, siehe Log",
@@ -460,6 +460,10 @@
 	"MainWindow.Settings.PartialClipMinRatioTooltip": "Mindestdauer des Clips als Prozentsatz der Quelldauer.",
 	"MainWindow.Settings.PartialClipSimilarityThreshold": "Min. Audio-Ähnlichkeit (%):",
 	"MainWindow.Settings.PartialClipSimilarityThresholdTooltip": "Minimale durchschnittliche Hamming-Ähnlichkeit für den Audio-Fingerprint-Vergleich.",
+	"MainWindow.Settings.PartialClipRequireVisualMatch": "Visuellen Abgleich verlangen",
+	"MainWindow.Settings.PartialClipRequireVisualMatchTooltip": "Bestätigt Teilclip-Treffer zusätzlich durch Vergleich von Videoframes am gefundenen Offset. Filtert Fehltreffer durch geteilte Audiospuren (z. B. TikToks mit demselben Song). Verwendet pHash, wenn 'Perzeptive Hashes verwenden' aktiviert ist, sonst 32x32-Graustufenvergleich.",
+	"MainWindow.Settings.PartialClipVisualThreshold": "Min. visuelle Ähnlichkeit (%):",
+	"MainWindow.Settings.PartialClipVisualThresholdTooltip": "Minimale visuelle Ähnlichkeit am gefundenen Offset, damit ein Teilclip-Paar akzeptiert wird.",
 	"Dialog.CopySelected": "Auswahl kopieren",
 	"DuplicateList.HoverDiff.Best": "BESTE"
 }

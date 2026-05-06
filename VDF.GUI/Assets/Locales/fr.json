@@ -301,7 +301,7 @@
 	"Message.CopyFailed": "Échec de copie de certains fichiers. Veuillez vérifier le journal !",
 	"Message.CustomDatabaseFolderMissing": "Le dossier de base de données personnalisé n'existe pas !",
 	"Message.DatabaseCleaned": "Base de données nettoyée !",
-	"Message.DeleteFromDiskPrompt": "Supprimer les fichiers du DISQUE également ?",
+	"Message.DeleteFromDiskPrompt": "Que faire des fichiers cochés ?\n\nOui — supprimer les fichiers du disque (envoyer à la corbeille)\nNon — retirer uniquement de la liste (conserver les fichiers sur le disque)\nAnnuler — ne rien faire",
 	"Message.DiscardResultsPrompt": "Voulez-vous jeter les résultats et lancer une nouvelle analyse ?",
 	"Message.Done": "Terminé !",
 	"Message.ExportDatabaseFailed": "L'export de la base de données a échoué, veuillez consulter le journal",
@@ -460,6 +460,10 @@
 	"MainWindow.Settings.PartialClipMinRatioTooltip": "Durée minimale du clip en pourcentage de la durée de la source.",
 	"MainWindow.Settings.PartialClipSimilarityThreshold": "Similarité audio min. (%):",
 	"MainWindow.Settings.PartialClipSimilarityThresholdTooltip": "Similarité de Hamming minimale pour la comparaison d'empreintes audio.",
+	"MainWindow.Settings.PartialClipRequireVisualMatch": "Exiger une correspondance visuelle",
+	"MainWindow.Settings.PartialClipRequireVisualMatchTooltip": "Confirme les correspondances de clips partiels en vérifiant aussi les images vidéo au décalage détecté. Filtre les faux positifs entre vidéos qui partagent une piste audio mais diffèrent visuellement (p. ex. TikToks réutilisant le même son). Utilise pHash si 'Utiliser le hachage perceptuel' est activé, sinon une différence de gris 32x32.",
+	"MainWindow.Settings.PartialClipVisualThreshold": "Similarité visuelle min. (%):",
+	"MainWindow.Settings.PartialClipVisualThresholdTooltip": "Similarité visuelle minimale au décalage détecté pour conserver une paire de clips partiels.",
 	"Dialog.CopySelected": "Copier la sélection",
 	"DuplicateList.HoverDiff.Best": "MEILLEUR"
 }
