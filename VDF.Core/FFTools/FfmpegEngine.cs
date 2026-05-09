@@ -18,6 +18,7 @@ namespace VDF.Core.FFTools {
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
 		const string EnableNativeGrayByteD3D11CpuProbeEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_CPU_PROBE";
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
+		const int D3D11GrayByteHardwareBypassMinimumFailures = 3;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
@@ -62,6 +63,7 @@ namespace VDF.Core.FFTools {
 			public bool CpuProbePending;
 			public bool CpuProbeCompleted;
 			public bool Bypass;
+			public int HardwareFailureObservations;
 		}
 
 		sealed class D3D11SoftwareFrameFallbackException : Exception {
@@ -187,10 +189,16 @@ namespace VDF.Core.FFTools {
 				}
 				if (stats.Bypass)
 					return;
+				stats.HardwareFailureObservations++;
+				string normalizedReason = NormalizeLogReason(reason, 240);
+				if (stats.HardwareFailureObservations < D3D11GrayByteHardwareBypassMinimumFailures) {
+					Logger.Instance.Info($"FFmpeg graybyte hardware decode fallback observed for family '{familyKey}' ({stats.HardwareFailureObservations}/{D3D11GrayByteHardwareBypassMinimumFailures}); keeping hardware enabled for this family until repeated failures. Reason: {normalizedReason}");
+					return;
+				}
 				stats.Bypass = true;
 				stats.CpuProbePending = false;
 				stats.CpuProbeCompleted = true;
-				Logger.Instance.Info($"FFmpeg graybyte hardware decode fallback will use CPU decode for family '{familyKey}' after a hardware decode failure: {NormalizeLogReason(reason, 240)}");
+				Logger.Instance.Info($"FFmpeg graybyte hardware decode fallback will use CPU decode for family '{familyKey}' after {stats.HardwareFailureObservations} hardware decode failure(s): {normalizedReason}");
 			}
 		}
 
