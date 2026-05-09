@@ -28,6 +28,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 	sealed unsafe class D3D11VideoProcessorGrayByteScaler : IDisposable {
 		const int GraySize = 32;
 		const int PendingDownloadSlots = 3;
+		static readonly object D3D11ContextLock = new();
 		VorticeID3D11Device? _device;
 		VorticeID3D11DeviceContext? _deviceContext;
 		VorticeID3D11VideoDevice? _videoDevice;
@@ -107,20 +108,22 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			using ID3D11VideoProcessorInputView inputView = CreateInputView(sourceTexture, sourceArraySlice);
 
 			var phaseSw = Stopwatch.StartNew();
-			var sourceRect = new Vortice.RawRect(0, 0, signature.Width, signature.Height);
-			var destinationRect = new Vortice.RawRect(0, 0, GraySize, GraySize);
-			_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
-			_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destinationRect);
-			_videoContext.VideoProcessorSetStreamAutoProcessingMode(_processor, 0, false);
-			_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, destinationRect);
-			var stream = new VideoProcessorStream {
-				Enable = true,
-				OutputIndex = 0,
-				InputFrameOrField = 0,
-				InputSurface = inputView
-			};
-			_videoContext.VideoProcessorBlt(_processor, _outputView, 0, 1, new[] { stream }).CheckError();
-			_deviceContext!.CopyResource(stagingTexture, _outputTexture);
+			lock (D3D11ContextLock) {
+				var sourceRect = new Vortice.RawRect(0, 0, signature.Width, signature.Height);
+				var destinationRect = new Vortice.RawRect(0, 0, GraySize, GraySize);
+				_videoContext.VideoProcessorSetStreamSourceRect(_processor, 0, true, sourceRect);
+				_videoContext.VideoProcessorSetStreamDestRect(_processor, 0, true, destinationRect);
+				_videoContext.VideoProcessorSetStreamAutoProcessingMode(_processor, 0, false);
+				_videoContext.VideoProcessorSetOutputTargetRect(_processor, true, destinationRect);
+				var stream = new VideoProcessorStream {
+					Enable = true,
+					OutputIndex = 0,
+					InputFrameOrField = 0,
+					InputSurface = inputView
+				};
+				_videoContext.VideoProcessorBlt(_processor, _outputView, 0, 1, new[] { stream }).CheckError();
+				_deviceContext!.CopyResource(stagingTexture, _outputTexture);
+			}
 			return new PendingDownload(stagingTexture, format, phaseSw.ElapsedMilliseconds);
 		}
 
@@ -178,30 +181,39 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		byte[] CopyLumaPlaneToGray(VorticeID3D11Texture2D stagingTexture, Format format, out long mapMs, out long copyMs) {
-			var phaseSw = Stopwatch.StartNew();
-			var mapped = _deviceContext!.Map(stagingTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
-			mapMs = phaseSw.ElapsedMilliseconds;
-			try {
-				phaseSw.Restart();
-				byte[] output = new byte[GraySize * GraySize];
-				if (format == Format.NV12) {
-					for (int y = 0; y < GraySize; y++) {
-						IntPtr row = IntPtr.Add(mapped.DataPointer, y * (int)mapped.RowPitch);
-						System.Runtime.InteropServices.Marshal.Copy(row, output, y * GraySize, GraySize);
+			lock (D3D11ContextLock) {
+				var phaseSw = Stopwatch.StartNew();
+				var mapped = _deviceContext!.Map(stagingTexture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+				mapMs = phaseSw.ElapsedMilliseconds;
+				try {
+					if (mapped.DataPointer == IntPtr.Zero)
+						throw new FFInvalidExitCodeException("D3D11 graybyte scaler mapped staging texture with a null data pointer.");
+					if (mapped.RowPitch < GraySize)
+						throw new FFInvalidExitCodeException($"D3D11 graybyte scaler mapped staging texture with invalid row pitch {mapped.RowPitch} for {format}.");
+					if (format != Format.NV12 && mapped.RowPitch < GraySize * 2)
+						throw new FFInvalidExitCodeException($"D3D11 graybyte scaler mapped P010 staging texture with invalid row pitch {mapped.RowPitch}.");
+
+					phaseSw.Restart();
+					byte[] output = new byte[GraySize * GraySize];
+					if (format == Format.NV12) {
+						for (int y = 0; y < GraySize; y++) {
+							IntPtr row = IntPtr.Add(mapped.DataPointer, y * (int)mapped.RowPitch);
+							System.Runtime.InteropServices.Marshal.Copy(row, output, y * GraySize, GraySize);
+						}
 					}
-				}
-				else {
-					for (int y = 0; y < GraySize; y++) {
-						byte* row = (byte*)mapped.DataPointer + (y * mapped.RowPitch);
-						for (int x = 0; x < GraySize; x++)
-							output[(y * GraySize) + x] = row[(x * 2) + 1];
+					else {
+						for (int y = 0; y < GraySize; y++) {
+							byte* row = (byte*)mapped.DataPointer + (y * mapped.RowPitch);
+							for (int x = 0; x < GraySize; x++)
+								output[(y * GraySize) + x] = row[(x * 2) + 1];
+						}
 					}
+					copyMs = phaseSw.ElapsedMilliseconds;
+					return output;
 				}
-				copyMs = phaseSw.ElapsedMilliseconds;
-				return output;
-			}
-			finally {
-				_deviceContext.Unmap(stagingTexture, 0);
+				finally {
+					_deviceContext.Unmap(stagingTexture, 0);
+				}
 			}
 		}
 
