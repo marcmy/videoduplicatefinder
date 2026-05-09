@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using FFmpeg.AutoGen;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
@@ -17,11 +18,13 @@ namespace VDF.Core.FFTools {
 		const string DisableNativeGrayByteGpuScaleEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE";
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
 		const string EnableNativeGrayByteD3D11CpuProbeEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_CPU_PROBE";
+		const string NativeGrayByteD3D11MaxConcurrencyEnvVar = "VDF_NATIVE_GRAYBYTE_D3D11_MAX_CONCURRENCY";
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
 		const int D3D11GrayByteHardwareBypassMinimumFailures = 3;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
+		static readonly SemaphoreSlim D3D11GrayByteConcurrencyLimiter = new(GetNativeGrayByteD3D11MaxConcurrency());
 		public static FFHardwareAccelerationMode HardwareAccelerationMode;
 		public static string CustomFFArguments = string.Empty;
 		public static bool UseNativeBinding;
@@ -117,6 +120,17 @@ namespace VDF.Core.FFTools {
 			public D3D11VideoProcessorGrayByteScaler.PendingDownload PendingDownload { get; }
 		}
 
+		sealed class SemaphoreLease : IDisposable {
+			SemaphoreSlim? semaphore;
+
+			public SemaphoreLease(SemaphoreSlim semaphore) => this.semaphore = semaphore;
+
+			public void Dispose() {
+				SemaphoreSlim? released = Interlocked.Exchange(ref semaphore, null);
+				released?.Release();
+			}
+		}
+
 		static GrayByteResult CreateGrayByteResult(GrayByteRequest request, byte[] data) =>
 			new(request.Index, data, pHash.PerceptualHash.ComputePHashFromGray32x32(data), !GrayBytesUtils.VerifyGrayScaleValues(data));
 
@@ -126,6 +140,20 @@ namespace VDF.Core.FFTools {
 				videoFile.PHashes[result.Index] = result.PHash;
 				if (result.TooDark) tooDarkCounter++;
 			}
+		}
+
+		static int GetNativeGrayByteD3D11MaxConcurrency() {
+			string? value = Environment.GetEnvironmentVariable(NativeGrayByteD3D11MaxConcurrencyEnvVar);
+			if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+				return Math.Clamp(parsed, 1, 16);
+			return 2;
+		}
+
+		static IDisposable? EnterD3D11GrayByteConcurrencyLimiter(AVHWDeviceType deviceType) {
+			if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
+				return null;
+			D3D11GrayByteConcurrencyLimiter.Wait();
+			return new SemaphoreLease(D3D11GrayByteConcurrencyLimiter);
 		}
 
 		static bool IsEnvFlagEnabled(string variableName) {
@@ -652,6 +680,7 @@ namespace VDF.Core.FFTools {
 						hardwarePolicy = "d3d11-software-frame-family-bypass";
 					}
 				}
+				using IDisposable? d3d11GrayByteConcurrencyLease = EnterD3D11GrayByteConcurrencyLimiter(hardwareDeviceType);
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
 				NativeGrayByteTiming nativeTiming = new() { OpenMs = openSw.ElapsedMilliseconds };
 				VideoFrameConverter? converter = null;
