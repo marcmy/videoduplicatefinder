@@ -640,7 +640,7 @@ namespace VDF.Core.FFTools {
 					hardwareDeviceType = GetConfiguredGrayByteHardwareDeviceType(out hardwarePolicy);
 					if (hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA && ShouldBypassD3D11GrayByteForFamily(videoFile, out _)) {
 						hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
-						hardwarePolicy = "d3d11-adaptive-cpu-family-bypass";
+						hardwarePolicy = "d3d11-software-frame-family-bypass";
 					}
 				}
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
