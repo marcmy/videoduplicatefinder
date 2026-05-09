@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
+
       - name: Delete old release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,18 +64,31 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v5
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: '9.0.x'
-    - name: Declare some variables
-      id: vars
-      shell: bash
-      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-    - name: Build
-      shell: bash
-      run: |
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
+
+      - name: Verify perf branch code is present
+        shell: pwsh
+        run: |
+          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
+          if ($src -notlike '*d3d11-video-processor-gray32*') {
+            throw "Perf D3D11 graybyte fast path missing from checked-out source."
+          }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Declare some variables
+        id: vars
+        shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build
+        shell: bash
+        run: |
           # Build GUI
           dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputGUI"
           # Build CLI
@@ -113,16 +129,12 @@ jobs:
             7z a -tzip "Web-${{ matrix.target }}.zip" "./outputWeb/*"
             7z a -tzip "Bundle-${{ matrix.target }}.zip" "./$bundleDir"
           elif [[ "${{ matrix.target }}" == osx-* ]]; then
-            # Wrap the GUI in a proper macOS .app bundle
             mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
             mkdir -p "Video Duplicate Finder.app/Contents/Resources"
             cp -r outputGUI/. "Video Duplicate Finder.app/Contents/MacOS/"
             cp "VDF.GUI/Assets/macOS/icon.icns" "Video Duplicate Finder.app/Contents/Resources/icon.icns"
             cp "VDF.GUI/Assets/macOS/Info.plist" "Video Duplicate Finder.app/Contents/Info.plist"
             chmod +x "Video Duplicate Finder.app/Contents/MacOS/VDF.GUI"
-            # Ad-hoc sign every binary in the bundle. macOS 14+ (and especially Tahoe 26)
-            # rejects unsigned dylibs under Library Validation, which previously caused
-            # "library load disallowed by system policy" on launch.
             codesign --force --deep --sign - \
               --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
               "Video Duplicate Finder.app"
@@ -139,19 +151,17 @@ jobs:
             tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
             tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
           else
-            # Bundle .desktop file and icon for Linux desktop integration
             cp "VDF.GUI/Assets/Linux/icon.png" "outputGUI/icon.png"
             cp "VDF.GUI/Assets/Linux/videoduplicatefinder.desktop" "outputGUI/videoduplicatefinder.desktop"
             tar czvf "GUI-${{ matrix.target }}.tar.gz" "outputGUI"
             tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
             tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
           fi
-          # Clean up
           rm -rf "outputGUI" "outputCLI" "outputWeb" "Bundle-${{ matrix.target }}" "Video Duplicate Finder.app"
-          
-    - name: Publish
-      uses: softprops/action-gh-release@v3
-      with:
+
+      - name: Publish
+        uses: softprops/action-gh-release@v3
+        with:
           tag_name: 3.0.x
           files: |
             GUI-*
@@ -161,7 +171,5 @@ jobs:
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
             Last build based on ${{ steps.vars.outputs.sha_short }}
-      env:
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
