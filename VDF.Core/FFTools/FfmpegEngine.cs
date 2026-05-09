@@ -37,12 +37,13 @@ namespace VDF.Core.FFTools {
 
 		static void LogNativeBatchTiming(string file, string? familyKey, bool hwDecode, string hardwarePolicy, string batchMode, int samples, NativeGrayByteTiming timing, long totalMs) {
 			string family = string.IsNullOrWhiteSpace(familyKey) ? "unknown" : familyKey;
-			Logger.Instance.Info($"Native FFmpeg batched graybyte extraction completed for '{file}': mode={batchMode}, family={family}, hw={(hwDecode ? "requested" : "off")}, hwPolicy={hardwarePolicy}, hwTransfers={timing.HardwareTransfers}/{samples}, fullFrameTransfers={timing.FullFrameTransfers}/{samples}, tinyDownloads={timing.TinyDownloads}/{samples}, samples={samples}, open={timing.OpenMs}ms, seek={timing.SeekMs}ms, decode={timing.DecodeMs}ms, transfer={timing.TransferMs}ms, filter={timing.FilterMs}ms, convert={timing.ConvertMs}ms, tinyConvert={timing.TinyConvertMs}ms, map={timing.MapMs}ms, copy={timing.CopyMs}ms, total={totalMs}ms");
+			Logger.Instance.Info($"Native FFmpeg batched graybyte extraction completed for '{file}': mode={batchMode}, family={family}, hw={(hwDecode ? "requested" : "off")}, hwPolicy={hardwarePolicy}, hwTransfers={timing.HardwareTransfers}/{samples}, fullFrameTransfers={timing.FullFrameTransfers}/{samples}, tinyDownloads={timing.TinyDownloads}/{samples}, samples={samples}, queue={timing.QueueMs}ms, open={timing.OpenMs}ms, seek={timing.SeekMs}ms, decode={timing.DecodeMs}ms, transfer={timing.TransferMs}ms, filter={timing.FilterMs}ms, convert={timing.ConvertMs}ms, tinyConvert={timing.TinyConvertMs}ms, map={timing.MapMs}ms, copy={timing.CopyMs}ms, total={totalMs}ms");
 		}
 
 		const double SequentialBatchMaxSpanSeconds = 2d;
 
 		sealed class NativeGrayByteTiming {
+			public long QueueMs;
 			public long OpenMs;
 			public long SeekMs;
 			public long DecodeMs;
@@ -668,7 +669,7 @@ namespace VDF.Core.FFTools {
 					return true;
 
 				var batchSw = Stopwatch.StartNew();
-				var openSw = Stopwatch.StartNew();
+				var queueSw = Stopwatch.StartNew();
 				if (forceCpuDecode) {
 					hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 					hardwarePolicy = forcedCpuPolicy ?? "d3d11-software-frames-cpu-retry";
@@ -681,8 +682,10 @@ namespace VDF.Core.FFTools {
 					}
 				}
 				using IDisposable? d3d11GrayByteConcurrencyLease = EnterD3D11GrayByteConcurrencyLimiter(hardwareDeviceType);
+			long queueMs = d3d11GrayByteConcurrencyLease == null ? 0 : queueSw.ElapsedMilliseconds;
+			var openSw = Stopwatch.StartNew();
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
-				NativeGrayByteTiming nativeTiming = new() { OpenMs = openSw.ElapsedMilliseconds };
+				NativeGrayByteTiming nativeTiming = new() { QueueMs = queueMs, OpenMs = openSw.ElapsedMilliseconds };
 				VideoFrameConverter? converter = null;
 				D3D11VideoProcessorGrayByteScaler? d3d11Scaler = null;
 				List<PendingD3D11GrayByteResult> pendingD3D11Downloads = new();
