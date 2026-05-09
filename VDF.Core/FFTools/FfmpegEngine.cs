@@ -16,6 +16,7 @@ namespace VDF.Core.FFTools {
 		const int TimeoutDuration = 15_000;
 		const string ForceNativeGrayByteCpuEnvVar = "VDF_FORCE_NATIVE_GRAYBYTE_CPU";
 		const string DisableNativeGrayByteGpuScaleEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE";
+		const string EnableNativeGrayByteGpuScaleEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_GPU_SCALE";
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
 		const string EnableNativeGrayByteD3D11CpuProbeEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_CPU_PROBE";
 		const string NativeGrayByteD3D11MaxConcurrencyEnvVar = "VDF_NATIVE_GRAYBYTE_D3D11_MAX_CONCURRENCY";
@@ -484,7 +485,14 @@ namespace VDF.Core.FFTools {
 				return false;
 
 			if (IsEnvFlagEnabled(DisableNativeGrayByteGpuScaleEnvVar)) {
+				unavailableReason = $"disabled by {DisableNativeGrayByteGpuScaleEnvVar}";
 				hardwarePolicy = $"requested-gpu-scale-disabled-by-{DisableNativeGrayByteGpuScaleEnvVar}";
+				return false;
+			}
+
+			if (!IsEnvFlagEnabled(EnableNativeGrayByteGpuScaleEnvVar)) {
+				unavailableReason = $"not enabled; set {EnableNativeGrayByteGpuScaleEnvVar}=1 to use experimental D3D11 graybyte GPU scaling";
+				hardwarePolicy = $"requested-gpu-scale-disabled-unless-{EnableNativeGrayByteGpuScaleEnvVar}=1";
 				return false;
 			}
 
