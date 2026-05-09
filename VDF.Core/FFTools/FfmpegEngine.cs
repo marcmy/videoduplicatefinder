@@ -16,6 +16,7 @@ namespace VDF.Core.FFTools {
 		const string ForceNativeGrayByteCpuEnvVar = "VDF_FORCE_NATIVE_GRAYBYTE_CPU";
 		const string DisableNativeGrayByteGpuScaleEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE";
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
+		const string EnableNativeGrayByteD3D11CpuProbeEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_CPU_PROBE";
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
@@ -132,6 +133,9 @@ namespace VDF.Core.FFTools {
 					|| value.Equals("yes", StringComparison.OrdinalIgnoreCase)
 				|| value.Equals("on", StringComparison.OrdinalIgnoreCase));
 		}
+		static bool IsD3D11GrayByteCpuProbeEnabled() =>
+			IsEnvFlagEnabled(EnableNativeGrayByteD3D11CpuProbeEnvVar)
+			&& !IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar);
 
 		static string NormalizeLogReason(string reason, int maxLength) {
 			string normalized = reason.Replace(Environment.NewLine, " ").Trim();
@@ -196,7 +200,7 @@ namespace VDF.Core.FFTools {
 
 		static bool ShouldProbeD3D11GrayByteFamilyWithCpu(FileEntry videoFile, out string familyKey) {
 			familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile) ?? string.Empty;
-			if (familyKey.Length == 0 || IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar))
+			if (familyKey.Length == 0 || !IsD3D11GrayByteCpuProbeEnabled())
 				return false;
 			lock (D3D11GrayByteAdaptiveStateLock) {
 				if (!D3D11GrayByteAdaptiveStatsByFamily.TryGetValue(familyKey, out D3D11GrayByteAdaptiveStats? stats) || !stats.CpuProbePending || stats.CpuProbeCompleted || stats.Bypass)
@@ -215,7 +219,7 @@ namespace VDF.Core.FFTools {
 					return;
 				if (cpuTotalMs < d3d11TotalMs) {
 					stats.Bypass = true;
-					Logger.Instance.Info($"Native FFmpeg D3D11 graybyte adaptive policy will use native CPU decode for family '{familyKey}' after CPU probe won: d3d11={d3d11TotalMs}ms, cpu={cpuTotalMs}ms. Set {DisableNativeGrayByteD3D11AdaptiveEnvVar}=1 to disable this scan-local policy.");
+					Logger.Instance.Info($"Native FFmpeg D3D11 graybyte adaptive policy will use native CPU decode for family '{familyKey}' after CPU probe won: d3d11={d3d11TotalMs}ms, cpu={cpuTotalMs}ms. This opt-in policy is controlled by {EnableNativeGrayByteD3D11CpuProbeEnvVar}=1; set {DisableNativeGrayByteD3D11AdaptiveEnvVar}=1 to disable all D3D11 adaptive family caching.");
 				}
 				else {
 					Logger.Instance.Info($"Native FFmpeg D3D11 graybyte adaptive policy will keep D3D11 for family '{familyKey}' after CPU probe lost: d3d11={d3d11TotalMs}ms, cpu={cpuTotalMs}ms.");
@@ -227,7 +231,7 @@ namespace VDF.Core.FFTools {
 			if (timing.TinyDownloads <= 0 || timing.SampledFrames <= 0)
 				return;
 			string? familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
-			if (familyKey == null || IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar))
+			if (familyKey == null || !IsD3D11GrayByteCpuProbeEnabled())
 				return;
 			long perSampleMs = totalMs / Math.Max(1, timing.SampledFrames);
 			lock (D3D11GrayByteAdaptiveStateLock) {
