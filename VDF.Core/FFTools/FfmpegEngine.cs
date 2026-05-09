@@ -19,15 +19,27 @@ namespace VDF.Core.FFTools {
 		const string DisableNativeGrayByteD3D11AdaptiveEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_D3D11_ADAPTIVE";
 		const string EnableNativeGrayByteD3D11CpuProbeEnvVar = "VDF_ENABLE_NATIVE_GRAYBYTE_D3D11_CPU_PROBE";
 		const string NativeGrayByteD3D11MaxConcurrencyEnvVar = "VDF_NATIVE_GRAYBYTE_D3D11_MAX_CONCURRENCY";
+		const int NativeGrayByteD3D11AutoInitialConcurrency = 2;
+		const int NativeGrayByteD3D11AutoMaxConcurrency = 8;
+		const int NativeGrayByteD3D11AutoTuneObservationWindow = 12;
+		const long NativeGrayByteD3D11AutoQueueHighMs = 750;
+		const long NativeGrayByteD3D11AutoDecodeHighMs = 1500;
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
 		const int D3D11GrayByteHardwareBypassMinimumFailures = 3;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
-		static readonly SemaphoreSlim D3D11GrayByteConcurrencyLimiter = new(GetNativeGrayByteD3D11MaxConcurrency());
+		static readonly object D3D11GrayByteConcurrencyLock = new();
+		static int D3D11GrayByteCurrentConcurrencyLimit = NativeGrayByteD3D11AutoInitialConcurrency;
+		static int D3D11GrayByteActiveConcurrency;
+		static int D3D11GrayByteTuningObservations;
+		static long D3D11GrayByteTuningQueueMs;
+		static long D3D11GrayByteTuningDecodeMs;
+		static int D3D11GrayByteTuningDecodeSpikeObservations;
 		public static FFHardwareAccelerationMode HardwareAccelerationMode;
 		public static string CustomFFArguments = string.Empty;
 		public static bool UseNativeBinding;
+		public static int ScanMaxDegreeOfParallelism = -1;
 		private static readonly SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder jpegEncoder = new();
 		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
 
@@ -122,13 +134,13 @@ namespace VDF.Core.FFTools {
 		}
 
 		sealed class SemaphoreLease : IDisposable {
-			SemaphoreSlim? semaphore;
+			Action? release;
 
-			public SemaphoreLease(SemaphoreSlim semaphore) => this.semaphore = semaphore;
+			public SemaphoreLease(Action release) => this.release = release;
 
 			public void Dispose() {
-				SemaphoreSlim? released = Interlocked.Exchange(ref semaphore, null);
-				released?.Release();
+				Action? action = Interlocked.Exchange(ref release, null);
+				action?.Invoke();
 			}
 		}
 
@@ -143,18 +155,97 @@ namespace VDF.Core.FFTools {
 			}
 		}
 
-		static int GetNativeGrayByteD3D11MaxConcurrency() {
+		static bool TryGetNativeGrayByteD3D11ManualMaxConcurrency(out int concurrency) {
+			concurrency = 0;
 			string? value = Environment.GetEnvironmentVariable(NativeGrayByteD3D11MaxConcurrencyEnvVar);
-			if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
-				return Math.Clamp(parsed, 1, 16);
-			return 2;
+			if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+				return false;
+			concurrency = Math.Clamp(parsed, 1, 16);
+			return true;
+		}
+
+		static int GetEffectiveScanMaxDegreeOfParallelism() =>
+			ScanMaxDegreeOfParallelism > 0 ? ScanMaxDegreeOfParallelism : Environment.ProcessorCount;
+
+		static int GetNativeGrayByteD3D11AutoMaxConcurrency() =>
+			Math.Clamp(Math.Min(GetEffectiveScanMaxDegreeOfParallelism(), NativeGrayByteD3D11AutoMaxConcurrency), 1, 16);
+
+		static int GetNativeGrayByteD3D11InitialConcurrency() {
+			if (TryGetNativeGrayByteD3D11ManualMaxConcurrency(out int manualConcurrency))
+				return manualConcurrency;
+			return Math.Clamp(Math.Min(GetEffectiveScanMaxDegreeOfParallelism(), NativeGrayByteD3D11AutoInitialConcurrency), 1, GetNativeGrayByteD3D11AutoMaxConcurrency());
+		}
+
+		internal static void ConfigureNativeGrayByteD3D11Concurrency() {
+			lock (D3D11GrayByteConcurrencyLock) {
+				D3D11GrayByteCurrentConcurrencyLimit = GetNativeGrayByteD3D11InitialConcurrency();
+				D3D11GrayByteTuningObservations = 0;
+				D3D11GrayByteTuningQueueMs = 0;
+				D3D11GrayByteTuningDecodeMs = 0;
+				D3D11GrayByteTuningDecodeSpikeObservations = 0;
+				Monitor.PulseAll(D3D11GrayByteConcurrencyLock);
+			}
 		}
 
 		static IDisposable? EnterD3D11GrayByteConcurrencyLimiter(AVHWDeviceType deviceType) {
 			if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
 				return null;
-			D3D11GrayByteConcurrencyLimiter.Wait();
-			return new SemaphoreLease(D3D11GrayByteConcurrencyLimiter);
+			lock (D3D11GrayByteConcurrencyLock) {
+				while (D3D11GrayByteActiveConcurrency >= D3D11GrayByteCurrentConcurrencyLimit)
+					Monitor.Wait(D3D11GrayByteConcurrencyLock);
+				D3D11GrayByteActiveConcurrency++;
+			}
+			return new SemaphoreLease(ExitD3D11GrayByteConcurrencyLimiter);
+		}
+
+		static void ExitD3D11GrayByteConcurrencyLimiter() {
+			lock (D3D11GrayByteConcurrencyLock) {
+				D3D11GrayByteActiveConcurrency = Math.Max(0, D3D11GrayByteActiveConcurrency - 1);
+				Monitor.PulseAll(D3D11GrayByteConcurrencyLock);
+			}
+		}
+
+		static void ObserveD3D11GrayByteConcurrency(NativeGrayByteTiming timing) {
+			if (timing.TinyDownloads <= 0 || timing.SampledFrames <= 0)
+				return;
+			if (TryGetNativeGrayByteD3D11ManualMaxConcurrency(out _))
+				return;
+			lock (D3D11GrayByteConcurrencyLock) {
+				D3D11GrayByteTuningObservations++;
+				D3D11GrayByteTuningQueueMs += timing.QueueMs;
+				D3D11GrayByteTuningDecodeMs += timing.DecodeMs;
+				if (timing.DecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs)
+					D3D11GrayByteTuningDecodeSpikeObservations++;
+				if (D3D11GrayByteTuningObservations < NativeGrayByteD3D11AutoTuneObservationWindow)
+					return;
+
+				int observations = D3D11GrayByteTuningObservations;
+				long averageQueueMs = D3D11GrayByteTuningQueueMs / Math.Max(1, observations);
+				long averageDecodeMs = D3D11GrayByteTuningDecodeMs / Math.Max(1, observations);
+				int decodeSpikes = D3D11GrayByteTuningDecodeSpikeObservations;
+				int oldLimit = D3D11GrayByteCurrentConcurrencyLimit;
+				int newLimit = oldLimit;
+				int maxLimit = GetNativeGrayByteD3D11AutoMaxConcurrency();
+				bool decodePressure = averageDecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs || decodeSpikes >= Math.Max(2, observations / 3);
+				bool queuePressure = averageQueueMs >= NativeGrayByteD3D11AutoQueueHighMs && averageDecodeMs < NativeGrayByteD3D11AutoDecodeHighMs / 2;
+
+				if (decodePressure && oldLimit > 1)
+					newLimit = oldLimit - 1;
+				else if (queuePressure && oldLimit < maxLimit)
+					newLimit = oldLimit + 1;
+
+				D3D11GrayByteTuningObservations = 0;
+				D3D11GrayByteTuningQueueMs = 0;
+				D3D11GrayByteTuningDecodeMs = 0;
+				D3D11GrayByteTuningDecodeSpikeObservations = 0;
+
+				if (newLimit == oldLimit)
+					return;
+
+				D3D11GrayByteCurrentConcurrencyLimit = Math.Clamp(newLimit, 1, maxLimit);
+				Monitor.PulseAll(D3D11GrayByteConcurrencyLock);
+				Logger.Instance.Info($"Native FFmpeg D3D11 graybyte auto concurrency changed from {oldLimit} to {D3D11GrayByteCurrentConcurrencyLimit}: avgQueue={averageQueueMs}ms, avgDecode={averageDecodeMs}ms, decodeSpikes={decodeSpikes}/{observations}, scanMax={GetEffectiveScanMaxDegreeOfParallelism()}, autoMax={maxLimit}. Set {NativeGrayByteD3D11MaxConcurrencyEnvVar}=N to override.");
+			}
 		}
 
 		static bool IsEnvFlagEnabled(string variableName) {
@@ -747,7 +838,8 @@ namespace VDF.Core.FFTools {
 					LogNativeBatchTiming(videoFile.Path, GetD3D11GrayByteAdaptiveFamilyKey(videoFile) ?? string.Empty, vsd.IsHardwareDecode, GetEffectiveGrayByteHardwarePolicy(hardwarePolicy, useD3D11GpuScale, nativeTiming), batchMode, requests.Count, nativeTiming, batchSw.ElapsedMilliseconds);
 				if (useD3D11GpuScale && vsd.IsHardwareDecode) {
 					long d3d11TotalMs = batchSw.ElapsedMilliseconds;
-					ObserveD3D11GrayByteFamily(videoFile, nativeTiming, d3d11TotalMs);
+					ObserveD3D11GrayByteConcurrency(nativeTiming);
+						ObserveD3D11GrayByteFamily(videoFile, nativeTiming, d3d11TotalMs);
 					if (!forceCpuDecode && ShouldProbeD3D11GrayByteFamilyWithCpu(videoFile, out string probeFamilyKey)) {
 						List<GrayByteResult> d3d11Results = new(results);
 						results.Clear();
