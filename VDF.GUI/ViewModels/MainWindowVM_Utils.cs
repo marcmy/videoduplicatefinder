@@ -1,5 +1,5 @@
 // /*
-//     Copyright (C) 2021 0x90d
+//     Copyright (C) 2026 0x90d
 //     This file is part of VideoDuplicateFinder
 //     VideoDuplicateFinder is free software: you can redistribute it and/or modify
 //     it under the terms of the GPLv3 as published by
@@ -27,7 +27,7 @@ namespace VDF.GUI.ViewModels {
 			["FPS"] = new("FPS", d => d.ItemInfo.Fps, videoOnly: true),
 			["Bitrate"] = new("Bitrate", d => d.ItemInfo.BitRateKbs, videoOnly: true),
 			["Audio Bitrate"] = new("Audio Bitrate", d => d.ItemInfo.AudioSampleRate, videoOnly: true),
-			["Size"] = new("Size", d => d.ItemInfo.SizeLong, videoOnly: false),
+			["Size"] = new("Size", d => d.ItemInfo.SizeLong, videoOnly: false, ascending: true),
 		};
 
 		// Yields criteria in the user's chosen order, then appends any map entries the
