@@ -33,17 +33,113 @@ jobs:
             gh release delete-asset 3.0.x "$asset" --yes
           done
 
-  build:
+  build-windows:
+    name: Build windows bundle first
     needs: cleanup
+    runs-on: windows-latest
+    env:
+      TARGET: win-x64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
+
+      - name: Verify perf branch code is present
+        shell: pwsh
+        run: |
+          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
+          if ($src -notlike '*d3d11-video-processor-gray32*') {
+            throw "Perf D3D11 graybyte fast path missing from checked-out source."
+          }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Declare some variables
+        id: vars
+        shell: bash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build
+        shell: bash
+        run: |
+          # Build GUI
+          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputGUI"
+          # Build CLI
+          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputCLI"
+          # Build Web
+          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputWeb"
+
+          bundleDir="Bundle-$TARGET"
+          mkdir -p "$bundleDir"
+          cp -a outputGUI/. "$bundleDir/"
+          copy_unique() {
+            src="$1"
+            while IFS= read -r -d '' file; do
+              rel="${file#$src/}"
+              dest="$bundleDir/$rel"
+              mkdir -p "$(dirname "$dest")"
+              if [ -e "$dest" ]; then
+                if ! cmp -s "$file" "$dest"; then
+                  echo "Bundle conflict: '$rel' differs between publish outputs." >&2
+                  exit 1
+                fi
+              else
+                cp -a "$file" "$dest"
+              fi
+            done < <(find "$src" -type f -print0)
+          }
+          copy_unique outputCLI
+          copy_unique outputWeb
+          for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
+            if [ ! -f "$bundleDir/$exe" ]; then
+              echo "Bundle is missing required executable: $exe" >&2
+              exit 1
+            fi
+          done
+          7z a -tzip "GUI-$TARGET.zip" "./outputGUI/*"
+          7z a -tzip "CLI-$TARGET.zip" "./outputCLI/*"
+          7z a -tzip "Web-$TARGET.zip" "./outputWeb/*"
+          7z a -tzip "Bundle-$TARGET.zip" "./$bundleDir"
+
+          rm -rf "outputGUI" "outputCLI" "outputWeb" "$bundleDir"
+
+      - name: Publish windows assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: 3.0.x
+          files: |
+            GUI-*
+            CLI-*
+            Web-*
+            Bundle-*
+          body: |
+            Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
+            Last build based on ${{ steps.vars.outputs.sha_short }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger scoop bucket Excavator
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            Write-Host "No cross-repo token secret configured; skipping scoop-bucket Excavator trigger. Add SCOOP_BUCKET_TOKEN, GH_PAT, or PAT with repo/workflow access to enable this."
+            exit 0
+          }
+          gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
+
+  build-other:
+    name: Build other releases
+    needs: build-windows
 
     strategy:
       matrix:
-        kind: ['windows', 'linux', 'macOS', 'macOSarm64', 'linuxarm64']
+        kind: ['linux', 'macOS', 'macOSarm64', 'linuxarm64']
         include:
-          - kind: windows
-            os: windows-latest
-            target: win-x64
-            name: win-x64
           - kind: linux
             os: ubuntu-latest
             target: linux-x64
@@ -96,39 +192,7 @@ jobs:
           # Build Web
           dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputWeb"
           # Pack files
-          if [ "${{ matrix.target }}" == "win-x64" ]; then
-            bundleDir="Bundle-${{ matrix.target }}"
-            mkdir -p "$bundleDir"
-            cp -a outputGUI/. "$bundleDir/"
-            copy_unique() {
-              src="$1"
-              while IFS= read -r -d '' file; do
-                rel="${file#$src/}"
-                dest="$bundleDir/$rel"
-                mkdir -p "$(dirname "$dest")"
-                if [ -e "$dest" ]; then
-                  if ! cmp -s "$file" "$dest"; then
-                    echo "Bundle conflict: '$rel' differs between publish outputs." >&2
-                    exit 1
-                  fi
-                else
-                  cp -a "$file" "$dest"
-                fi
-              done < <(find "$src" -type f -print0)
-            }
-            copy_unique outputCLI
-            copy_unique outputWeb
-            for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
-              if [ ! -f "$bundleDir/$exe" ]; then
-                echo "Bundle is missing required executable: $exe" >&2
-                exit 1
-              fi
-            done
-            7z a -tzip "GUI-${{ matrix.target }}.zip" "./outputGUI/*"
-            7z a -tzip "CLI-${{ matrix.target }}.zip" "./outputCLI/*"
-            7z a -tzip "Web-${{ matrix.target }}.zip" "./outputWeb/*"
-            7z a -tzip "Bundle-${{ matrix.target }}.zip" "./$bundleDir"
-          elif [[ "${{ matrix.target }}" == osx-* ]]; then
+          if [[ "${{ matrix.target }}" == osx-* ]]; then
             mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
             mkdir -p "Video Duplicate Finder.app/Contents/Resources"
             cp -r outputGUI/. "Video Duplicate Finder.app/Contents/MacOS/"
@@ -157,9 +221,9 @@ jobs:
             tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
             tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
           fi
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "Bundle-${{ matrix.target }}" "Video Duplicate Finder.app"
+          rm -rf "outputGUI" "outputCLI" "outputWeb" "Video Duplicate Finder.app"
 
-      - name: Publish
+      - name: Publish non-windows assets
         uses: softprops/action-gh-release@v3
         with:
           tag_name: 3.0.x
@@ -167,7 +231,6 @@ jobs:
             GUI-*
             CLI-*
             Web-*
-            Bundle-*
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
             Last build based on ${{ steps.vars.outputs.sha_short }}
