@@ -26,7 +26,7 @@ namespace VDF.Core.FFTools {
 		const long NativeGrayByteD3D11AutoQueueHighMs = 750;
 		const long NativeGrayByteD3D11AutoDecodeHighMs = 1500;
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
-		const int D3D11GrayByteHardwareBypassMinimumFailures = 3;
+		const int D3D11GrayByteHardwareBypassMinimumFailures = 2;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
