@@ -27,7 +27,7 @@ using VorticeID3D11VideoDevice = Vortice.Direct3D11.ID3D11VideoDevice;
 namespace VDF.Core.FFTools.FFmpegNative {
 	sealed unsafe class D3D11VideoProcessorGrayByteScaler : IDisposable {
 		const int GraySize = 32;
-		const int PendingDownloadSlots = 3;
+		const int PendingDownloadSlots = 1;
 		static readonly object D3D11ContextLock = new();
 		VorticeID3D11Device? _device;
 		VorticeID3D11DeviceContext? _deviceContext;
