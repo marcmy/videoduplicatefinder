@@ -478,21 +478,20 @@ namespace VDF.Core.FFTools {
 				|| value.Contains("not implemented", StringComparison.Ordinal)
 				|| value.Contains("error", StringComparison.Ordinal);
 		}
+		static bool ShouldUseD3D11GrayByteGpuScale(AVHWDeviceType deviceType, ref string hardwarePolicy, out string unavailableReason) {
+			unavailableReason = string.Empty;
+			if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
+				return false;
 
-static bool ShouldUseD3D11GrayByteGpuScale(AVHWDeviceType deviceType, ref string hardwarePolicy, out string unavailableReason) {
-unavailableReason = string.Empty;
-if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
-return false;
+			if (IsEnvFlagEnabled(DisableNativeGrayByteGpuScaleEnvVar)) {
+				unavailableReason = $"disabled by {DisableNativeGrayByteGpuScaleEnvVar}";
+				hardwarePolicy = $"requested-gpu-scale-disabled-by-{DisableNativeGrayByteGpuScaleEnvVar}";
+				return false;
+			}
 
-if (IsEnvFlagEnabled(DisableNativeGrayByteGpuScaleEnvVar)) {
-unavailableReason = $"disabled by {DisableNativeGrayByteGpuScaleEnvVar}";
-hardwarePolicy = $"requested-gpu-scale-disabled-by-{DisableNativeGrayByteGpuScaleEnvVar}";
-return false;
-}
-
-hardwarePolicy = "d3d11-video-processor-gray32";
-return true;
-}
+			hardwarePolicy = "d3d11-video-processor-gray32";
+			return true;
+		}
 
 		static unsafe byte[] ExtractGray32FromFrame(AVFrame convertedFrame) {
 			const int N = 32;
