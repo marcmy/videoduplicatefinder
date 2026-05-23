@@ -57,6 +57,34 @@ public class ScanEngineTests {
 		Assert.True(scanner.InvalidEntryForDuplicateCheck(entry));
 	}
 
+	[Fact]
+	public void HasRequiredGrayBytes_NullCachedSample_ReturnsFalse() {
+		var scanner = new ScanEngine { Settings = new Settings { ThumbnailCount = 3 } };
+		var entry = CreateVideoEntry(grayByteCount: 3);
+		entry.grayBytes[1] = null;
+
+		Assert.False(scanner.HasRequiredGrayBytes(entry));
+	}
+
+	[Fact]
+	public void TryGetOrComputePHash_NullCachedPHashWithGrayBytes_RecomputesAndPersists() {
+		var entry = CreateVideoEntry(grayByteCount: 1);
+		entry.PHashes[0] = null;
+
+		Assert.True(ScanEngine.TryGetOrComputePHash(entry, entry.grayBytes, 0, persist: true, out ulong computed));
+		Assert.Equal(computed, entry.PHashes[0]);
+	}
+
+	[Fact]
+	public void TryGetOrComputePHash_NullCachedPHashWithoutPersist_DoesNotOverwriteEntryCache() {
+		var entry = CreateVideoEntry(grayByteCount: 1);
+		var alternateGrayBytes = new Dictionary<double, byte[]?> { [0] = Enumerable.Repeat((byte)255, 1024).ToArray() };
+		entry.PHashes[0] = null;
+
+		Assert.True(ScanEngine.TryGetOrComputePHash(entry, alternateGrayBytes, 0, persist: false, out _));
+		Assert.Null(entry.PHashes[0]);
+	}
+
 	static FileEntry CreateVideoEntry(int grayByteCount) {
 		var entry = new FileEntry {
 			_Path = @"X:\video.mp4",

@@ -514,7 +514,7 @@ namespace VDF.Core.FFTools {
 			List<GrayByteRequest> requests = new();
 			for (int i = 0; i < positions.Count; i++) {
 				double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
-				if (!videoFile.grayBytes.ContainsKey(position))
+				if (!videoFile.grayBytes.TryGetValue(position, out byte[]? bytes) || bytes == null)
 					requests.Add(new GrayByteRequest(position, TimeSpan.FromSeconds(position)));
 			}
 			requests.Sort((left, right) => left.Position.CompareTo(right.Position));
@@ -1124,7 +1124,7 @@ namespace VDF.Core.FFTools {
 			void ReportCompletedSample() => onSampleComplete?.Invoke(++completedSamples);
 			for (int i = 0; i < positions.Count; i++) {
 				double position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
-				if (videoFile.grayBytes.ContainsKey(position))
+				if (videoFile.grayBytes.TryGetValue(position, out byte[]? bytes) && bytes != null)
 					ReportCompletedSample();
 			}
 

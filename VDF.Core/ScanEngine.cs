@@ -427,10 +427,28 @@ namespace VDF.Core {
 		}
 
 		internal bool HasRequiredGrayBytes(FileEntry entry) =>
-			(entry.grayBytes?.Count ?? 0) >= (entry.IsImage ? 1 : Settings.ThumbnailCount);
+			(entry.grayBytes?.Values.Count(bytes => bytes != null) ?? 0) >= (entry.IsImage ? 1 : Settings.ThumbnailCount);
 
 		internal bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
 			entry.invalid || entry.mediaInfo == null || !HasRequiredGrayBytes(entry);
+
+		internal static bool TryGetOrComputePHash(FileEntry entry, Dictionary<double, byte[]?> grayBytes, double index, bool persist, out ulong pHashValue) {
+			entry.PHashes ??= new Dictionary<double, ulong?>();
+			if (entry.PHashes.TryGetValue(index, out ulong? cachedPHash) && cachedPHash.HasValue) {
+				pHashValue = cachedPHash.Value;
+				return true;
+			}
+
+			if (!grayBytes.TryGetValue(index, out byte[]? bytes) || bytes == null) {
+				pHashValue = 0;
+				return false;
+			}
+
+			pHashValue = pHash.PerceptualHash.ComputePHashFromGray32x32(bytes);
+			if (persist)
+				entry.PHashes[index] = pHashValue;
+			return true;
+		}
 
 		public static Task<bool> LoadDatabase() => Task.Run(DatabaseUtils.LoadDatabase);
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
@@ -530,7 +548,16 @@ namespace VDF.Core {
 							if (!hasAllInformation) {
 								hasAllInformation = true;
 								for (int i = 0; i < positionList.Count; i++) {
-									if (entry.grayBytes.ContainsKey(GetGrayBytesIndex(entry, positionList[i])))
+									double index = GetGrayBytesIndex(entry, positionList[i]);
+									if (entry.grayBytes.TryGetValue(index, out byte[]? bytes) && bytes != null)
+										continue;
+									hasAllInformation = false;
+									break;
+								}
+							}
+							if (hasAllInformation && Settings.UsePHashing && !entry.IsImage) {
+								for (int i = 0; i < positionList.Count; i++) {
+									if (TryGetOrComputePHash(entry, entry.grayBytes, GetGrayBytesIndex(entry, positionList[i]), persist: true, out _))
 										continue;
 									hasAllInformation = false;
 									break;
@@ -735,21 +762,19 @@ namespace VDF.Core {
 
 				double entryIndex = GetGrayBytesIndex(entry, positionList[0]);
 				double compIndex = GetGrayBytesIndex(compItem, positionList[0]);
-				if (!entry.PHashes.TryGetValue(entryIndex, out ulong? phash))
-					phash = pHash.PerceptualHash.ComputePHashFromGray32x32(grayBytes[entryIndex]);
-				if (!compItem.PHashes.TryGetValue(compIndex, out ulong? phash_comp))
-					phash_comp = pHash.PerceptualHash.ComputePHashFromGray32x32(compItem.grayBytes[compIndex]);
-				if (phash == null || phash_comp == null) {
+				bool hasEntryPHash = TryGetOrComputePHash(entry, grayBytes, entryIndex, ReferenceEquals(grayBytes, entry.grayBytes), out ulong phash);
+				bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
+				if (!hasEntryPHash || !hasCompPHash) {
 					// Log per-file (deduplicated) rather than per-pair: a single file with
 					// a stored-null pHash entry would otherwise emit one line for every
 					// candidate it's compared against. The summary line at end of
 					// ScanForDuplicates reports how many distinct files were affected.
-					if (phash == null) LogMissingPHash(entry.Path);
-					if (phash_comp == null) LogMissingPHash(compItem.Path);
+					if (!hasEntryPHash) LogMissingPHash(entry.Path);
+					if (!hasCompPHash) LogMissingPHash(compItem.Path);
 					difference = 1f;
 					return false;
 				}
-				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash.Value, phash_comp.Value, out float similarity, differenceLimitpHash, strict: true);
+				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
 				difference = 1f - similarity;
 				return isDup;
 
