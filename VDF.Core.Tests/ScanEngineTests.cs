@@ -85,6 +85,27 @@ public class ScanEngineTests {
 		Assert.Null(entry.PHashes[0]);
 	}
 
+	[Fact]
+	public void CheckIfDuplicate_PHashUsesAllSamples_NotJustFirst() {
+		var scanner = new ScanEngine { Settings = new Settings { UsePHashing = true, Percent = 90f, ThumbnailCount = 2 } };
+		SetSamplePositions(scanner, 0.25f, 0.5f);
+		var entry = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0UL));
+		var compItem = CreateVideoEntryWithPHashes((1d, 0UL), (2d, ulong.MaxValue));
+
+		Assert.False(InvokeCheckIfDuplicate(scanner, entry, compItem, out _));
+	}
+
+	[Fact]
+	public void CheckIfDuplicate_PHashAveragesAllSampleSimilarities() {
+		var scanner = new ScanEngine { Settings = new Settings { UsePHashing = true, Percent = 75f, ThumbnailCount = 2 } };
+		SetSamplePositions(scanner, 0.25f, 0.5f);
+		var entry = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0UL));
+		var compItem = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0xFFFFFFFFUL));
+
+		Assert.True(InvokeCheckIfDuplicate(scanner, entry, compItem, out float difference));
+		Assert.InRange(difference, 0.249f, 0.251f);
+	}
+
 	static FileEntry CreateVideoEntry(int grayByteCount) {
 		var entry = new FileEntry {
 			_Path = @"X:\video.mp4",
@@ -95,5 +116,30 @@ public class ScanEngineTests {
 		for (int i = 0; i < grayByteCount; i++)
 			entry.grayBytes[i] = new byte[1024];
 		return entry;
+	}
+
+	static FileEntry CreateVideoEntryWithPHashes(params (double Index, ulong PHash)[] samples) {
+		var entry = CreateVideoEntry(grayByteCount: 0);
+		entry.mediaInfo!.Duration = TimeSpan.FromSeconds(4);
+		foreach ((double index, ulong pHash) in samples) {
+			entry.grayBytes[index] = new byte[1024];
+			entry.PHashes[index] = pHash;
+		}
+		return entry;
+	}
+
+	static void SetSamplePositions(ScanEngine scanner, params float[] positions) {
+		var field = typeof(ScanEngine).GetField("positionList", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+		var list = (List<float>)field.GetValue(scanner)!;
+		list.Clear();
+		list.AddRange(positions);
+	}
+
+	static bool InvokeCheckIfDuplicate(ScanEngine scanner, FileEntry entry, FileEntry compItem, out float difference) {
+		var method = typeof(ScanEngine).GetMethod("CheckIfDuplicate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+		object?[] args = [entry, null, compItem, 0f];
+		bool result = (bool)method.Invoke(scanner, args)!;
+		difference = (float)args[3]!;
+		return result;
 	}
 }

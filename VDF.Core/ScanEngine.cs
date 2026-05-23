@@ -759,24 +759,37 @@ namespace VDF.Core {
 
 			if (Settings.UsePHashing) {
 				float differenceLimitpHash = Settings.Percent / 100f;
+				float maxDifferenceSum = (1f - differenceLimitpHash) * positionList.Count;
+				float pHashDiffSum = 0f;
 
-				double entryIndex = GetGrayBytesIndex(entry, positionList[0]);
-				double compIndex = GetGrayBytesIndex(compItem, positionList[0]);
-				bool hasEntryPHash = TryGetOrComputePHash(entry, grayBytes, entryIndex, ReferenceEquals(grayBytes, entry.grayBytes), out ulong phash);
-				bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
-				if (!hasEntryPHash || !hasCompPHash) {
-					// Log per-file (deduplicated) rather than per-pair: a single file with
-					// a stored-null pHash entry would otherwise emit one line for every
-					// candidate it's compared against. The summary line at end of
-					// ScanForDuplicates reports how many distinct files were affected.
-					if (!hasEntryPHash) LogMissingPHash(entry.Path);
-					if (!hasCompPHash) LogMissingPHash(compItem.Path);
+				for (int j = 0; j < positionList.Count; j++) {
+					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
+					double compIndex = GetGrayBytesIndex(compItem, positionList[j]);
+					bool hasEntryPHash = TryGetOrComputePHash(entry, grayBytes, entryIndex, ReferenceEquals(grayBytes, entry.grayBytes), out ulong phash);
+					bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
+					if (!hasEntryPHash || !hasCompPHash) {
+						// Log per-file (deduplicated) rather than per-pair: a single file with
+						// a stored-null pHash entry would otherwise emit one line for every
+						// candidate it's compared against. The summary line at end of
+						// ScanForDuplicates reports how many distinct files were affected.
+						if (!hasEntryPHash) LogMissingPHash(entry.Path);
+						if (!hasCompPHash) LogMissingPHash(compItem.Path);
+						difference = 1f;
+						return false;
+					}
+
+					pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
+					pHashDiffSum += 1f - similarity;
+					if (pHashDiffSum > maxDifferenceSum)
+						return false;
+				}
+
+				if (positionList.Count == 0) {
 					difference = 1f;
 					return false;
 				}
-				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
-				difference = 1f - similarity;
-				return isDup;
+				difference = pHashDiffSum / positionList.Count;
+				return !float.IsNaN(difference);
 
 			}
 
