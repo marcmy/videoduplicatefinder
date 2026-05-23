@@ -38,4 +38,34 @@ public class ScanEngineTests {
 
 		Assert.False(ScanEngine.IsReparsePoint(path));
 	}
+
+	[Fact]
+	public void InvalidEntryForDuplicateCheck_StaleThumbnailErrorWithRequiredGrayBytes_ReturnsFalse() {
+		var scanner = new ScanEngine { Settings = new Settings { ThumbnailCount = 3 } };
+		var entry = CreateVideoEntry(grayByteCount: 3);
+		entry.Flags.Set(EntryFlags.ThumbnailError);
+
+		Assert.False(scanner.InvalidEntryForDuplicateCheck(entry));
+	}
+
+	[Fact]
+	public void InvalidEntryForDuplicateCheck_ThumbnailErrorMissingGrayBytes_ReturnsTrue() {
+		var scanner = new ScanEngine { Settings = new Settings { ThumbnailCount = 3 } };
+		var entry = CreateVideoEntry(grayByteCount: 2);
+		entry.Flags.Set(EntryFlags.ThumbnailError);
+
+		Assert.True(scanner.InvalidEntryForDuplicateCheck(entry));
+	}
+
+	static FileEntry CreateVideoEntry(int grayByteCount) {
+		var entry = new FileEntry {
+			_Path = @"X:\video.mp4",
+			Folder = @"X:\",
+			mediaInfo = new MediaInfo { Duration = TimeSpan.FromSeconds(10), Streams = [] },
+			invalid = false,
+		};
+		for (int i = 0; i < grayByteCount; i++)
+			entry.grayBytes[i] = new byte[1024];
+		return entry;
+	}
 }

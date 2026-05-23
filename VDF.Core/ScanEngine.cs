@@ -426,8 +426,11 @@ namespace VDF.Core {
 			}
 		}
 
-		bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
-			entry.invalid || entry.mediaInfo == null || entry.Flags.Has(EntryFlags.ThumbnailError) || (!entry.IsImage && entry.grayBytes.Count < Settings.ThumbnailCount);
+		internal bool HasRequiredGrayBytes(FileEntry entry) =>
+			(entry.grayBytes?.Count ?? 0) >= (entry.IsImage ? 1 : Settings.ThumbnailCount);
+
+		internal bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
+			entry.invalid || entry.mediaInfo == null || !HasRequiredGrayBytes(entry);
 
 		public static Task<bool> LoadDatabase() => Task.Run(DatabaseUtils.LoadDatabase);
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
@@ -484,6 +487,10 @@ namespace VDF.Core {
 						bool skipEntry = false;
 						string? skipReason = null;
 						skipEntry |= entry.invalid;
+						if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && HasRequiredGrayBytes(entry)) {
+							entry.Flags.Set(EntryFlags.ThumbnailError, false);
+						}
+
 						if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && !Settings.AlwaysRetryFailedSampling) {
 							skipEntry = true;
 							skipReason = "previous thumbnail sampling failed and retry is disabled";
@@ -567,16 +574,20 @@ namespace VDF.Core {
 
 
 						if (entry.IsImage && entry.grayBytes.Count == 0) {
-							if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate))
+							if (GetGrayBytesFromImage(entry, Settings.UseExifCreationDate))
+								entry.Flags.Set(EntryFlags.ThumbnailError, false);
+							else
 								entry.invalid = true;
 						}
 						else if (!entry.IsImage) {
 							string entryPath = entry.Path;
 							int totalSamples = positionList.Count;
 							string samplingLabel = T("Scan.Stage.SamplingFrames");
-							if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
+							if (FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
 									Settings.ExtendedFFToolsLogging,
 									onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples)))
+								entry.Flags.Set(EntryFlags.ThumbnailError, false);
+							else
 								entry.invalid = true;
 						}
 
