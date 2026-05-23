@@ -63,6 +63,7 @@ namespace VDF.Core {
 		DateTime lastProgressUpdate = DateTime.MinValue;
 		static readonly TimeSpan progressUpdateIntervall = TimeSpan.FromMilliseconds(300);
 		const int maxExcludedLogsPerReason = 5;
+		const float pHashRequiredMatchingSampleRatio = 0.6f;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
 		// Files whose stored pHash for the comparison position is null. Dedupes the
@@ -759,10 +760,18 @@ namespace VDF.Core {
 
 			if (Settings.UsePHashing) {
 				float differenceLimitpHash = Settings.Percent / 100f;
-				float maxDifferenceSum = (1f - differenceLimitpHash) * positionList.Count;
+				int sampleCount = positionList.Count;
+				if (sampleCount == 0) {
+					difference = 1f;
+					return false;
+				}
+
+				float maxDifferenceSum = (1f - differenceLimitpHash) * sampleCount;
+				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * pHashRequiredMatchingSampleRatio));
+				int matchingSamples = 0;
 				float pHashDiffSum = 0f;
 
-				for (int j = 0; j < positionList.Count; j++) {
+				for (int j = 0; j < sampleCount; j++) {
 					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
 					double compIndex = GetGrayBytesIndex(compItem, positionList[j]);
 					bool hasEntryPHash = TryGetOrComputePHash(entry, grayBytes, entryIndex, ReferenceEquals(grayBytes, entry.grayBytes), out ulong phash);
@@ -778,18 +787,18 @@ namespace VDF.Core {
 						return false;
 					}
 
-					pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
+					bool sampleMatches = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
+					if (sampleMatches)
+						matchingSamples++;
 					pHashDiffSum += 1f - similarity;
 					if (pHashDiffSum > maxDifferenceSum)
 						return false;
+					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples)
+						return false;
 				}
 
-				if (positionList.Count == 0) {
-					difference = 1f;
-					return false;
-				}
-				difference = pHashDiffSum / positionList.Count;
-				return !float.IsNaN(difference);
+				difference = pHashDiffSum / sampleCount;
+				return !float.IsNaN(difference) && matchingSamples >= requiredMatchingSamples;
 
 			}
 

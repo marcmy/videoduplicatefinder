@@ -100,10 +100,25 @@ public class ScanEngineTests {
 		var scanner = new ScanEngine { Settings = new Settings { UsePHashing = true, Percent = 75f, ThumbnailCount = 2 } };
 		SetSamplePositions(scanner, 0.25f, 0.5f);
 		var entry = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0UL));
-		var compItem = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0xFFFFFFFFUL));
+		var compItem = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0xFFFFUL));
 
 		Assert.True(InvokeCheckIfDuplicate(scanner, entry, compItem, out float difference));
-		Assert.InRange(difference, 0.249f, 0.251f);
+		Assert.InRange(difference, 0.124f, 0.126f);
+	}
+
+	[Fact]
+	public void CheckIfDuplicate_PHashRequiresMatchingSampleQuorum() {
+		var scanner = new ScanEngine { Settings = new Settings { UsePHashing = true, Percent = 75f, ThumbnailCount = 5 } };
+		SetSamplePositions(scanner, 0.25f, 0.5f, 0.75f, 1f, 1.25f);
+		var entry = CreateVideoEntryWithPHashes((1d, 0UL), (2d, 0UL), (3d, 0UL), (4d, 0UL), (5d, 0UL));
+		var compItem = CreateVideoEntryWithPHashes(
+			(1d, 0UL),
+			(2d, 0UL),
+			(3d, 0xFFFFFUL),
+			(4d, 0xFFFFFUL),
+			(5d, 0xFFFFFUL));
+
+		Assert.False(InvokeCheckIfDuplicate(scanner, entry, compItem, out _));
 	}
 
 	static FileEntry CreateVideoEntry(int grayByteCount) {
