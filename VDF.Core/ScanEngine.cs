@@ -393,7 +393,7 @@ namespace VDF.Core {
 				}
 			}
 
-			if (Settings.IgnoreReparsePoints && File.Exists(entry.Path) && File.ResolveLinkTarget(entry.Path, returnFinalTarget: false) != null) {
+			if (Settings.IgnoreReparsePoints && IsReparsePoint(entry.Path)) {
 				reason = "file is a reparse point";
 				return true;
 			}
@@ -413,6 +413,19 @@ namespace VDF.Core {
 
 			return false;
 		}
+
+		internal static bool IsReparsePoint(string path) {
+			try {
+				return File.Exists(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+			}
+			catch (IOException) {
+				return false;
+			}
+			catch (UnauthorizedAccessException) {
+				return false;
+			}
+		}
+
 		bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
 			entry.invalid || entry.mediaInfo == null || entry.Flags.Has(EntryFlags.ThumbnailError) || (!entry.IsImage && entry.grayBytes.Count < Settings.ThumbnailCount);
 
