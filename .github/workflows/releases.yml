@@ -11,6 +11,9 @@ on:
     branches:
       - perf/native-hwaccel-from-crashfix
 
+permissions:
+  contents: write
+
 concurrency:
   group: build-releases
   cancel-in-progress: true
@@ -26,7 +29,7 @@ jobs:
 
       - name: Delete old release assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Delete all existing assets from the 3.0.x release so they get replaced with fresh builds
           gh release view 3.0.x --json assets --jq '.assets[].name' | while read -r asset; do
@@ -109,6 +112,7 @@ jobs:
       - name: Publish windows assets
         uses: softprops/action-gh-release@v3
         with:
+          token: ${{ github.token }}
           tag_name: 3.0.x
           files: |
             GUI-*
@@ -118,8 +122,6 @@ jobs:
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
             Last build based on ${{ steps.vars.outputs.sha_short }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trigger scoop bucket Excavator
         shell: pwsh
@@ -226,6 +228,7 @@ jobs:
       - name: Publish non-windows assets
         uses: softprops/action-gh-release@v3
         with:
+          token: ${{ github.token }}
           tag_name: 3.0.x
           files: |
             GUI-*
@@ -234,5 +237,3 @@ jobs:
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
             Last build based on ${{ steps.vars.outputs.sha_short }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
