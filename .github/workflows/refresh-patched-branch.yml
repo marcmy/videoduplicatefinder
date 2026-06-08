@@ -37,6 +37,18 @@ jobs:
           git fetch origin master
           git fetch origin perf/native-hwaccel-from-crashfix
 
+      - name: Refuse automated workflow-file sync
+        shell: bash
+        run: |
+          workflow_changes="$(git diff --name-only HEAD...origin/master -- .github/workflows || true)"
+          if [ -n "$workflow_changes" ]; then
+            echo "::error::origin/master contains workflow file changes that the default GITHUB_TOKEN cannot push from Actions."
+            echo "::error::Sync perf/native-hwaccel-from-crashfix locally with a token that has workflow permission, then rerun this workflow."
+            echo "Workflow files requiring manual sync:"
+            echo "$workflow_changes"
+            exit 1
+          fi
+
       - name: Merge fork master into perf branch
         run: |
           git checkout perf/native-hwaccel-from-crashfix
