@@ -2,11 +2,6 @@ name: Build releases
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows:
-      - Refresh perf branch
-    types:
-      - completed
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
