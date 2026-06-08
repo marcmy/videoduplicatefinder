@@ -1,6 +1,9 @@
 name: Windows 64-bit
 
-on: [pull_request]
+on:
+  pull_request:
+    paths-ignore:
+      - '.github/workflows/**'
 
 jobs:
   build:
@@ -8,9 +11,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v5
     - name: Setup .NET
-      uses: actions/setup-dotnet@v1
+      uses: actions/setup-dotnet@v5
       with:
         dotnet-version: '9.0.x'
     - name: Build GUI
