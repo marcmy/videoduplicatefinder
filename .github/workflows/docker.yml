@@ -5,11 +5,6 @@ on:
     branches:
       - perf/native-hwaccel-from-crashfix
   workflow_dispatch:
-  workflow_run:
-    workflows:
-      - Refresh perf branch
-    types:
-      - completed
 
 concurrency:
   group: docker-web-ui
@@ -17,7 +12,6 @@ concurrency:
 
 jobs:
   build-and-push:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
