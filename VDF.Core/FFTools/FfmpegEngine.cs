@@ -10,7 +10,17 @@ using VDF.Core.Utils;
 
 namespace VDF.Core.FFTools {
 	internal static class FfmpegEngine {
-		public static readonly string FFmpegPath;
+		static string _FFmpegPath = string.Empty;
+		// Re-probes when unresolved (or the binary vanished): a once-only static cache made
+		// an FFmpeg installed/downloaded while the app was running invisible until restart,
+		// so the GUI kept offering the download forever (issue #788).
+		public static string FFmpegPath {
+			get {
+				if (_FFmpegPath.Length == 0 || !File.Exists(_FFmpegPath))
+					_FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
+				return _FFmpegPath;
+			}
+		}
 		const int TimeoutDuration = 15_000;
 		const string ForceNativeGrayByteCpuEnvVar = "VDF_FORCE_NATIVE_GRAYBYTE_CPU";
 		const string DisableNativeGrayByteGpuScaleEnvVar = "VDF_DISABLE_NATIVE_GRAYBYTE_GPU_SCALE";
@@ -40,7 +50,6 @@ namespace VDF.Core.FFTools {
 		public static bool UseNativeBinding;
 		public static int ScanMaxDegreeOfParallelism = -1;
 		const int DefaultJpegQuality = 90;
-		static FfmpegEngine() => FFmpegPath = FFToolsUtils.GetPath(FFToolsUtils.FFTool.FFmpeg) ?? string.Empty;
 
 		static void LogNativeTiming(string file, TimeSpan position, bool isGrayByte, bool hwDecode, string hardwarePolicy, long openMs, long seekMs, long decodeMs, long transferMs, int hardwareTransfers, long convertMs, long copyMs, long totalMs) {
 			Logger.Instance.Info($"Native FFmpeg timing on '{file}' @ {position}: mode={(isGrayByte ? "gray32" : "thumb")}, hw={(hwDecode ? "requested" : "off")}, hwPolicy={hardwarePolicy}, hwTransfers={hardwareTransfers}/1, open={openMs}ms, seek={seekMs}ms, decode={decodeMs}ms, transfer={transferMs}ms, convert={convertMs}ms, copy={copyMs}ms, total={totalMs}ms");
