@@ -37,7 +37,35 @@ jobs:
       - name: Merge upstream/master into master
         run: |
           git checkout master
+
+          set +e
           git merge --no-edit upstream/master
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            echo "Merge reported conflicts. Preserving fork-owned workflow files, then checking for remaining conflicts."
+
+            conflicted_files=$(git diff --name-only --diff-filter=U)
+            echo "$conflicted_files"
+
+            echo "$conflicted_files" | while IFS= read -r file; do
+              if [ -n "$file" ] && [[ "$file" == .github/workflows/* ]]; then
+                echo "Keeping fork version of $file"
+                git checkout --ours -- "$file"
+                git add "$file"
+              fi
+            done
+
+            remaining_conflicts=$(git diff --name-only --diff-filter=U)
+            if [ -n "$remaining_conflicts" ]; then
+              echo "Unresolved non-workflow conflicts remain:"
+              echo "$remaining_conflicts"
+              exit 1
+            fi
+
+            git commit --no-edit
+          fi
 
       - name: Push master
         run: |
