@@ -26,10 +26,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Delete all existing assets from the 3.0.x release so they get replaced with fresh builds
-          gh release view 3.0.x --json assets --jq '.assets[].name' | while read -r asset; do
-            gh release delete-asset 3.0.x "$asset" --yes
-          done
+          # Delete all existing assets from the 4.0.x release so they get replaced with fresh
+          # builds. '|| true' covers the very first run, before the release exists.
+          gh release view 4.0.x --json assets --jq '.assets[].name' 2>/dev/null | while read -r asset; do
+            gh release delete-asset 4.0.x "$asset" --yes
+          done || true
 
   build-windows:
     name: Build windows bundle first
@@ -53,7 +54,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Declare some variables
         id: vars
@@ -108,7 +109,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ github.token }}
-          tag_name: 3.0.x
+          tag_name: 4.0.x
           files: |
             GUI-*
             CLI-*
@@ -116,6 +117,7 @@ jobs:
             Bundle-*
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
+            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
             Last build based on ${{ steps.vars.outputs.sha_short }}
 
       - name: Trigger scoop bucket Excavator
@@ -172,7 +174,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Declare some variables
         id: vars
@@ -224,11 +226,12 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ github.token }}
-          tag_name: 3.0.x
+          tag_name: 4.0.x
           files: |
             GUI-*
             CLI-*
             Web-*
           body: |
             Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
+            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
             Last build based on ${{ steps.vars.outputs.sha_short }}

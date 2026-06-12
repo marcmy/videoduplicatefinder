@@ -16,7 +16,6 @@
 
 using System.Diagnostics;
 using System.Text.Json.Serialization;
-using SixLabors.ImageSharp;
 using VDF.Core.Utils;
 
 namespace VDF.Core.ViewModels {
@@ -91,8 +90,15 @@ namespace VDF.Core.ViewModels {
 		}
 
 		public Guid GroupId { get; set; }
+		/// <summary>Encoded thumbnails (JPEG bytes; or the shared placeholder bytes when extraction failed).</summary>
 		[JsonIgnore]
-		public List<Image> ImageList { get; private set; } = new List<Image>();
+		public List<byte[]> ImageList { get; private set; } = new List<byte[]>();
+		/// <summary>
+		/// ThumbnailMaxWidth setting in effect when <see cref="ImageList"/> was extracted.
+		/// 0 = unknown (older backups) or placeholder-only. Lets explicit thumbnail reloads
+		/// re-extract when the user has since raised the setting (issue #777).
+		/// </summary>
+		public int ThumbnailWidth { get; set; }
 		[JsonInclude]
 		public List<TimeSpan> ThumbnailTimestamps { get; private set; } = new List<TimeSpan>();
 		string _Path = string.Empty;
@@ -176,7 +182,7 @@ namespace VDF.Core.ViewModels {
 
 		[JsonIgnore]
 		public Action? ThumbnailsUpdated;
-		public void SetThumbnails(List<Image>? images, List<TimeSpan> timeSpans) {
+		public void SetThumbnails(List<byte[]>? images, List<TimeSpan> timeSpans) {
 			if (images == null) return;
 			ImageList = images;
 			ThumbnailTimestamps = timeSpans;

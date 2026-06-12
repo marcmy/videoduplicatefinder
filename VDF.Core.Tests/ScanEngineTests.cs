@@ -151,10 +151,23 @@ public class ScanEngineTests {
 	}
 
 	static bool InvokeCheckIfDuplicate(ScanEngine scanner, FileEntry entry, FileEntry compItem, out float difference) {
+		BuildCompareSnapshot(scanner, entry);
+		BuildCompareSnapshot(scanner, compItem);
 		var method = typeof(ScanEngine).GetMethod("CheckIfDuplicate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-		object?[] args = [entry, null, compItem, 0f];
+		object?[] args = [entry, null, null, compItem, 0f];
 		bool result = (bool)method.Invoke(scanner, args)!;
-		difference = (float)args[3]!;
+		difference = (float)args[4]!;
 		return result;
+	}
+
+	static void BuildCompareSnapshot(ScanEngine scanner, FileEntry entry) {
+		var field = typeof(ScanEngine).GetField("positionList", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+		var positions = (List<float>)field.GetValue(scanner)!;
+		var gray = new byte[]?[positions.Count];
+		for (int i = 0; i < positions.Count; i++) {
+			double index = entry.GetGrayBytesIndex(positions[i], scanner.Settings.MaxSamplingDurationSeconds);
+			gray[i] = entry.grayBytes[index];
+		}
+		entry.compareGray = gray;
 	}
 }
