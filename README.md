@@ -337,3 +337,4 @@ Video Duplicate Finder is licensed under AGPLv3
 - Create a pull request for each addition or fix — do not merge them into one PR
 - Unless it refers to an existing issue, write into your pull request what it does
 - For larger PRs, open an issue for discussion first
+- 
