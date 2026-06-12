@@ -61,7 +61,6 @@ namespace VDF.Core {
 		DateTime lastProgressUpdate = DateTime.MinValue;
 		static readonly TimeSpan progressUpdateIntervall = TimeSpan.FromMilliseconds(300);
 		const int maxExcludedLogsPerReason = 5;
-		const float pHashRequiredMatchingSampleRatio = 0.6f;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
 		// Files whose stored pHash for the comparison position is null. Dedupes the
@@ -231,8 +230,6 @@ namespace VDF.Core {
 			FfmpegEngine.HardwareAccelerationMode = Settings.HardwareAccelerationMode;
 			FfmpegEngine.CustomFFArguments = Settings.CustomFFArguments;
 			FfmpegEngine.UseNativeBinding = Settings.UseNativeFfmpegBinding;
-			FfmpegEngine.ScanMaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism;
-			FfmpegEngine.ConfigureNativeGrayByteD3D11Concurrency();
 			DatabaseUtils.CustomDatabaseFolder = Settings.CustomDatabaseFolder;
 			DatabaseUtils.InvalidateDatabaseFolder();
 			Duplicates.Clear();
@@ -240,21 +237,72 @@ namespace VDF.Core {
 			ElapsedTimer.Reset();
 			SearchTimer.Reset();
 
+			BuildPositionList();
+			NormalizeScanPaths();
+
+			isScanning = true;
+		}
+
+		void BuildPositionList() {
+			positionList.Clear();
 			float positionCounter = 0f;
 			for (int i = 0; i < Settings.ThumbnailCount; i++) {
 				positionCounter += 1.0F / (Settings.ThumbnailCount + 1);
 				positionList.Add(positionCounter);
 			}
-
-			isScanning = true;
 		}
+
+		/// <summary>
+		/// FileEntry.Folder is always an absolute path without a trailing separator, but the
+		/// include/blacklist entries arrive as typed (CLI flags, Web text fields, JSON settings).
+		/// A relative path or trailing slash made the StartsWith inclusion check silently skip
+		/// every database entry — scans found 0 duplicates with no hint why (issue #790).
+		/// </summary>
+		void NormalizeScanPaths() {
+			static HashSet<string> Normalize(HashSet<string> paths) {
+				var result = new HashSet<string>();
+				foreach (var path in paths) {
+					string normalized = path;
+					try {
+						normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+					}
+					catch { /* keep the original string if it cannot be resolved */ }
+					result.Add(normalized);
+				}
+				return result;
+			}
+			Settings.IncludeList = Normalize(Settings.IncludeList);
+			Settings.BlackList = Normalize(Settings.BlackList);
+		}
+
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		double GetGrayBytesIndex(FileEntry entry, float position) =>
 			entry.GetGrayBytesIndex(position, Settings.MaxSamplingDurationSeconds);
 
 		void PrepareCompare() {
-			if (Settings.ThumbnailCount != positionList.Count) {
+			if (positionList.Count == 0) {
+				// Fresh process running compare-only (CLI 'compare' on an existing database):
+				// the list is built during PrepareSearch, which never ran here (issue #790).
+				BuildPositionList();
+			}
+			else if (Settings.ThumbnailCount != positionList.Count) {
 				throw new Exception("Number of thumbnails can't be changed between quick rescans! Rescan has been aborted.");
+			}
+			NormalizeScanPaths();
+			if (DatabaseUtils.Database.Count == 0) {
+				// Also a compare-only concern: the database is normally loaded by
+				// StartSearch's BuildFileList, which never ran in this process (issue #790).
+				DatabaseUtils.CustomDatabaseFolder = Settings.CustomDatabaseFolder;
+				DatabaseUtils.InvalidateDatabaseFolder();
+				DatabaseUtils.LoadDatabase();
+				// The invalid flag is not persisted and defaults to true; it is normally
+				// cleared per entry by StartSearch's hashing pass. Without this pass a
+				// compare-only run sees every imported entry as invalid (0 files compared).
+				foreach (FileEntry entry in DatabaseUtils.Database) {
+					entry.invalid = InvalidEntry(entry, out _, out string? reason);
+					if (entry.invalid && reason != null)
+						LogExcludedFile(entry, reason);
+				}
 			}
 
 			CancelAllTasks();
@@ -433,42 +481,8 @@ namespace VDF.Core {
 
 			return false;
 		}
-
-		internal static bool IsReparsePoint(string path) {
-			try {
-				return File.Exists(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
-			}
-			catch (IOException) {
-				return false;
-			}
-			catch (UnauthorizedAccessException) {
-				return false;
-			}
-		}
-
-		internal bool HasRequiredGrayBytes(FileEntry entry) =>
-			(entry.grayBytes?.Values.Count(bytes => bytes != null) ?? 0) >= (entry.IsImage ? 1 : Settings.ThumbnailCount);
-
-		internal bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
-			entry.invalid || entry.mediaInfo == null || !HasRequiredGrayBytes(entry);
-
-		internal static bool TryGetOrComputePHash(FileEntry entry, Dictionary<double, byte[]?> grayBytes, double index, bool persist, out ulong pHashValue) {
-			entry.PHashes ??= new Dictionary<double, ulong?>();
-			if (entry.PHashes.TryGetValue(index, out ulong? cachedPHash) && cachedPHash.HasValue) {
-				pHashValue = cachedPHash.Value;
-				return true;
-			}
-
-			if (!grayBytes.TryGetValue(index, out byte[]? bytes) || bytes == null) {
-				pHashValue = 0;
-				return false;
-			}
-
-			pHashValue = pHash.PerceptualHash.ComputePHashFromGray32x32(bytes);
-			if (persist)
-				entry.PHashes[index] = pHashValue;
-			return true;
-		}
+		bool InvalidEntryForDuplicateCheck(FileEntry entry) =>
+			entry.invalid || entry.mediaInfo == null || entry.Flags.Has(EntryFlags.ThumbnailError) || (!entry.IsImage && entry.grayBytes.Count < Settings.ThumbnailCount);
 
 		public static Task<bool> LoadDatabase() => Task.Run(DatabaseUtils.LoadDatabase);
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
@@ -525,10 +539,6 @@ namespace VDF.Core {
 						bool skipEntry = false;
 						string? skipReason = null;
 						skipEntry |= entry.invalid;
-						if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && HasRequiredGrayBytes(entry)) {
-							entry.Flags.Set(EntryFlags.ThumbnailError, false);
-						}
-
 						if (!skipEntry && entry.Flags.Has(EntryFlags.ThumbnailError) && !Settings.AlwaysRetryFailedSampling) {
 							skipEntry = true;
 							skipReason = "previous thumbnail sampling failed and retry is disabled";
@@ -568,16 +578,7 @@ namespace VDF.Core {
 							if (!hasAllInformation) {
 								hasAllInformation = true;
 								for (int i = 0; i < positionList.Count; i++) {
-									double index = GetGrayBytesIndex(entry, positionList[i]);
-									if (entry.grayBytes.TryGetValue(index, out byte[]? bytes) && bytes != null)
-										continue;
-									hasAllInformation = false;
-									break;
-								}
-							}
-							if (hasAllInformation && Settings.UsePHashing && !entry.IsImage) {
-								for (int i = 0; i < positionList.Count; i++) {
-									if (TryGetOrComputePHash(entry, entry.grayBytes, GetGrayBytesIndex(entry, positionList[i]), persist: true, out _))
+									if (entry.grayBytes.ContainsKey(GetGrayBytesIndex(entry, positionList[i])))
 										continue;
 									hasAllInformation = false;
 									break;
@@ -621,20 +622,16 @@ namespace VDF.Core {
 
 
 						if (entry.IsImage && entry.grayBytes.Count == 0) {
-							if (GetGrayBytesFromImage(entry, Settings.UseExifCreationDate, Settings.ExtendedFFToolsLogging))
-								entry.Flags.Set(EntryFlags.ThumbnailError, false);
-							else
+							if (!GetGrayBytesFromImage(entry, Settings.UseExifCreationDate, Settings.ExtendedFFToolsLogging))
 								entry.invalid = true;
 						}
 						else if (!entry.IsImage) {
 							string entryPath = entry.Path;
 							int totalSamples = positionList.Count;
 							string samplingLabel = T("Scan.Stage.SamplingFrames");
-							if (FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
+							if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
 									Settings.ExtendedFFToolsLogging,
 									onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples)))
-								entry.Flags.Set(EntryFlags.ThumbnailError, false);
-							else
 								entry.invalid = true;
 						}
 
@@ -760,11 +757,13 @@ namespace VDF.Core {
 				Logger.Instance.Info($"Missing pHash data for '{path}' — file will be skipped in pHash comparisons. Re-scan to repopulate.");
 		}
 
-		/// <summary>
+	/// <summary>
 		/// Builds the transient compare snapshot for <paramref name="entry"/>: gray-byte
 		/// arrays aligned with <see cref="positionList"/> order and, when pHashing is
-		/// enabled, all per-position pHashes cached back into <see cref="FileEntry.PHashes"/>.
-		/// Returns false when stored data is incomplete for the current scan settings.
+		/// enabled, the first-position pHash (computed once and cached back into
+		/// <see cref="FileEntry.PHashes"/> if it was missing). Returns false when the
+		/// stored data is incomplete for the current scan settings — those entries are
+		/// excluded from the comparison instead of failing on every pair.
 		/// </summary>
 		bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
 			if (entry.IsImage) {
@@ -784,13 +783,14 @@ namespace VDF.Core {
 			entry.compareGray = gray;
 
 			if (usePHashing) {
-				for (int j = 0; j < positionList.Count; j++) {
-					double idx = GetGrayBytesIndex(entry, positionList[j]);
-					if (TryGetOrComputePHash(entry, entry.grayBytes, idx, persist: true, out _))
-						continue;
-					LogMissingPHash(entry.Path);
-					return false;
+				double idx0 = GetGrayBytesIndex(entry, positionList[0]);
+				if (!entry.PHashes.TryGetValue(idx0, out ulong? phash)) {
+					phash = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[0]);
+					entry.PHashes[idx0] = phash; // cache for future quick rescans
 				}
+				if (phash == null)
+					LogMissingPHash(entry.Path);
+				entry.comparePHash = phash;
 			}
 			return true;
 		}
@@ -811,59 +811,18 @@ namespace VDF.Core {
 
 			if (Settings.UsePHashing) {
 				float differenceLimitpHash = Settings.Percent / 100f;
-				int sampleCount = Math.Min(grayBytes.Length, positionList.Count);
-				if (sampleCount == 0) {
+
+				// Entries with unrecoverable pHash data were logged once during
+				// snapshot building; they simply never match in pHash mode.
+				ulong? phash = overrideGray != null ? overridePHash : entry.comparePHash;
+				ulong? phash_comp = compItem.comparePHash;
+				if (phash == null || phash_comp == null) {
 					difference = 1f;
 					return false;
 				}
-
-				float maxDifferenceSum = (1f - differenceLimitpHash) * sampleCount;
-				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * pHashRequiredMatchingSampleRatio));
-				int matchingSamples = 0;
-				float pHashDiffSum = 0f;
-
-				for (int j = 0; j < sampleCount; j++) {
-					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
-					double compIndex = GetGrayBytesIndex(compItem, positionList[j]);
-					bool hasEntryPHash;
-					ulong phash;
-					if (overrideGray != null) {
-						if (grayBytes[j] == null) {
-							phash = 0;
-							hasEntryPHash = false;
-						}
-						else {
-							phash = pHash.PerceptualHash.ComputePHashFromGray32x32(grayBytes[j]!);
-							hasEntryPHash = true;
-						}
-					}
-					else {
-						hasEntryPHash = TryGetOrComputePHash(entry, entry.grayBytes, entryIndex, persist: true, out phash);
-					}
-					bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
-					if (!hasEntryPHash || !hasCompPHash) {
-						// Log per-file (deduplicated) rather than per-pair: a single file with
-						// a stored-null pHash entry would otherwise emit one line for every
-						// candidate it's compared against. The summary line at end of
-						// ScanForDuplicates reports how many distinct files were affected.
-						if (!hasEntryPHash) LogMissingPHash(entry.Path);
-						if (!hasCompPHash) LogMissingPHash(compItem.Path);
-						difference = 1f;
-						return false;
-					}
-
-					bool sampleMatches = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
-					if (sampleMatches)
-						matchingSamples++;
-					pHashDiffSum += 1f - similarity;
-					if (pHashDiffSum > maxDifferenceSum)
-						return false;
-					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples)
-						return false;
-				}
-
-				difference = pHashDiffSum / sampleCount;
-				return !float.IsNaN(difference) && matchingSamples >= requiredMatchingSamples;
+				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash.Value, phash_comp.Value, out float similarity, differenceLimitpHash, strict: true);
+				difference = 1f - similarity;
+				return isDup;
 
 			}
 
