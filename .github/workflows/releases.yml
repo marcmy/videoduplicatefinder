@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
+    paths-ignore:
+      - '.github/workflows/**'
+      - 'README.md'
 
 permissions:
   contents: write
