@@ -478,6 +478,9 @@ namespace VDF.Core.FFTools {
 		}
 
 		internal static void RecordHardwareDecodeFailureForCodec(string? codecName, string reason) {
+			if (!IsPersistentHardwareCodecFailure(reason))
+				return;
+
 			string? codec = NormalizeHardwareCodecName(codecName);
 			string? key = GetHardwareDecodeCodecKey(codec);
 			if (key == null)
@@ -493,13 +496,13 @@ namespace VDF.Core.FFTools {
 				stats.ConsecutiveFailures++;
 				string normalizedReason = NormalizeLogReason(reason, 240);
 				if (stats.ConsecutiveFailures < HardwareDecodeCodecBypassMinimumFailures) {
-					Logger.Instance.Info($"FFmpeg hardware decode failure observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveFailures}/{HardwareDecodeCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated consecutive failures. Reason: {normalizedReason}");
+					Logger.Instance.Info($"FFmpeg hardware codec support failure observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveFailures}/{HardwareDecodeCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated support failures. Reason: {normalizedReason}");
 					return;
 				}
 
 				stats.Bypass = true;
 				stats.Reason = $"codec '{codec}' on {HardwareAccelerationMode}: {normalizedReason}";
-				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveFailures} consecutive failure(s): {normalizedReason}");
+				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveFailures} repeated codec support failure(s): {normalizedReason}");
 			}
 		}
 
@@ -682,6 +685,26 @@ namespace VDF.Core.FFTools {
 				|| value.Contains("function not implemented", StringComparison.Ordinal)
 				|| value.Contains("not implemented", StringComparison.Ordinal)
 				|| value.Contains("error", StringComparison.Ordinal);
+		}
+
+		internal static bool IsPersistentHardwareCodecFailure(string? text) {
+			if (!IsHardwareDecodeFailure(text))
+				return false;
+
+			string value = text!.ToLowerInvariant();
+			return value.Contains("doesn't support hardware", StringComparison.Ordinal)
+				|| value.Contains("does not support hardware", StringComparison.Ordinal)
+				|| value.Contains("not supported", StringComparison.Ordinal)
+				|| value.Contains("unsupported", StringComparison.Ordinal)
+				|| value.Contains("failed setup for format", StringComparison.Ordinal)
+				|| value.Contains("hwaccel initialisation", StringComparison.Ordinal)
+				|| value.Contains("hwaccel initialization", StringComparison.Ordinal)
+				|| value.Contains("no device available for decoder", StringComparison.Ordinal)
+				|| value.Contains("device setup failed for decoder", StringComparison.Ordinal)
+				|| value.Contains("av_hwdevice_ctx_create", StringComparison.Ordinal)
+				|| value.Contains("failed to create", StringComparison.Ordinal)
+				|| value.Contains("function not implemented", StringComparison.Ordinal)
+				|| value.Contains("not implemented", StringComparison.Ordinal);
 		}
 
 		static bool ShouldUseD3D11GrayByteGpuScale(AVHWDeviceType deviceType, ref string hardwarePolicy, out string unavailableReason) {

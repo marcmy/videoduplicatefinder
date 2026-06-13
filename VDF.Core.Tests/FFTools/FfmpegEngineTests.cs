@@ -38,6 +38,23 @@ public class FfmpegEngineTests {
 		Assert.False(FfmpegEngine.IsHardwareDecodeFailure(text));
 	}
 
+	[Theory]
+	[InlineData("[av1 @ 000002] Your platform doesn't support hardware accelerated AV1 decoding. [AVHWDeviceContext @ 000002] Failed to create Direct3D device. Device setup failed for decoder on input stream #0:0 : Function not implemented")]
+	[InlineData("[h264 @ 000002] No device available for decoder: device type d3d11va needed for codec h264. Device setup failed for decoder on input stream #0:0")]
+	[InlineData("av_hwdevice_ctx_create(AV_HWDEVICE_TYPE_D3D11VA) failed: Function not implemented")]
+	[InlineData("[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.")]
+	public void IsPersistentHardwareCodecFailure_SetupOrUnsupportedText_ReturnsTrue(string text) {
+		Assert.True(FfmpegEngine.IsPersistentHardwareCodecFailure(text));
+	}
+
+	[Theory]
+	[InlineData("[h264 @ 000002] d3d11 hardware decode error while decoding a corrupted frame.")]
+	[InlineData("[h264 @ 000002] d3d11 hardware decode failed after invalid packet data.")]
+	[InlineData("requested AV_HWDEVICE_TYPE_D3D11VA VDF.Core.FFTools.FFInvalidExitCodeException: Invalid argument")]
+	public void IsPersistentHardwareCodecFailure_GenericDecodeText_ReturnsFalse(string text) {
+		Assert.False(FfmpegEngine.IsPersistentHardwareCodecFailure(text));
+	}
+
 	[Fact]
 	public void FfmpegErrorAccumulator_TruncatesAfterMaximumCapturedLines() {
 		var accumulator = new FfmpegEngine.FfmpegErrorAccumulator(maxLines: 3);
@@ -141,6 +158,27 @@ public class FfmpegEngineTests {
 			Assert.True(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out string reason));
 			Assert.Contains("h264", reason, StringComparison.OrdinalIgnoreCase);
 			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("hevc", out _));
+		}
+		finally {
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
+	}
+
+	[Fact]
+	public void HardwareDecodeFailure_DoesNotBypassCodecForGenericDecodeErrors() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string failure = "[h264 @ 000002] d3d11 hardware decode error while decoding a corrupted frame.";
+
+			Assert.True(FfmpegEngine.IsHardwareDecodeFailure(failure));
+
+			for (int i = 0; i < 5; i++)
+				FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out _));
 		}
 		finally {
 			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
