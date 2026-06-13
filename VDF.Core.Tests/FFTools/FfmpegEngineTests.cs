@@ -23,7 +23,6 @@ public class FfmpegEngineTests {
 	[InlineData("[av1 @ 000002] Your platform doesn't support hardware accelerated AV1 decoding. [AVHWDeviceContext @ 000002] Failed to create Direct3D device. Device setup failed for decoder on input stream #0:0 : Function not implemented")]
 	[InlineData("[h264 @ 000002] No device available for decoder: device type d3d11va needed for codec h264. Device setup failed for decoder on input stream #0:0")]
 	[InlineData("av_hwdevice_ctx_create(AV_HWDEVICE_TYPE_D3D11VA) failed: Function not implemented")]
-	[InlineData("requested AV_HWDEVICE_TYPE_D3D11VA VDF.Core.FFTools.FFInvalidExitCodeException: Invalid argument")]
 	[InlineData("[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.")]
 	public void IsHardwareDecodeFailure_HardwareFailureText_ReturnsTrue(string text) {
 		Assert.True(FfmpegEngine.IsHardwareDecodeFailure(text));
@@ -34,6 +33,7 @@ public class FfmpegEngineTests {
 	[InlineData("[matroska,webm @ 000002] EBML header parsing failed")]
 	[InlineData("Function not implemented")]
 	[InlineData("Invalid argument")]
+	[InlineData("requested AV_HWDEVICE_TYPE_D3D11VA VDF.Core.FFTools.FFInvalidExitCodeException: Invalid argument")]
 	public void IsHardwareDecodeFailure_GenericFailureText_ReturnsFalse(string text) {
 		Assert.False(FfmpegEngine.IsHardwareDecodeFailure(text));
 	}
@@ -73,7 +73,7 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
-	public void ConfiguredHardwareDecodeBypass_TripsAfterRepeatedSetupFailures() {
+	public void ConfiguredHardwareDecodeBypass_DoesNotTripAfterRepeatedSetupFailures() {
 		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
 		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
 		try {
@@ -82,12 +82,65 @@ public class FfmpegEngineTests {
 
 			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
 			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
-			Assert.False(FfmpegEngine.IsConfiguredHardwareDecodeBypassed(out _));
-
 			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
 
-			Assert.True(FfmpegEngine.IsConfiguredHardwareDecodeBypassed(out string reason));
-			Assert.Contains("Failed setup", reason);
+			Assert.False(FfmpegEngine.IsConfiguredHardwareDecodeBypassed(out _));
+		}
+		finally {
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
+	}
+
+	[Fact]
+	public void NativeFrameExtraction_KeepsDisplayThumbnailsEligibleAfterHardwareFailures() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.UseNativeBinding = true;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		FfmpegEngine.ResetNativeBindingHealthForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string failure = "[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.";
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+
+			Assert.True(FfmpegEngine.ShouldAttemptNativeSingleFrameExtraction(new FfmpegSettings {
+				GrayScale = 0,
+				File = "video.mp4",
+				Position = TimeSpan.Zero,
+			}));
+		}
+		finally {
+			FfmpegEngine.UseNativeBinding = false;
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.ResetNativeBindingHealthForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
+	}
+
+	[Fact]
+	public void HardwareDecodeFailure_BypassesOnlyRepeatedFailuresForSameCodec() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string failure = "[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.";
+
+			FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+			FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out _));
+
+			FfmpegEngine.RecordHardwareDecodeSuccessForCodec("h264");
+			FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+			FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out _));
+
+			FfmpegEngine.RecordHardwareDecodeFailureForCodec("h264", failure);
+
+			Assert.True(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out string reason));
+			Assert.Contains("h264", reason, StringComparison.OrdinalIgnoreCase);
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("hevc", out _));
 		}
 		finally {
 			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();

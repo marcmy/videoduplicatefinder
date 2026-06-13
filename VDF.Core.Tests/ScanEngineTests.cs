@@ -121,6 +121,13 @@ public class ScanEngineTests {
 		Assert.False(InvokeCheckIfDuplicate(scanner, entry, compItem, out _));
 	}
 
+	[Fact]
+	public void FormatFileLedgerLog_IncludesPhaseStatusAndPath() {
+		string message = ScanEngine.FormatFileLedgerLog("Scan", "sampled", @"X:\video.mp4");
+
+		Assert.Equal(@"Scan file: sampled: 'X:\video.mp4'", message);
+	}
+
 	static FileEntry CreateVideoEntry(int grayByteCount) {
 		var entry = new FileEntry {
 			_Path = @"X:\video.mp4",

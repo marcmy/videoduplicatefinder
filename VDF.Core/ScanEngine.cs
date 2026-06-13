@@ -107,6 +107,12 @@ namespace VDF.Core {
 				Logger.Instance.Info(T("Log.ExcludedFilesSummaryItem", reason.Key, reason.Value, suppressionText));
 			}
 		}
+		internal static string FormatFileLedgerLog(string phase, string status, string path) =>
+			$"{phase} file: {status}: '{path}'";
+
+		static void LogFileLedger(string phase, string path, string status) =>
+			Logger.Instance.Info(FormatFileLedgerLog(phase, status, path));
+
 		void IncrementProgress(string path) {
 			processedFiles++;
 			var pushUpdate = processedFiles == scanProgressMaxValue ||
@@ -558,6 +564,7 @@ namespace VDF.Core {
 							entry.invalid = true;
 							if (!wasInvalid && skipReason != null)
 								LogExcludedFile(entry, skipReason);
+							LogFileLedger("Scan", entry.Path, skipReason == null ? "skipped" : $"skipped - {skipReason}");
 							if (reportProgress)
 								IncrementProgress(entry.Path);
 							return ValueTask.CompletedTask;
@@ -596,6 +603,7 @@ namespace VDF.Core {
 									ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
 										onProgress: p => ReportStage(cachedAudioPath, audioStageLabel, (int)(p * 100), 100));
 								}
+								LogFileLedger("Scan", entry.Path, "cached");
 								IncrementProgress(entry.Path);
 								return ValueTask.CompletedTask;
 							}
@@ -607,6 +615,7 @@ namespace VDF.Core {
 							if (info == null) {
 								entry.invalid = true;
 								entry.Flags.Set(EntryFlags.MetadataError);
+								LogFileLedger("Scan", entry.Path, "metadata failed");
 								IncrementProgress(entry.Path);
 								return ValueTask.CompletedTask;
 							}
@@ -652,6 +661,7 @@ namespace VDF.Core {
 								onProgress: p => ReportStage(audioPath, audioLabel, (int)(p * 100), 100));
 						}
 
+						LogFileLedger("Scan", entry.Path, entry.invalid ? "failed" : "processed");
 						IncrementProgress(entry.Path);
 						return ValueTask.CompletedTask;
 					}
@@ -665,6 +675,7 @@ namespace VDF.Core {
 						Logger.Instance.Info($"Unhandled error processing '{entry.Path}': {ex}");
 						entry.invalid = true;
 						entry.Flags.Set(EntryFlags.ThumbnailError);
+						LogFileLedger("Scan", entry.Path, "error");
 						IncrementProgress(entry.Path);
 						return ValueTask.CompletedTask;
 					}
@@ -1435,8 +1446,8 @@ namespace VDF.Core {
 			}
 			if (srcSampleTimes.Count == 0) return true;
 
-			byte[]?[] srcFrames = FfmpegEngine.GetGrayFrames(source.Path, srcSampleTimes, Settings.ExtendedFFToolsLogging);
-			byte[]?[] clipFrames = FfmpegEngine.GetGrayFrames(clip.Path, clipSampleTimes, Settings.ExtendedFFToolsLogging);
+			byte[]?[] srcFrames = FfmpegEngine.GetGrayFrames(source.Path, srcSampleTimes, Settings.ExtendedFFToolsLogging, GetPrimaryVideoCodecName(source));
+			byte[]?[] clipFrames = FfmpegEngine.GetGrayFrames(clip.Path, clipSampleTimes, Settings.ExtendedFFToolsLogging, GetPrimaryVideoCodecName(clip));
 
 			for (int i = 0; i < srcSampleTimes.Count; i++) {
 				byte[]? srcFrame = srcFrames[i];
@@ -1822,6 +1833,21 @@ namespace VDF.Core {
 			ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase) ||
 			ext.Equals(".tif", StringComparison.OrdinalIgnoreCase);
 
+		static string? GetPrimaryVideoCodecName(FileEntry entry) {
+			MediaInfo.StreamInfo? selectedStream = null;
+			int selectedPixels = -1;
+			foreach (MediaInfo.StreamInfo stream in entry.mediaInfo?.Streams ?? []) {
+				if (!string.Equals(stream.CodecType, "video", StringComparison.OrdinalIgnoreCase))
+					continue;
+				int pixels = Math.Max(0, stream.Width) * Math.Max(0, stream.Height);
+				if (selectedStream == null || pixels >= selectedPixels) {
+					selectedStream = stream;
+					selectedPixels = pixels;
+				}
+			}
+			return string.IsNullOrWhiteSpace(selectedStream?.CodecName) ? null : selectedStream.CodecName.Trim();
+		}
+
 		/// <summary>
 		/// Whether an item should be (re)processed for thumbnails. Items with no thumbnails
 		/// load on first pass; items whose sole image is the NoThumbnailImage placeholder
@@ -1875,6 +1901,7 @@ namespace VDF.Core {
 
 					if (!needsThumbnails) {
 						Interlocked.Increment(ref skippedMissing);
+						LogFileLedger("Explicit thumbnail", entry.Path, "skipped missing");
 					}
 					else if (entry.IsImage) {
 						timeStamps = new(0);
@@ -1882,11 +1909,13 @@ namespace VDF.Core {
 						var b = ExtractThumbnailJpeg(entry.Path, TimeSpan.Zero, maxDim);
 						if (b == null || b.Length == 0) {
 							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}'.");
+							LogFileLedger("Explicit thumbnail", entry.Path, "failed image");
 							return ValueTask.CompletedTask;
 						}
 						list.Add(b);
 						entry.ThumbnailWidth = maxDim;
 						Interlocked.Increment(ref loaded);
+						LogFileLedger("Explicit thumbnail", entry.Path, "loaded image");
 					}
 					else {
 						list = new List<byte[]>(positionList.Count);
@@ -1894,7 +1923,7 @@ namespace VDF.Core {
 						int failedPositions = 0;
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
+							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
 							if (b == null || b.Length == 0) {
 								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
@@ -1909,15 +1938,21 @@ namespace VDF.Core {
 							entry.ThumbnailWidth = 0;
 							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
 							Interlocked.Increment(ref placeholders);
+							LogFileLedger("Explicit thumbnail", entry.Path, "placeholder");
 						}
 						else if (list.Count > 0 && failedPositions > 0) {
 							entry.ThumbnailWidth = maxDim;
 							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
 							Interlocked.Increment(ref loaded);
+							LogFileLedger("Explicit thumbnail", entry.Path, $"loaded {list.Count}/{positionList.Count}");
 						}
 						else if (list.Count > 0) {
 							entry.ThumbnailWidth = maxDim;
 							Interlocked.Increment(ref loaded);
+							LogFileLedger("Explicit thumbnail", entry.Path, $"loaded {list.Count}/{positionList.Count}");
+						}
+						else {
+							LogFileLedger("Explicit thumbnail", entry.Path, "failed");
 						}
 					}
 					Debug.Assert(timeStamps != null);
@@ -1956,6 +1991,7 @@ namespace VDF.Core {
 
 					if (!needsThumbnails) {
 						Interlocked.Increment(ref skippedMissing);
+						LogFileLedger("Thumbnail", entry.Path, "skipped missing");
 					}
 					else if (entry.IsImage) {
 						//For images it doesn't make sense to load the actual image more than once
@@ -1964,11 +2000,13 @@ namespace VDF.Core {
 						var b = ExtractThumbnailJpeg(entry.Path, TimeSpan.Zero, maxDim);
 						if (b == null || b.Length == 0) {
 							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}'.");
+							LogFileLedger("Thumbnail", entry.Path, "failed image");
 							return ValueTask.CompletedTask;
 						}
 						list.Add(b);
 						entry.ThumbnailWidth = maxDim;
 						Interlocked.Increment(ref loaded);
+						LogFileLedger("Thumbnail", entry.Path, "loaded image");
 					}
 					else {
 						list = new List<byte[]>(positionList.Count);
@@ -1976,7 +2014,7 @@ namespace VDF.Core {
 						int failedPositions = 0;
 						for (int j = 0; j < positionList.Count; j++) {
 							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
+							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
 							if (b == null || b.Length == 0) {
 								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
@@ -1991,15 +2029,21 @@ namespace VDF.Core {
 							entry.ThumbnailWidth = 0;
 							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
 							Interlocked.Increment(ref placeholders);
+							LogFileLedger("Thumbnail", entry.Path, "placeholder");
 						}
 						else if (list.Count > 0 && failedPositions > 0) {
 							entry.ThumbnailWidth = maxDim;
 							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
 							Interlocked.Increment(ref loaded);
+							LogFileLedger("Thumbnail", entry.Path, $"loaded {list.Count}/{positionList.Count}");
 						}
 						else if (list.Count > 0) {
 							entry.ThumbnailWidth = maxDim;
 							Interlocked.Increment(ref loaded);
+							LogFileLedger("Thumbnail", entry.Path, $"loaded {list.Count}/{positionList.Count}");
+						}
+						else {
+							LogFileLedger("Thumbnail", entry.Path, "failed");
 						}
 					}
 					Debug.Assert(timeStamps != null);

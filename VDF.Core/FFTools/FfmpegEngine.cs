@@ -35,14 +35,13 @@ namespace VDF.Core.FFTools {
 		const long NativeGrayByteD3D11AutoQueueHighMs = 750;
 		const long NativeGrayByteD3D11AutoDecodeHighMs = 1500;
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
-		const int D3D11GrayByteHardwareBypassMinimumFailures = 2;
-		const int HardwareDecodeSessionBypassMinimumFailures = 3;
+		const int HardwareDecodeCodecBypassMinimumFailures = 3;
 		const int MaxCapturedFfmpegErrorLines = 80;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
 		static readonly Dictionary<string, D3D11GrayByteAdaptiveStats> D3D11GrayByteAdaptiveStatsByFamily = new(StringComparer.OrdinalIgnoreCase);
-		static readonly object HardwareDecodeAdaptiveStateLock = new();
-		static readonly Dictionary<FFHardwareAccelerationMode, HardwareDecodeAdaptiveStats> HardwareDecodeAdaptiveStatsByMode = new();
+		static readonly object HardwareDecodeCodecStateLock = new();
+		static readonly Dictionary<string, HardwareDecodeCodecStats> HardwareDecodeCodecStatsByModeAndCodec = new(StringComparer.OrdinalIgnoreCase);
 		static readonly object D3D11GrayByteConcurrencyLock = new();
 		static int D3D11GrayByteCurrentConcurrencyLimit = NativeGrayByteD3D11AutoInitialConcurrency;
 		static int D3D11GrayByteActiveConcurrency;
@@ -127,6 +126,9 @@ namespace VDF.Core.FFTools {
 			Logger.Instance.Info($"Native FFmpeg batched graybyte extraction completed for '{file}': mode={batchMode}, family={family}, hw={(hwDecode ? "requested" : "off")}, hwPolicy={hardwarePolicy}, hwTransfers={timing.HardwareTransfers}/{samples}, fullFrameTransfers={timing.FullFrameTransfers}/{samples}, tinyDownloads={timing.TinyDownloads}/{samples}, samples={samples}, queue={timing.QueueMs}ms, open={timing.OpenMs}ms, seek={timing.SeekMs}ms, decode={timing.DecodeMs}ms, transfer={timing.TransferMs}ms, filter={timing.FilterMs}ms, convert={timing.ConvertMs}ms, tinyConvert={timing.TinyConvertMs}ms, map={timing.MapMs}ms, copy={timing.CopyMs}ms, total={totalMs}ms");
 		}
 
+		internal static bool ShouldAttemptNativeSingleFrameExtraction(FfmpegSettings settings) =>
+			ShouldUseNativeBinding;
+
 		const double SequentialBatchMaxSpanSeconds = 2d;
 
 		sealed class NativeGrayByteTiming {
@@ -154,11 +156,10 @@ namespace VDF.Core.FFTools {
 			public bool CpuProbePending;
 			public bool CpuProbeCompleted;
 			public bool Bypass;
-			public int HardwareFailureObservations;
 		}
 
-		sealed class HardwareDecodeAdaptiveStats {
-			public int DeviceSetupFailures;
+		sealed class HardwareDecodeCodecStats {
+			public int ConsecutiveFailures;
 			public bool Bypass;
 			public string Reason = string.Empty;
 		}
@@ -438,6 +439,70 @@ namespace VDF.Core.FFTools {
 			return $"{codec}|{pixelFormat}|{stream.Width}x{stream.Height}";
 		}
 
+		static string? GetPrimaryVideoCodecName(FileEntry videoFile) {
+			MediaInfo.StreamInfo? stream = GetPrimaryVideoStream(videoFile);
+			return string.IsNullOrWhiteSpace(stream?.CodecName) ? null : stream.CodecName.Trim();
+		}
+
+		static string? NormalizeHardwareCodecName(string? codecName) =>
+			string.IsNullOrWhiteSpace(codecName) ? null : codecName.Trim().ToLowerInvariant();
+
+		static string? GetHardwareDecodeCodecKey(string? codecName) {
+			string? codec = NormalizeHardwareCodecName(codecName);
+			if (codec == null || HardwareAccelerationMode == FFHardwareAccelerationMode.none)
+				return null;
+			return $"{HardwareAccelerationMode}|{codec}";
+		}
+
+		internal static bool ShouldBypassHardwareDecodeForCodec(string? codecName, out string reason) {
+			reason = string.Empty;
+			string? key = GetHardwareDecodeCodecKey(codecName);
+			if (key == null)
+				return false;
+			lock (HardwareDecodeCodecStateLock) {
+				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats) || !stats.Bypass)
+					return false;
+				reason = stats.Reason;
+				return true;
+			}
+		}
+
+		internal static void RecordHardwareDecodeSuccessForCodec(string? codecName) {
+			string? key = GetHardwareDecodeCodecKey(codecName);
+			if (key == null)
+				return;
+			lock (HardwareDecodeCodecStateLock) {
+				if (HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats) && !stats.Bypass)
+					stats.ConsecutiveFailures = 0;
+			}
+		}
+
+		internal static void RecordHardwareDecodeFailureForCodec(string? codecName, string reason) {
+			string? codec = NormalizeHardwareCodecName(codecName);
+			string? key = GetHardwareDecodeCodecKey(codec);
+			if (key == null)
+				return;
+			lock (HardwareDecodeCodecStateLock) {
+				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
+					stats = new HardwareDecodeCodecStats();
+					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
+				}
+				if (stats.Bypass)
+					return;
+
+				stats.ConsecutiveFailures++;
+				string normalizedReason = NormalizeLogReason(reason, 240);
+				if (stats.ConsecutiveFailures < HardwareDecodeCodecBypassMinimumFailures) {
+					Logger.Instance.Info($"FFmpeg hardware decode failure observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveFailures}/{HardwareDecodeCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated consecutive failures. Reason: {normalizedReason}");
+					return;
+				}
+
+				stats.Bypass = true;
+				stats.Reason = $"codec '{codec}' on {HardwareAccelerationMode}: {normalizedReason}";
+				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveFailures} consecutive failure(s): {normalizedReason}");
+			}
+		}
+
 		static bool ShouldBypassGrayByteHardwareForFamily(string? familyKey) {
 			if (string.IsNullOrWhiteSpace(familyKey) || IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar))
 				return false;
@@ -446,80 +511,21 @@ namespace VDF.Core.FFTools {
 			}
 		}
 
-		static void MarkGrayByteHardwareBypassForFamily(string? familyKey, string reason) {
-			if (string.IsNullOrWhiteSpace(familyKey) || IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar))
-				return;
-			lock (D3D11GrayByteAdaptiveStateLock) {
-				if (!D3D11GrayByteAdaptiveStatsByFamily.TryGetValue(familyKey, out D3D11GrayByteAdaptiveStats? stats)) {
-					stats = new D3D11GrayByteAdaptiveStats();
-					D3D11GrayByteAdaptiveStatsByFamily.Add(familyKey, stats);
-				}
-				if (stats.Bypass)
-					return;
-				stats.HardwareFailureObservations++;
-				string normalizedReason = NormalizeLogReason(reason, 240);
-				if (stats.HardwareFailureObservations < D3D11GrayByteHardwareBypassMinimumFailures) {
-					Logger.Instance.Info($"FFmpeg graybyte hardware decode fallback observed for family '{familyKey}' ({stats.HardwareFailureObservations}/{D3D11GrayByteHardwareBypassMinimumFailures}); keeping hardware enabled for this family until repeated failures. Reason: {normalizedReason}");
-					return;
-				}
-				stats.Bypass = true;
-				stats.CpuProbePending = false;
-				stats.CpuProbeCompleted = true;
-				Logger.Instance.Info($"FFmpeg graybyte hardware decode fallback will use CPU decode for family '{familyKey}' after {stats.HardwareFailureObservations} hardware decode failure(s): {normalizedReason}");
-			}
-		}
-
-		static bool IsConfiguredHardwareDecodeAdaptiveDisabled() =>
-			HardwareAccelerationMode == FFHardwareAccelerationMode.d3d11va
-			&& IsEnvFlagEnabled(DisableNativeGrayByteD3D11AdaptiveEnvVar);
-
 		internal static bool IsConfiguredHardwareDecodeBypassed(out string reason) {
+			// Hardware decode failures stay file-scoped; a bad file must not turn off
+			// the configured accelerator for the rest of the scan.
 			reason = string.Empty;
-			if (HardwareAccelerationMode == FFHardwareAccelerationMode.none || IsConfiguredHardwareDecodeAdaptiveDisabled())
-				return false;
-
-			lock (HardwareDecodeAdaptiveStateLock) {
-				if (!HardwareDecodeAdaptiveStatsByMode.TryGetValue(HardwareAccelerationMode, out HardwareDecodeAdaptiveStats? stats) || !stats.Bypass)
-					return false;
-				reason = stats.Reason;
-				return true;
-			}
+			return false;
 		}
-
-		static bool IsConfiguredHardwareDecodeBypassed() =>
-			IsConfiguredHardwareDecodeBypassed(out _);
 
 		internal static void ResetConfiguredHardwareDecodeAdaptiveStateForTests() {
-			lock (HardwareDecodeAdaptiveStateLock) {
-				HardwareDecodeAdaptiveStatsByMode.Clear();
+			lock (HardwareDecodeCodecStateLock) {
+				HardwareDecodeCodecStatsByModeAndCodec.Clear();
 			}
 		}
 
 		internal static void MarkConfiguredHardwareDecodeFailure(string reason) {
-			if (HardwareAccelerationMode == FFHardwareAccelerationMode.none || IsConfiguredHardwareDecodeAdaptiveDisabled())
-				return;
-			if (!IsHardwareDeviceSetupFailure(reason))
-				return;
-
-			lock (HardwareDecodeAdaptiveStateLock) {
-				if (!HardwareDecodeAdaptiveStatsByMode.TryGetValue(HardwareAccelerationMode, out HardwareDecodeAdaptiveStats? stats)) {
-					stats = new HardwareDecodeAdaptiveStats();
-					HardwareDecodeAdaptiveStatsByMode.Add(HardwareAccelerationMode, stats);
-				}
-				if (stats.Bypass)
-					return;
-
-				stats.DeviceSetupFailures++;
-				string normalizedReason = NormalizeLogReason(reason, 240);
-				if (stats.DeviceSetupFailures < HardwareDecodeSessionBypassMinimumFailures) {
-					Logger.Instance.Info($"FFmpeg hardware decode setup failure observed for {HardwareAccelerationMode} ({stats.DeviceSetupFailures}/{HardwareDecodeSessionBypassMinimumFailures}); keeping hardware enabled until repeated setup failures. Reason: {normalizedReason}");
-					return;
-				}
-
-				stats.Bypass = true;
-				stats.Reason = normalizedReason;
-				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for {HardwareAccelerationMode} for the rest of this session after {stats.DeviceSetupFailures} setup failure(s): {normalizedReason}");
-			}
+			_ = reason;
 		}
 
 		static bool ShouldBypassD3D11GrayByteForFamily(FileEntry videoFile, out string familyKey) {
@@ -589,15 +595,11 @@ namespace VDF.Core.FFTools {
 		static string GetHardwarePolicy(AVHWDeviceType deviceType, bool enableHardwareAcceleration) {
 			if (!enableHardwareAcceleration)
 				return "disabled-for-call";
-			if (IsConfiguredHardwareDecodeBypassed(out _))
-				return "hardware-decode-session-bypass";
 			return deviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_NONE ? "configured-off" : "requested";
 		}
 
 		static AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {
 			if (!enableHardwareAcceleration)
-				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
-			if (IsConfiguredHardwareDecodeBypassed())
 				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 
 			return HardwareAccelerationMode switch {
@@ -616,11 +618,6 @@ namespace VDF.Core.FFTools {
 		}
 
 		static AVHWDeviceType GetConfiguredGrayByteHardwareDeviceType(out string hardwarePolicy) {
-			if (IsConfiguredHardwareDecodeBypassed(out _)) {
-				hardwarePolicy = "hardware-decode-session-bypass";
-				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
-			}
-
 			AVHWDeviceType configuredDeviceType = GetConfiguredHardwareDeviceType();
 			if (configuredDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
 				hardwarePolicy = "configured-off";
@@ -640,11 +637,6 @@ namespace VDF.Core.FFTools {
 			hardwarePolicy = "requested";
 			if (HardwareAccelerationMode == FFHardwareAccelerationMode.none) {
 				hardwarePolicy = "configured-off";
-				return false;
-			}
-
-			if (IsConfiguredHardwareDecodeBypassed(out _)) {
-				hardwarePolicy = "hardware-decode-session-bypass";
 				return false;
 			}
 
@@ -687,26 +679,11 @@ namespace VDF.Core.FFTools {
 				|| value.Contains("cannot", StringComparison.Ordinal)
 				|| value.Contains("no device", StringComparison.Ordinal)
 				|| value.Contains("device setup failed", StringComparison.Ordinal)
-				|| value.Contains("invalid argument", StringComparison.Ordinal)
 				|| value.Contains("function not implemented", StringComparison.Ordinal)
 				|| value.Contains("not implemented", StringComparison.Ordinal)
 				|| value.Contains("error", StringComparison.Ordinal);
 		}
 
-		internal static bool IsHardwareDeviceSetupFailure(string? text) {
-			if (!IsHardwareDecodeFailure(text))
-				return false;
-
-			string value = text!.ToLowerInvariant();
-			return value.Contains("failed setup for format", StringComparison.Ordinal)
-				|| value.Contains("hwaccel initialisation", StringComparison.Ordinal)
-				|| value.Contains("hwaccel initialization", StringComparison.Ordinal)
-				|| value.Contains("device setup failed", StringComparison.Ordinal)
-				|| value.Contains("failed to create", StringComparison.Ordinal)
-				|| value.Contains("no device available", StringComparison.Ordinal)
-				|| value.Contains("av_hwdevice_ctx_create", StringComparison.Ordinal)
-				|| value.Contains("invalid argument", StringComparison.Ordinal);
-		}
 		static bool ShouldUseD3D11GrayByteGpuScale(AVHWDeviceType deviceType, ref string hardwarePolicy, out string unavailableReason) {
 			unavailableReason = string.Empty;
 			if (deviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA)
@@ -982,6 +959,7 @@ namespace VDF.Core.FFTools {
 			int requestedSamples = 0;
 			string hardwarePolicy = "unresolved";
 			string? familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
+			string? codecName = GetPrimaryVideoCodecName(videoFile);
 			AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 			try {
 				List<GrayByteRequest> requests = GetMissingGrayByteRequests(videoFile, positions, maxSamplingDurationSeconds);
@@ -997,7 +975,11 @@ namespace VDF.Core.FFTools {
 				}
 				else {
 					hardwareDeviceType = GetConfiguredGrayByteHardwareDeviceType(out hardwarePolicy);
-					if (hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA && ShouldBypassD3D11GrayByteForFamily(videoFile, out _)) {
+					if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && ShouldBypassHardwareDecodeForCodec(codecName, out _)) {
+						hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+						hardwarePolicy = "hardware-decode-codec-bypass";
+					}
+					else if (hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA && ShouldBypassD3D11GrayByteForFamily(videoFile, out _)) {
 						hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 						hardwarePolicy = "d3d11-software-frame-family-bypass";
 					}
@@ -1066,10 +1048,12 @@ namespace VDF.Core.FFTools {
 				}
 				if (extendedLogging)
 					LogNativeBatchTiming(videoFile.Path, GetD3D11GrayByteAdaptiveFamilyKey(videoFile) ?? string.Empty, vsd.IsHardwareDecode, GetEffectiveGrayByteHardwarePolicy(hardwarePolicy, useD3D11GpuScale, nativeTiming), batchMode, requests.Count, nativeTiming, batchSw.ElapsedMilliseconds);
+				if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+					RecordHardwareDecodeSuccessForCodec(codecName);
 				if (useD3D11GpuScale && vsd.IsHardwareDecode) {
 					long d3d11TotalMs = batchSw.ElapsedMilliseconds;
 					ObserveD3D11GrayByteConcurrency(nativeTiming);
-						ObserveD3D11GrayByteFamily(videoFile, nativeTiming, d3d11TotalMs);
+					ObserveD3D11GrayByteFamily(videoFile, nativeTiming, d3d11TotalMs);
 					if (!forceCpuDecode && ShouldProbeD3D11GrayByteFamilyWithCpu(videoFile, out string probeFamilyKey)) {
 						List<GrayByteResult> d3d11Results = new(results);
 						results.Clear();
@@ -1095,7 +1079,7 @@ namespace VDF.Core.FFTools {
 					return false;
 				}
 				if (e is D3D11SoftwareFrameFallbackException && !forceCpuDecode) {
-					MarkGrayByteHardwareBypassForFamily(familyKey, e.Message);
+					RecordHardwareDecodeFailureForCodec(codecName, e.Message);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction detected software frames under D3D11 on '{videoFile.Path}', retrying native batch with CPU decode. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
@@ -1103,7 +1087,7 @@ namespace VDF.Core.FFTools {
 				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
 				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
-					MarkGrayByteHardwareBypassForFamily(familyKey, e.Message);
+					RecordHardwareDecodeFailureForCodec(codecName, failureText);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction hit a hardware decode failure on '{videoFile.Path}', retrying native batch with CPU decode. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "hardware-decode-failure-cpu-retry");
@@ -1122,11 +1106,13 @@ namespace VDF.Core.FFTools {
 		/// could not produce (or all of them, without the native binding) fall back to the
 		/// per-frame <see cref="GetThumbnail"/> path, which itself falls back to the FFmpeg process.
 		/// </summary>
-		internal static unsafe byte[]?[] GetGrayFrames(string filePath, IReadOnlyList<double> positionsSeconds, bool extendedLogging) {
+		internal static unsafe byte[]?[] GetGrayFrames(string filePath, IReadOnlyList<double> positionsSeconds, bool extendedLogging, string? hardwareCodecName = null) {
 			const int N = 32;
 			var frames = new byte[]?[positionsSeconds.Count];
 			if (ShouldUseNativeBinding) {
-				AVHWDeviceType hardwareDeviceType = GetConfiguredHardwareDeviceType();
+				AVHWDeviceType hardwareDeviceType = ShouldBypassHardwareDecodeForCodec(hardwareCodecName, out _)
+					? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+					: GetConfiguredHardwareDeviceType();
 				try {
 					using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
 					VideoFrameConverter? converter = null;
@@ -1161,13 +1147,20 @@ namespace VDF.Core.FFTools {
 					finally {
 						converter?.Dispose();
 					}
+					if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+						RecordHardwareDecodeSuccessForCodec(hardwareCodecName);
 					RecordNativeSuccess();
 				}
 				catch (Exception e) {
 					if (IsNativeBindingLoadFailure(e))
 						RecordNativeFailure(filePath, e);
-					else if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE)
-						MarkConfiguredHardwareDecodeFailure($"{hardwareDeviceType} {e}");
+					else if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
+						string failureText = $"{hardwareDeviceType} {e}";
+						if (IsHardwareDecodeFailure(failureText)) {
+							MarkConfiguredHardwareDecodeFailure(failureText);
+							RecordHardwareDecodeFailureForCodec(hardwareCodecName, failureText);
+						}
+					}
 					Logger.Instance.Info($"Native batch frame extraction failed on '{filePath}', falling back to per-frame path. Exception: {e}");
 				}
 			}
@@ -1176,7 +1169,8 @@ namespace VDF.Core.FFTools {
 				frames[i] ??= GetThumbnail(new FfmpegSettings {
 					File = filePath,
 					Position = TimeSpan.FromSeconds(positionsSeconds[i]),
-					GrayScale = 1
+					GrayScale = 1,
+					HardwareCodecName = hardwareCodecName
 				}, extendedLogging);
 			}
 			return frames;
@@ -1188,6 +1182,7 @@ namespace VDF.Core.FFTools {
 			bool isGrayByte = settings.GrayScale == 1;
 			string hardwarePolicy = "unresolved";
 			bool bypassHardwareForFamily = isGrayByte && ShouldBypassGrayByteHardwareForFamily(settings.HardwareFamilyKey);
+			bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(settings.HardwareCodecName, out _);
 			bool enableHardwareAcceleration;
 			if (settings.SoftwareDecodeOnly) {
 				hardwarePolicy = "software-decode-only";
@@ -1195,6 +1190,10 @@ namespace VDF.Core.FFTools {
 			}
 			else if (settings.ForceCpuDecode) {
 				hardwarePolicy = "hardware-decode-failure-cpu-retry";
+				enableHardwareAcceleration = false;
+			}
+			else if (bypassHardwareForCodec) {
+				hardwarePolicy = "hardware-decode-codec-bypass";
 				enableHardwareAcceleration = false;
 			}
 			else if (bypassHardwareForFamily) {
@@ -1209,7 +1208,7 @@ namespace VDF.Core.FFTools {
 			AVHWDeviceType nativeHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 
 			try {
-				if (ShouldUseNativeBinding) {
+				if (ShouldAttemptNativeSingleFrameExtraction(settings)) {
 					var totalSw = Stopwatch.StartNew();
 					long openMs = 0, seekMs = 0, decodeMs = 0, transferMs = 0, convertMs = 0, copyMs = 0;
 					int hardwareTransfers = 0;
@@ -1262,6 +1261,8 @@ namespace VDF.Core.FFTools {
 						copyMs = phaseSw.ElapsedMilliseconds;
 						if (extendedLogging)
 							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
+						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
 						RecordNativeSuccess();
 						return outBuf;
 					}
@@ -1273,6 +1274,8 @@ namespace VDF.Core.FFTools {
 						copyMs = phaseSw.ElapsedMilliseconds;
 						if (extendedLogging)
 							LogNativeTiming(settings.File, settings.Position, false, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
+						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
 						RecordNativeSuccess();
 						return jpeg;
 					}
@@ -1285,7 +1288,7 @@ namespace VDF.Core.FFTools {
 				}
 				else if (!settings.ForceCpuDecode && enableHardwareAcceleration && nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
-					MarkGrayByteHardwareBypassForFamily(settings.HardwareFamilyKey, e.Message);
+					RecordHardwareDecodeFailureForCodec(settings.HardwareCodecName, failureText);
 					Logger.Instance.Info($"Native FFmpeg extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
 					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging);
 				}
@@ -1310,7 +1313,7 @@ namespace VDF.Core.FFTools {
 
 			psi.ArgumentList.Add("-nostdin");
 
-			bool processAttemptedHardware = enableHardwareAcceleration && !settings.SoftwareDecodeOnly && HardwareAccelerationMode != FFHardwareAccelerationMode.none && !IsConfiguredHardwareDecodeBypassed();
+			bool processAttemptedHardware = enableHardwareAcceleration && !settings.SoftwareDecodeOnly && HardwareAccelerationMode != FFHardwareAccelerationMode.none;
 			if (processAttemptedHardware) {
 				psi.ArgumentList.Add("-hwaccel");
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
@@ -1386,6 +1389,8 @@ namespace VDF.Core.FFTools {
 					errOut.AppendLine($"graybytes length != {ExpectedBytes} (got {bytes.Length})");
 					bytes = null;
 				}
+				if (bytes != null && processAttemptedHardware)
+					RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
 			}
 			catch (Exception e) {
 				errOut.AppendLine(e.Message);
@@ -1400,10 +1405,11 @@ namespace VDF.Core.FFTools {
 			// when extended logging is enabled, to avoid noise from benign decoder chatter.
 			if (bytes == null || (extendedLogging && ffmpegError.Length > 0)) {
 				bool processHardwareFailure = processAttemptedHardware && IsHardwareDecodeFailure(ffmpegError);
-				if (processHardwareFailure)
+				if (processHardwareFailure) {
 					MarkConfiguredHardwareDecodeFailure(ffmpegError);
+					RecordHardwareDecodeFailureForCodec(settings.HardwareCodecName, ffmpegError);
+				}
 				if (!settings.ForceCpuDecode && processHardwareFailure && bytes == null) {
-					MarkGrayByteHardwareBypassForFamily(settings.HardwareFamilyKey, ffmpegError);
 					Logger.Instance.Info($"FFmpeg process extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(ffmpegError, 240)}");
 					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging);
 				}
@@ -1447,6 +1453,7 @@ namespace VDF.Core.FFTools {
 			HashSet<double> stagedIndexes = stagedResults.Select(result => result.Index).ToHashSet();
 			int reportedStagedResults = 0;
 			string? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
+			string? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
 			foreach (GrayByteRequest request in requests) {
 				if (stagedIndexes.Contains(request.Index)) continue;
 
@@ -1455,6 +1462,7 @@ namespace VDF.Core.FFTools {
 					Position = request.Position,
 					GrayScale = 1,
 					HardwareFamilyKey = hardwareFamilyKey,
+					HardwareCodecName = hardwareCodecName,
 				}, extendedLogging);
 
 				if (data == null) {
@@ -1505,7 +1513,7 @@ namespace VDF.Core.FFTools {
 		/// position (ignored for images). FFmpeg does the scaling and encoding directly.
 		/// Returns null if extraction fails.
 		/// </summary>
-		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false, int jpegQuality = 0) {
+		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false, int jpegQuality = 0, string? hardwareCodecName = null) {
 			return GetThumbnail(new FfmpegSettings {
 				File = filePath,
 				Position = position,
@@ -1513,6 +1521,7 @@ namespace VDF.Core.FFTools {
 				Fullsize = (byte)(maxWidth == 0 ? 1 : 0),
 				MaxWidth = maxWidth,
 				JpegQuality = jpegQuality,
+				HardwareCodecName = hardwareCodecName,
 			}, extendedLogging);
 		}
 
@@ -1675,6 +1684,7 @@ namespace VDF.Core.FFTools {
 		public string File;
 		public TimeSpan Position;
 		public string? HardwareFamilyKey;
+		public string? HardwareCodecName;
 		public bool ForceCpuDecode;
 		/// <summary>Target max width for non-fullsize thumbnails; 0 = default (100). Downscale only.</summary>
 		public int MaxWidth;
