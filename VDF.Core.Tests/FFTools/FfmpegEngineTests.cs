@@ -23,6 +23,8 @@ public class FfmpegEngineTests {
 	[InlineData("[av1 @ 000002] Your platform doesn't support hardware accelerated AV1 decoding. [AVHWDeviceContext @ 000002] Failed to create Direct3D device. Device setup failed for decoder on input stream #0:0 : Function not implemented")]
 	[InlineData("[h264 @ 000002] No device available for decoder: device type d3d11va needed for codec h264. Device setup failed for decoder on input stream #0:0")]
 	[InlineData("av_hwdevice_ctx_create(AV_HWDEVICE_TYPE_D3D11VA) failed: Function not implemented")]
+	[InlineData("requested AV_HWDEVICE_TYPE_D3D11VA VDF.Core.FFTools.FFInvalidExitCodeException: Invalid argument")]
+	[InlineData("[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.")]
 	public void IsHardwareDecodeFailure_HardwareFailureText_ReturnsTrue(string text) {
 		Assert.True(FfmpegEngine.IsHardwareDecodeFailure(text));
 	}
@@ -31,7 +33,65 @@ public class FfmpegEngineTests {
 	[InlineData("FFmpeg exited with: 1")]
 	[InlineData("[matroska,webm @ 000002] EBML header parsing failed")]
 	[InlineData("Function not implemented")]
+	[InlineData("Invalid argument")]
 	public void IsHardwareDecodeFailure_GenericFailureText_ReturnsFalse(string text) {
 		Assert.False(FfmpegEngine.IsHardwareDecodeFailure(text));
+	}
+
+	[Fact]
+	public void FfmpegErrorAccumulator_TruncatesAfterMaximumCapturedLines() {
+		var accumulator = new FfmpegEngine.FfmpegErrorAccumulator(maxLines: 3);
+
+		accumulator.AppendLine("line 1");
+		accumulator.AppendLine("line 2");
+		accumulator.AppendLine("line 3");
+		accumulator.AppendLine("line 4");
+		accumulator.AppendLine("line 5");
+
+		string text = accumulator.ToString();
+		Assert.Contains("line 1", text);
+		Assert.Contains("line 2", text);
+		Assert.Contains("line 3", text);
+		Assert.DoesNotContain("line 4", text);
+		Assert.DoesNotContain("line 5", text);
+		Assert.Contains("omitted 2 additional FFmpeg stderr line(s)", text);
+	}
+
+	[Fact]
+	public void FfmpegErrorAccumulator_CollapsesConsecutiveRepeatsBeforeTruncating() {
+		var accumulator = new FfmpegEngine.FfmpegErrorAccumulator(maxLines: 3);
+
+		accumulator.AppendLine("same decoder warning");
+		accumulator.AppendLine("same decoder warning");
+		accumulator.AppendLine("same decoder warning");
+		accumulator.AppendLine("different warning");
+
+		string text = accumulator.ToString();
+		Assert.Contains("same decoder warning (repeated 2 more times)", text);
+		Assert.Contains("different warning", text);
+		Assert.DoesNotContain("omitted", text);
+	}
+
+	[Fact]
+	public void ConfiguredHardwareDecodeBypass_TripsAfterRepeatedSetupFailures() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string failure = "[h264 @ 000002] Failed setup for format d3d11: hwaccel initialisation returned error.";
+
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+			Assert.False(FfmpegEngine.IsConfiguredHardwareDecodeBypassed(out _));
+
+			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
+
+			Assert.True(FfmpegEngine.IsConfiguredHardwareDecodeBypassed(out string reason));
+			Assert.Contains("Failed setup", reason);
+		}
+		finally {
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
 	}
 }

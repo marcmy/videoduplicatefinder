@@ -25,6 +25,9 @@ internal static class Program {
 		if (args.Length > 0 && args[0] == "--probe-decoder-reuse")
 			return DecoderReuseProbe.Run(args);
 
+		if (args.Length > 0 && args[0] == "--probe-thumbnails")
+			return ThumbnailGenerationProbe.Run(args);
+
 		// Synthetic compare-phase probe (ScanForDuplicates + HighlightBestMatches).
 		if (args.Length > 0 && args[0] == "--probe-compare")
 			return ComparePhaseProbe.Run(args);
