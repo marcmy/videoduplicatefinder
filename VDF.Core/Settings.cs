@@ -50,6 +50,8 @@ namespace VDF.Core {
 
 		public byte Threshhold = 5;
 		public float Percent = 96f;
+		/// <summary>Minimum ratio of video sample positions that must individually pass the pHash similarity threshold. Default 0.60.</summary>
+		public float PHashRequiredMatchingSampleRatio = 0.6f;
 		public double PercentDurationDifference = 20d;
 		public double DurationDifferenceMinSeconds;
 		public double DurationDifferenceMaxSeconds;
