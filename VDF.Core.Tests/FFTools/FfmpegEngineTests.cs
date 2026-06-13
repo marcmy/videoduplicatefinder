@@ -112,18 +112,15 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
-	public void NativeBindingHealth_DisablesAfterRepeatedNonLoadFailures() {
+	public void NativeBindingHealth_KeepsNativeEnabledAfterRepeatedDecodeFailures() {
 		FfmpegEngine.UseNativeBinding = true;
 		FfmpegEngine.ResetNativeBindingHealthForTests();
 		try {
-			for (int i = 0; i < 4; i++)
-				FfmpegEngine.RecordNativeFailure($"video-{i}.mkv", new InvalidOperationException("native decode failed"));
+			for (int i = 0; i < 5; i++)
+				FfmpegEngine.RecordNativeFailure($"video-{i}.mkv", new InvalidOperationException("TryDecodeFrame failed"));
 
 			Assert.False(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
-
-			FfmpegEngine.RecordNativeFailure("video-5.mkv", new InvalidOperationException("native decode failed"));
-
-			Assert.True(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
+			Assert.True(FfmpegEngine.ShouldAttemptNativeBinding);
 		}
 		finally {
 			FfmpegEngine.UseNativeBinding = false;

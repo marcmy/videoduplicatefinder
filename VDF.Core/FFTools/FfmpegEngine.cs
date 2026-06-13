@@ -92,6 +92,9 @@ namespace VDF.Core.FFTools {
 			&& (e.Message.Contains("Specified method is not supported", StringComparison.OrdinalIgnoreCase)
 				|| (e.StackTrace?.Contains("FFmpeg.AutoGen.DynamicallyLoadedBindings", StringComparison.Ordinal) ?? false));
 
+		static bool IsNativeBindingInfrastructureFailure(Exception e) =>
+			e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException;
+
 		static void DisableNativeBindingForSession(string file, Exception e, string prefix) {
 			if (Interlocked.Exchange(ref NativeDisabledForSession, 1) != 0)
 				return;
@@ -103,6 +106,8 @@ namespace VDF.Core.FFTools {
 				DisableNativeBindingForSession(file, e, "Native FFmpeg binding could not call the loaded FFmpeg libraries");
 				return;
 			}
+			if (!IsNativeBindingInfrastructureFailure(e))
+				return;
 
 			int failures = Interlocked.Increment(ref NativeConsecutiveFailures);
 			if (failures >= NativeFailureThreshold) {
