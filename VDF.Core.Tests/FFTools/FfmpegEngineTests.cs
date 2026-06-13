@@ -94,4 +94,40 @@ public class FfmpegEngineTests {
 			FfmpegEngine.HardwareAccelerationMode = oldMode;
 		}
 	}
+
+	[Fact]
+	public void NativeBindingHealth_DisablesImmediatelyForAutoGenUnsupportedMethod() {
+		FfmpegEngine.UseNativeBinding = true;
+		FfmpegEngine.ResetNativeBindingHealthForTests();
+		try {
+			FfmpegEngine.RecordNativeFailure("video.mkv", new NotSupportedException("Specified method is not supported."));
+
+			Assert.True(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
+			Assert.False(FfmpegEngine.ShouldAttemptNativeBinding);
+		}
+		finally {
+			FfmpegEngine.UseNativeBinding = false;
+			FfmpegEngine.ResetNativeBindingHealthForTests();
+		}
+	}
+
+	[Fact]
+	public void NativeBindingHealth_DisablesAfterRepeatedNonLoadFailures() {
+		FfmpegEngine.UseNativeBinding = true;
+		FfmpegEngine.ResetNativeBindingHealthForTests();
+		try {
+			for (int i = 0; i < 4; i++)
+				FfmpegEngine.RecordNativeFailure($"video-{i}.mkv", new InvalidOperationException("native decode failed"));
+
+			Assert.False(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
+
+			FfmpegEngine.RecordNativeFailure("video-5.mkv", new InvalidOperationException("native decode failed"));
+
+			Assert.True(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
+		}
+		finally {
+			FfmpegEngine.UseNativeBinding = false;
+			FfmpegEngine.ResetNativeBindingHealthForTests();
+		}
+	}
 }

@@ -41,7 +41,7 @@ namespace VDF.Core.FFTools {
 		/// Returns an empty array when the file has no usable audio.
 		/// </summary>
 		internal static uint[]? ExtractFingerprint(string filePath, bool extendedLogging, CancellationToken ct = default, Action<double>? onProgress = null) {
-			if (FfmpegEngine.UseNativeBinding) {
+			if (FfmpegEngine.ShouldAttemptNativeBinding) {
 				try {
 					return ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress);
 				}

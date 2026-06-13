@@ -150,6 +150,42 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			}
 		}
 
+		static bool? canLoadNativeLibraries;
+		internal static unsafe bool CanLoadNativeLibraries {
+			get {
+				if (canLoadNativeLibraries.HasValue)
+					return canLoadNativeLibraries.Value;
+
+				bool ok = false;
+				try {
+					if (DoFFmpegLibraryFilesExist) {
+						_ = ffmpeg.avutil_version();
+						_ = ffmpeg.avcodec_version();
+						_ = ffmpeg.avformat_version();
+						_ = ffmpeg.swscale_version();
+						_ = ffmpeg.swresample_version();
+
+						AVFrame* frame = ffmpeg.av_frame_alloc();
+						if (frame != null)
+							ffmpeg.av_frame_free(&frame);
+						AVPacket* packet = ffmpeg.av_packet_alloc();
+						if (packet != null)
+							ffmpeg.av_packet_free(&packet);
+
+						ok = true;
+					}
+				}
+				catch (Exception e) {
+					Utils.Logger.Instance.Info(
+						$"FFmpeg shared libraries are present but could not be loaded; falling back to process mode. " +
+						$"Reason: {e.GetType().Name}: {e.Message}. {DescribeExpectedLibraries()}");
+					ok = false;
+				}
+				canLoadNativeLibraries = ok;
+				return ok;
+			}
+		}
+
 		internal static void AddOptionalFilterLibraryVersionMapEntries() {
 			// FFmpeg.AutoGen 8's avfilter resolver can request postproc as a dependency
 			// even though it is not included in the default LibraryVersionMap.
