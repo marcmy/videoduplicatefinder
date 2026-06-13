@@ -306,6 +306,12 @@ namespace VDF.GUI.Data {
 			get => _Percent;
 			set => this.RaiseAndSetIfChanged(ref _Percent, value);
 		}
+		float _PHashRequiredMatchingSampleRatioPercent = 60f;
+		[JsonPropertyName("PHashRequiredMatchingSampleRatioPercent")]
+		public float PHashRequiredMatchingSampleRatioPercent {
+			get => _PHashRequiredMatchingSampleRatioPercent;
+			set => this.RaiseAndSetIfChanged(ref _PHashRequiredMatchingSampleRatioPercent, Math.Clamp(value, 1f, 100f));
+		}
 		double _PercentDurationDifference = 20d;
 		[JsonPropertyName("PercentDurationDifference")]
 		public double PercentDurationDifference {

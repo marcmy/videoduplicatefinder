@@ -61,7 +61,6 @@ namespace VDF.Core {
 		DateTime lastProgressUpdate = DateTime.MinValue;
 		static readonly TimeSpan progressUpdateIntervall = TimeSpan.FromMilliseconds(300);
 		const int maxExcludedLogsPerReason = 5;
-		const float pHashRequiredMatchingSampleRatio = 0.6f;
 		readonly ConcurrentDictionary<string, int> excludedReasonCounts = new();
 		readonly ConcurrentDictionary<string, int> excludedReasonLoggedCounts = new();
 		// Files whose stored pHash for the comparison position is null. Dedupes the
@@ -818,7 +817,8 @@ namespace VDF.Core {
 				}
 
 				float maxDifferenceSum = (1f - differenceLimitpHash) * sampleCount;
-				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * pHashRequiredMatchingSampleRatio));
+				float requiredSampleRatio = Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f);
+				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * requiredSampleRatio));
 				int matchingSamples = 0;
 				float pHashDiffSum = 0f;
 
