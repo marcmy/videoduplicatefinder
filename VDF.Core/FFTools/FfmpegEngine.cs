@@ -126,8 +126,44 @@ namespace VDF.Core.FFTools {
 			Logger.Instance.Info($"Native FFmpeg batched graybyte extraction completed for '{file}': mode={batchMode}, family={family}, hw={(hwDecode ? "requested" : "off")}, hwPolicy={hardwarePolicy}, hwTransfers={timing.HardwareTransfers}/{samples}, fullFrameTransfers={timing.FullFrameTransfers}/{samples}, tinyDownloads={timing.TinyDownloads}/{samples}, samples={samples}, queue={timing.QueueMs}ms, open={timing.OpenMs}ms, seek={timing.SeekMs}ms, decode={timing.DecodeMs}ms, transfer={timing.TransferMs}ms, filter={timing.FilterMs}ms, convert={timing.ConvertMs}ms, tinyConvert={timing.TinyConvertMs}ms, map={timing.MapMs}ms, copy={timing.CopyMs}ms, total={totalMs}ms");
 		}
 
+		static string FormatLogValue(string? value, string fallback) =>
+			string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+		internal static string FormatNativeGrayByteBatchSkippedLog(string file, string? familyKey, string nativeState, int samples) {
+			string family = FormatLogValue(familyKey, "unknown");
+			return $"Native FFmpeg batched graybyte extraction skipped for '{file}': native={nativeState}, family={family}, samples={samples}; using FFmpeg process per-sample path";
+		}
+
+		static void LogNativeGrayByteBatchSkipped(string file, string? familyKey, string nativeState, int samples) =>
+			Logger.Instance.Info(FormatNativeGrayByteBatchSkippedLog(file, familyKey, nativeState, samples));
+
+		internal static string FormatProcessGrayByteBatchTimingLog(string file, string? familyKey, string? codecName, string nativeState, string hardwarePolicy, int processSamples, int totalSamples, int stagedNativeSamples, long totalMs) {
+			string family = FormatLogValue(familyKey, "unknown");
+			string codec = FormatLogValue(codecName, "unknown");
+			return $"FFmpeg process graybyte extraction completed for '{file}': mode=process-per-sample, family={family}, codec={codec}, native={nativeState}, hwPolicy={hardwarePolicy}, processSamples={processSamples}/{totalSamples}, stagedNativeSamples={stagedNativeSamples}/{totalSamples}, samples={totalSamples}, total={totalMs}ms";
+		}
+
+		static void LogProcessGrayByteBatchTiming(string file, string? familyKey, string? codecName, string nativeState, string hardwarePolicy, int processSamples, int totalSamples, int stagedNativeSamples, long totalMs) =>
+			Logger.Instance.Info(FormatProcessGrayByteBatchTimingLog(file, familyKey, codecName, nativeState, hardwarePolicy, processSamples, totalSamples, stagedNativeSamples, totalMs));
+
+		internal static string FormatProcessTimingLog(string file, TimeSpan position, bool isGrayByte, bool hardwareRequested, string hardwarePolicy, int bytes, long totalMs) =>
+			$"FFmpeg process timing on '{file}' @ {position}: mode={(isGrayByte ? "gray32" : "thumb")}, hw={(hardwareRequested ? "requested" : "off")}, hwPolicy={hardwarePolicy}, bytes={bytes}, total={totalMs}ms";
+
+		static void LogProcessTiming(string file, TimeSpan position, bool isGrayByte, bool hardwareRequested, string hardwarePolicy, int bytes, long totalMs) =>
+			Logger.Instance.Info(FormatProcessTimingLog(file, position, isGrayByte, hardwareRequested, hardwarePolicy, bytes, totalMs));
+
 		internal static bool ShouldAttemptNativeSingleFrameExtraction(FfmpegSettings settings) =>
 			ShouldUseNativeBinding;
+
+		internal static string DescribeNativeGrayBytePathState() {
+			if (!UseNativeBinding)
+				return "disabled";
+			if (IsNativeBindingDisabledForSessionForTests)
+				return "session-disabled";
+			if (!FFmpegHelper.CanLoadNativeLibraries)
+				return "libraries-unavailable";
+			return "available";
+		}
 
 		const double SequentialBatchMaxSpanSeconds = 2d;
 
@@ -649,6 +685,15 @@ namespace VDF.Core.FFTools {
 			}
 
 			return true;
+		}
+
+		static string DescribeProcessGrayByteHardwarePolicy(string? familyKey, string? codecName) {
+			if (ShouldBypassHardwareDecodeForCodec(codecName, out _))
+				return "hardware-decode-codec-bypass";
+			if (ShouldBypassGrayByteHardwareForFamily(familyKey))
+				return "hardware-decode-failure-cpu-family-bypass";
+			ShouldUseProcessHardwareAccelerationForGrayBytes(out string hardwarePolicy);
+			return hardwarePolicy;
 		}
 
 		internal static bool IsHardwareDecodeFailure(string? text) {
@@ -1336,6 +1381,8 @@ namespace VDF.Core.FFTools {
 
 			psi.ArgumentList.Add("-nostdin");
 
+			if (!isGrayByte && hardwarePolicy == "unresolved")
+				hardwarePolicy = GetHardwarePolicy(GetConfiguredHardwareDeviceType(enableHardwareAcceleration), enableHardwareAcceleration);
 			bool processAttemptedHardware = enableHardwareAcceleration && !settings.SoftwareDecodeOnly && HardwareAccelerationMode != FFHardwareAccelerationMode.none;
 			if (processAttemptedHardware) {
 				psi.ArgumentList.Add("-hwaccel");
@@ -1385,6 +1432,7 @@ namespace VDF.Core.FFTools {
 			foreach (var item in remainingCustomArgs) psi.ArgumentList.Add(item);
 			psi.ArgumentList.Add("pipe:1");
 
+			var processSw = Stopwatch.StartNew();
 			using var process = new Process { StartInfo = psi };
 			var errOut = new FfmpegErrorAccumulator();
 			byte[]? bytes = null;
@@ -1424,6 +1472,7 @@ namespace VDF.Core.FFTools {
 				bytes = null;
 			}
 			string ffmpegError = errOut.ToString();
+			long processTotalMs = processSw.ElapsedMilliseconds;
 			// Failures always log (including FFmpeg's stderr); success-with-warnings only
 			// when extended logging is enabled, to avoid noise from benign decoder chatter.
 			if (bytes == null || (extendedLogging && ffmpegError.Length > 0)) {
@@ -1443,6 +1492,8 @@ namespace VDF.Core.FFTools {
 				}
 				Logger.Instance.Info($"{message}{(ffmpegError.Length > 0 ? Environment.NewLine + ffmpegError : string.Empty)}");
 			}
+			if (bytes != null && extendedLogging && !isGrayByte)
+				LogProcessTiming(settings.File, settings.Position, false, processAttemptedHardware, hardwarePolicy, bytes.Length, processTotalMs);
 			return bytes;
 		}
 		internal static bool GetGrayBytesFromVideo(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, Action<int>? onSampleComplete = null) {
@@ -1459,8 +1510,11 @@ namespace VDF.Core.FFTools {
 			if (missingPositions == 0) return true;
 
 			int tooDarkCounter = 0;
+			string? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
+			string? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
+			string nativeGrayByteState = DescribeNativeGrayBytePathState();
 			List<GrayByteResult> stagedResults = new(missingPositions);
-			if (ShouldUseNativeBinding && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults)) {
+			if (nativeGrayByteState == "available" && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults)) {
 				CommitGrayByteResults(videoFile, stagedResults, ref tooDarkCounter);
 				foreach (GrayByteResult _ in stagedResults)
 					ReportCompletedSample();
@@ -1471,12 +1525,14 @@ namespace VDF.Core.FFTools {
 				}
 				return true;
 			}
+			if (extendedLogging && nativeGrayByteState != "available")
+				LogNativeGrayByteBatchSkipped(videoFile.Path, hardwareFamilyKey, nativeGrayByteState, missingPositions);
 
 			tooDarkCounter = 0;
+			int stagedNativeSamples = stagedResults.Count;
 			HashSet<double> stagedIndexes = stagedResults.Select(result => result.Index).ToHashSet();
 			int reportedStagedResults = 0;
-			string? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
-			string? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
+			var processBatchSw = Stopwatch.StartNew();
 			foreach (GrayByteRequest request in requests) {
 				if (stagedIndexes.Contains(request.Index)) continue;
 
@@ -1497,6 +1553,8 @@ namespace VDF.Core.FFTools {
 				reportedStagedResults++;
 				ReportCompletedSample();
 			}
+			if (extendedLogging)
+				LogProcessGrayByteBatchTiming(videoFile.Path, hardwareFamilyKey, hardwareCodecName, nativeGrayByteState == "available" ? "fallback" : nativeGrayByteState, DescribeProcessGrayByteHardwarePolicy(hardwareFamilyKey, hardwareCodecName), reportedStagedResults, missingPositions, stagedNativeSamples, processBatchSw.ElapsedMilliseconds);
 			if (stagedResults.Count != missingPositions) {
 				videoFile.Flags.Set(EntryFlags.ThumbnailError);
 				return false;

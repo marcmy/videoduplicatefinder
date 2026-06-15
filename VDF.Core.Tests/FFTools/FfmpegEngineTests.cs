@@ -90,6 +90,47 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
+	public void FormatNativeGrayByteBatchSkippedLog_IncludesProcessFallbackContext() {
+		string message = FfmpegEngine.FormatNativeGrayByteBatchSkippedLog(
+			@"X:\video.mp4",
+			"h264|yuv420p|320x224",
+			"libraries-unavailable",
+			10);
+
+		Assert.Equal(@"Native FFmpeg batched graybyte extraction skipped for 'X:\video.mp4': native=libraries-unavailable, family=h264|yuv420p|320x224, samples=10; using FFmpeg process per-sample path", message);
+	}
+
+	[Fact]
+	public void FormatProcessGrayByteBatchTimingLog_IncludesNativeFallbackContext() {
+		string message = FfmpegEngine.FormatProcessGrayByteBatchTimingLog(
+			@"X:\video.mp4",
+			"h264|yuv420p|320x224",
+			"h264",
+			"libraries-unavailable",
+			"requested",
+			processSamples: 3,
+			totalSamples: 10,
+			stagedNativeSamples: 7,
+			totalMs: 1234);
+
+		Assert.Equal(@"FFmpeg process graybyte extraction completed for 'X:\video.mp4': mode=process-per-sample, family=h264|yuv420p|320x224, codec=h264, native=libraries-unavailable, hwPolicy=requested, processSamples=3/10, stagedNativeSamples=7/10, samples=10, total=1234ms", message);
+	}
+
+	[Fact]
+	public void FormatProcessTimingLog_IncludesThumbnailSuccessContext() {
+		string message = FfmpegEngine.FormatProcessTimingLog(
+			@"X:\video.mp4",
+			TimeSpan.FromSeconds(1.5),
+			isGrayByte: false,
+			hardwareRequested: true,
+			hardwarePolicy: "requested",
+			bytes: 12345,
+			totalMs: 67);
+
+		Assert.Equal(@"FFmpeg process timing on 'X:\video.mp4' @ 00:00:01.5000000: mode=thumb, hw=requested, hwPolicy=requested, bytes=12345, total=67ms", message);
+	}
+
+	[Fact]
 	public void ConfiguredHardwareDecodeBypass_DoesNotTripAfterRepeatedSetupFailures() {
 		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
 		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
