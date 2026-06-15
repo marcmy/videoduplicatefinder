@@ -146,6 +146,15 @@ namespace VDF.Core.FFTools {
 		static void LogProcessGrayByteBatchTiming(string file, string? familyKey, string? codecName, string nativeState, string hardwarePolicy, int processSamples, int totalSamples, int stagedNativeSamples, long totalMs) =>
 			Logger.Instance.Info(FormatProcessGrayByteBatchTimingLog(file, familyKey, codecName, nativeState, hardwarePolicy, processSamples, totalSamples, stagedNativeSamples, totalMs));
 
+		internal static string FormatCachedGrayByteScanLog(string file, string? familyKey, string? codecName, int cachedSamples, int totalSamples) {
+			string family = FormatLogValue(familyKey, "unknown");
+			string codec = FormatLogValue(codecName, "unknown");
+			return $"FFmpeg graybyte extraction skipped for '{file}': mode=cached, family={family}, codec={codec}, cachedSamples={cachedSamples}/{totalSamples}, samples={totalSamples}";
+		}
+
+		static void LogCachedGrayByteScan(string file, string? familyKey, string? codecName, int cachedSamples, int totalSamples) =>
+			Logger.Instance.Info(FormatCachedGrayByteScanLog(file, familyKey, codecName, cachedSamples, totalSamples));
+
 		internal static string FormatProcessTimingLog(string file, TimeSpan position, bool isGrayByte, bool hardwareRequested, string hardwarePolicy, int bytes, long totalMs) =>
 			$"FFmpeg process timing on '{file}' @ {position}: mode={(isGrayByte ? "gray32" : "thumb")}, hw={(hardwareRequested ? "requested" : "off")}, hwPolicy={hardwarePolicy}, bytes={bytes}, total={totalMs}ms";
 
@@ -154,6 +163,16 @@ namespace VDF.Core.FFTools {
 
 		internal static bool ShouldAttemptNativeSingleFrameExtraction(FfmpegSettings settings) =>
 			ShouldUseNativeBinding;
+
+		internal static bool ShouldLogNativeSuccessTiming(bool extendedLogging) {
+			_ = extendedLogging;
+			return true;
+		}
+
+		internal static bool ShouldLogGrayByteScanTelemetry(bool extendedLogging) {
+			_ = extendedLogging;
+			return true;
+		}
 
 		internal static string DescribeNativeGrayBytePathState() {
 			if (!UseNativeBinding)
@@ -1114,7 +1133,7 @@ namespace VDF.Core.FFTools {
 					d3d11Scaler?.Dispose();
 					converter?.Dispose();
 				}
-				if (extendedLogging)
+				if (ShouldLogNativeSuccessTiming(extendedLogging))
 					LogNativeBatchTiming(videoFile.Path, GetD3D11GrayByteAdaptiveFamilyKey(videoFile) ?? string.Empty, vsd.IsHardwareDecode, GetEffectiveGrayByteHardwarePolicy(hardwarePolicy, useD3D11GpuScale, nativeTiming), batchMode, requests.Count, nativeTiming, batchSw.ElapsedMilliseconds);
 				if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
 					RecordHardwareDecodeSuccessForCodec(codecName);
@@ -1327,7 +1346,7 @@ namespace VDF.Core.FFTools {
 					if (isGrayByte) {
 						byte[] outBuf = ExtractGray32FromFrame(convertedFrame);
 						copyMs = phaseSw.ElapsedMilliseconds;
-						if (extendedLogging)
+						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
 							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
@@ -1340,7 +1359,7 @@ namespace VDF.Core.FFTools {
 						byte[] jpeg = JpegFrameEncoder.Encode(convertedFrame,
 							settings.JpegQuality > 0 ? settings.JpegQuality : DefaultJpegQuality);
 						copyMs = phaseSw.ElapsedMilliseconds;
-						if (extendedLogging)
+						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, false, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
 							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
@@ -1507,11 +1526,15 @@ namespace VDF.Core.FFTools {
 					ReportCompletedSample();
 			}
 
-			if (missingPositions == 0) return true;
-
-			int tooDarkCounter = 0;
 			string? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 			string? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
+			if (missingPositions == 0) {
+				if (ShouldLogGrayByteScanTelemetry(extendedLogging))
+					LogCachedGrayByteScan(videoFile.Path, hardwareFamilyKey, hardwareCodecName, completedSamples, positions.Count);
+				return true;
+			}
+
+			int tooDarkCounter = 0;
 			string nativeGrayByteState = DescribeNativeGrayBytePathState();
 			List<GrayByteResult> stagedResults = new(missingPositions);
 			if (nativeGrayByteState == "available" && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults)) {
@@ -1525,7 +1548,7 @@ namespace VDF.Core.FFTools {
 				}
 				return true;
 			}
-			if (extendedLogging && nativeGrayByteState != "available")
+			if (ShouldLogGrayByteScanTelemetry(extendedLogging) && nativeGrayByteState != "available")
 				LogNativeGrayByteBatchSkipped(videoFile.Path, hardwareFamilyKey, nativeGrayByteState, missingPositions);
 
 			tooDarkCounter = 0;
@@ -1553,7 +1576,7 @@ namespace VDF.Core.FFTools {
 				reportedStagedResults++;
 				ReportCompletedSample();
 			}
-			if (extendedLogging)
+			if (ShouldLogGrayByteScanTelemetry(extendedLogging))
 				LogProcessGrayByteBatchTiming(videoFile.Path, hardwareFamilyKey, hardwareCodecName, nativeGrayByteState == "available" ? "fallback" : nativeGrayByteState, DescribeProcessGrayByteHardwarePolicy(hardwareFamilyKey, hardwareCodecName), reportedStagedResults, missingPositions, stagedNativeSamples, processBatchSw.ElapsedMilliseconds);
 			if (stagedResults.Count != missingPositions) {
 				videoFile.Flags.Set(EntryFlags.ThumbnailError);

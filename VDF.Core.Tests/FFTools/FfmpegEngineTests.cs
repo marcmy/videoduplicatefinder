@@ -117,6 +117,18 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
+	public void FormatCachedGrayByteScanLog_IncludesSampleContext() {
+		string message = FfmpegEngine.FormatCachedGrayByteScanLog(
+			@"X:\video.mp4",
+			"h264|yuv420p|320x224",
+			"h264",
+			cachedSamples: 10,
+			totalSamples: 10);
+
+		Assert.Equal(@"FFmpeg graybyte extraction skipped for 'X:\video.mp4': mode=cached, family=h264|yuv420p|320x224, codec=h264, cachedSamples=10/10, samples=10", message);
+	}
+
+	[Fact]
 	public void FormatProcessTimingLog_IncludesThumbnailSuccessContext() {
 		string message = FfmpegEngine.FormatProcessTimingLog(
 			@"X:\video.mp4",
@@ -128,6 +140,20 @@ public class FfmpegEngineTests {
 			totalMs: 67);
 
 		Assert.Equal(@"FFmpeg process timing on 'X:\video.mp4' @ 00:00:01.5000000: mode=thumb, hw=requested, hwPolicy=requested, bytes=12345, total=67ms", message);
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public void ShouldLogNativeSuccessTiming_DoesNotDependOnExtendedLogging(bool extendedLogging) {
+		Assert.True(FfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public void ShouldLogGrayByteScanTelemetry_DoesNotDependOnExtendedLogging(bool extendedLogging) {
+		Assert.True(FfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
 	}
 
 	[Fact]
