@@ -833,11 +833,10 @@ namespace VDF.Core {
 					return false;
 				}
 
-				float maxDifferenceSum = (1f - differenceLimitpHash) * sampleCount;
 				float requiredSampleRatio = Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f);
 				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * requiredSampleRatio));
 				int matchingSamples = 0;
-				float pHashDiffSum = 0f;
+				float matchedPHashDiffSum = 0f;
 
 				for (int j = 0; j < sampleCount; j++) {
 					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
@@ -870,20 +869,26 @@ namespace VDF.Core {
 					}
 
 					bool sampleMatches = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
-					if (sampleMatches)
+					if (sampleMatches) {
 						matchingSamples++;
-					pHashDiffSum += 1f - similarity;
-					if (pHashDiffSum > maxDifferenceSum)
+						matchedPHashDiffSum += 1f - similarity;
+					}
+
+					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples) {
+						difference = 1f;
 						return false;
-					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples)
-						return false;
+					}
 				}
 
-				difference = pHashDiffSum / sampleCount;
-				return !float.IsNaN(difference) && matchingSamples >= requiredMatchingSamples;
+				if (matchingSamples < requiredMatchingSamples) {
+					difference = 1f;
+					return false;
+				}
+
+				difference = matchedPHashDiffSum / matchingSamples;
+				return !float.IsNaN(difference);
 
 			}
-
 			byte[]?[] compGray = compItem.compareGray!;
 			differenceLimit *= grayBytes.Length;
 			float diffSum = 0;
