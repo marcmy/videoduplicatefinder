@@ -412,7 +412,8 @@ namespace VDF.Core.FFTools {
 		}
 
 		static int CalculateNativeGrayByteD3D11AutoConcurrency(int oldLimit, int maxLimit, long averageQueueMs, long averageDecodeMs, int decodeSpikes, int observations) {
-			bool decodePressure = averageDecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs || decodeSpikes >= Math.Max(2, observations / 3);
+			int sustainedDecodeSpikeThreshold = Math.Max(2, (observations + 1) / 2);
+			bool decodePressure = averageDecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs || decodeSpikes >= sustainedDecodeSpikeThreshold;
 			bool queuePressure = averageQueueMs >= NativeGrayByteD3D11AutoQueueHighMs
 				&& averageDecodeMs < NativeGrayByteD3D11AutoDecodeHighMs / 2
 				&& decodeSpikes == 0;

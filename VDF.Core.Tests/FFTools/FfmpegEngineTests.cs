@@ -310,6 +310,45 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
+	public void D3D11GrayByteConcurrency_DoesNotDecreaseForMinorityDecodeSpikesWhenAverageDecodeIsModerate() {
+		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
+			oldLimit: 5,
+			maxLimit: 8,
+			averageQueueMs: 2_500,
+			averageDecodeMs: 1_200,
+			decodeSpikes: 4,
+			observations: 12);
+
+		Assert.Equal(5, result);
+	}
+
+	[Fact]
+	public void D3D11GrayByteConcurrency_DecreasesForSustainedDecodeSpikes() {
+		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
+			oldLimit: 5,
+			maxLimit: 8,
+			averageQueueMs: 2_500,
+			averageDecodeMs: 1_200,
+			decodeSpikes: 6,
+			observations: 12);
+
+		Assert.Equal(4, result);
+	}
+
+	[Fact]
+	public void D3D11GrayByteConcurrency_DecreasesForHighAverageDecode() {
+		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
+			oldLimit: 5,
+			maxLimit: 8,
+			averageQueueMs: 2_500,
+			averageDecodeMs: 1_600,
+			decodeSpikes: 3,
+			observations: 12);
+
+		Assert.Equal(4, result);
+	}
+
+	[Fact]
 	public void D3D11GrayByteConcurrency_IncreasesWhenQueueIsHighAndDecodeIsClean() {
 		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
 			oldLimit: 3,
