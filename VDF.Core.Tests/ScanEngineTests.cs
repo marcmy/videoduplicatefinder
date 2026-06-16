@@ -128,6 +128,15 @@ public class ScanEngineTests {
 		Assert.Equal(@"Scan file: sampled: 'X:\video.mp4'", message);
 	}
 
+	[Theory]
+	[InlineData("Scan", false)]
+	[InlineData("scan", false)]
+	[InlineData("Thumbnail", true)]
+	[InlineData("Explicit thumbnail", true)]
+	public void ShouldLogFileLedger_SuppressesScanPhaseOnly(string phase, bool expected) {
+		Assert.Equal(expected, ScanEngine.ShouldLogFileLedger(phase));
+	}
+
 	static FileEntry CreateVideoEntry(int grayByteCount) {
 		var entry = new FileEntry {
 			_Path = @"X:\video.mp4",

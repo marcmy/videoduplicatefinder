@@ -110,8 +110,14 @@ namespace VDF.Core {
 		internal static string FormatFileLedgerLog(string phase, string status, string path) =>
 			$"{phase} file: {status}: '{path}'";
 
-		static void LogFileLedger(string phase, string path, string status) =>
+		internal static bool ShouldLogFileLedger(string phase) =>
+			!string.Equals(phase, "Scan", StringComparison.OrdinalIgnoreCase);
+
+		static void LogFileLedger(string phase, string path, string status) {
+			if (!ShouldLogFileLedger(phase))
+				return;
 			Logger.Instance.Info(FormatFileLedgerLog(phase, status, path));
+		}
 
 		void IncrementProgress(string path) {
 			processedFiles++;
