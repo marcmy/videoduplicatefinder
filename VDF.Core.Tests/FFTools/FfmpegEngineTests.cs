@@ -254,6 +254,75 @@ public class FfmpegEngineTests {
 	}
 
 	[Fact]
+	public void D3D11SoftwareFrameFallback_BypassesCodecAfterRepeatedFallbacksWithoutSuccess() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string reason = "D3D11 graybyte decode produced software frames (AV_PIX_FMT_YUV420P)";
+
+			FfmpegEngine.RecordD3D11SoftwareFrameFallbackForCodec("mpeg4", reason);
+			FfmpegEngine.RecordD3D11SoftwareFrameFallbackForCodec("mpeg4", reason);
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("mpeg4", out _));
+
+			FfmpegEngine.RecordD3D11SoftwareFrameFallbackForCodec("mpeg4", reason);
+
+			Assert.True(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("mpeg4", out string bypassReason));
+			Assert.Contains("software frames", bypassReason, StringComparison.OrdinalIgnoreCase);
+		}
+		finally {
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
+	}
+
+	[Fact]
+	public void D3D11SoftwareFrameFallback_DoesNotBypassCodecAfterHardwareSuccess() {
+		FFHardwareAccelerationMode oldMode = FfmpegEngine.HardwareAccelerationMode;
+		FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+		try {
+			FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.d3d11va;
+			string reason = "D3D11 graybyte decode produced software frames (AV_PIX_FMT_YUV420P)";
+
+			FfmpegEngine.RecordHardwareDecodeSuccessForCodec("h264");
+			for (int i = 0; i < 5; i++)
+				FfmpegEngine.RecordD3D11SoftwareFrameFallbackForCodec("h264", reason);
+
+			Assert.False(FfmpegEngine.ShouldBypassHardwareDecodeForCodec("h264", out _));
+		}
+		finally {
+			FfmpegEngine.ResetConfiguredHardwareDecodeAdaptiveStateForTests();
+			FfmpegEngine.HardwareAccelerationMode = oldMode;
+		}
+	}
+
+	[Fact]
+	public void D3D11GrayByteConcurrency_DoesNotIncreaseWhenQueueAndDecodeSpikesAreBothHigh() {
+		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
+			oldLimit: 3,
+			maxLimit: 8,
+			averageQueueMs: 2_500,
+			averageDecodeMs: 800,
+			decodeSpikes: 2,
+			observations: 12);
+
+		Assert.Equal(3, result);
+	}
+
+	[Fact]
+	public void D3D11GrayByteConcurrency_IncreasesWhenQueueIsHighAndDecodeIsClean() {
+		int result = FfmpegEngine.CalculateNativeGrayByteD3D11AutoConcurrencyForTests(
+			oldLimit: 3,
+			maxLimit: 8,
+			averageQueueMs: 2_500,
+			averageDecodeMs: 300,
+			decodeSpikes: 0,
+			observations: 12);
+
+		Assert.Equal(4, result);
+	}
+
+	[Fact]
 	public void NativeBindingHealth_DisablesImmediatelyForAutoGenUnsupportedMethod() {
 		FfmpegEngine.UseNativeBinding = true;
 		FfmpegEngine.ResetNativeBindingHealthForTests();

@@ -1927,9 +1927,13 @@ namespace VDF.Core {
 						list = new List<byte[]>(positionList.Count);
 						timeStamps = new List<TimeSpan>(positionList.Count);
 						int failedPositions = 0;
+						var requestedTimestamps = positionList
+							.Select(position => TimeSpan.FromSeconds(entry.Duration.TotalSeconds * position))
+							.ToList();
+						List<byte[]?> thumbnails = FfmpegEngine.ExtractThumbnailJpegs(entry.Path, requestedTimestamps, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
 						for (int j = 0; j < positionList.Count; j++) {
-							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
+							var timestamp = requestedTimestamps[j];
+							var b = thumbnails[j];
 							if (b == null || b.Length == 0) {
 								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
@@ -2018,9 +2022,13 @@ namespace VDF.Core {
 						list = new List<byte[]>(positionList.Count);
 						timeStamps = new List<TimeSpan>(positionList.Count);
 						int failedPositions = 0;
+						var requestedTimestamps = positionList
+							.Select(position => TimeSpan.FromSeconds(entry.Duration.TotalSeconds * position))
+							.ToList();
+						List<byte[]?> thumbnails = FfmpegEngine.ExtractThumbnailJpegs(entry.Path, requestedTimestamps, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
 						for (int j = 0; j < positionList.Count; j++) {
-							var timestamp = TimeSpan.FromSeconds(entry.Duration.TotalSeconds * positionList[j]);
-							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging, hardwareCodecName: entry.Format);
+							var timestamp = requestedTimestamps[j];
+							var b = thumbnails[j];
 							if (b == null || b.Length == 0) {
 								failedPositions++;
 								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");

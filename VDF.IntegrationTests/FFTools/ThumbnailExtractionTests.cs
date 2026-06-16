@@ -68,6 +68,34 @@ public class ThumbnailExtractionTests {
 	}
 
 	[SkippableFact]
+	public void ExtractThumbnailJpegs_ReturnsOneValidJpegPerRequestedPosition() {
+		Skip.If(!_fixture.FfmpegCliAvailable, _fixture.FfmpegNotFoundReason);
+		Skip.If(_fixture.H264_8bit == null, "H264 test video not generated");
+
+		using var guard = new FfmpegStaticStateGuard();
+		FfmpegEngine.UseNativeBinding = false;
+		FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.none;
+
+		var results = FfmpegEngine.ExtractThumbnailJpegs(
+			_fixture.H264_8bit!,
+			new List<TimeSpan> {
+				TimeSpan.FromSeconds(0.5),
+				TimeSpan.FromSeconds(1.0),
+				TimeSpan.FromSeconds(1.5),
+			},
+			maxWidth: 100,
+			extendedLogging: false);
+
+		Assert.Equal(3, results.Count);
+		foreach (byte[]? result in results) {
+			Assert.NotNull(result);
+			Assert.True(result.Length > 2);
+			Assert.Equal(0xFF, result[0]);
+			Assert.Equal(0xD8, result[1]);
+		}
+	}
+
+	[SkippableFact]
 	public void GetThumbnail_InvalidFile_ReturnsNull() {
 		Skip.If(!_fixture.FfmpegCliAvailable, _fixture.FfmpegNotFoundReason);
 

@@ -36,6 +36,7 @@ namespace VDF.Core.FFTools {
 		const long NativeGrayByteD3D11AutoDecodeHighMs = 1500;
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
 		const int HardwareDecodeCodecBypassMinimumFailures = 3;
+		const int D3D11SoftwareFrameCodecBypassMinimumFailures = 3;
 		const int MaxCapturedFfmpegErrorLines = 80;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
@@ -215,6 +216,8 @@ namespace VDF.Core.FFTools {
 
 		sealed class HardwareDecodeCodecStats {
 			public int ConsecutiveFailures;
+			public int ConsecutiveSoftwareFrameFallbacks;
+			public int HardwareSuccesses;
 			public bool Bypass;
 			public string Reason = string.Empty;
 		}
@@ -408,6 +411,24 @@ namespace VDF.Core.FFTools {
 			}
 		}
 
+		static int CalculateNativeGrayByteD3D11AutoConcurrency(int oldLimit, int maxLimit, long averageQueueMs, long averageDecodeMs, int decodeSpikes, int observations) {
+			bool decodePressure = averageDecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs || decodeSpikes >= Math.Max(2, observations / 3);
+			bool queuePressure = averageQueueMs >= NativeGrayByteD3D11AutoQueueHighMs
+				&& averageDecodeMs < NativeGrayByteD3D11AutoDecodeHighMs / 2
+				&& decodeSpikes == 0;
+
+			int newLimit = oldLimit;
+			if (decodePressure && oldLimit > 1)
+				newLimit = oldLimit - 1;
+			else if (queuePressure && oldLimit < maxLimit)
+				newLimit = oldLimit + 1;
+
+			return Math.Clamp(newLimit, 1, maxLimit);
+		}
+
+		internal static int CalculateNativeGrayByteD3D11AutoConcurrencyForTests(int oldLimit, int maxLimit, long averageQueueMs, long averageDecodeMs, int decodeSpikes, int observations) =>
+			CalculateNativeGrayByteD3D11AutoConcurrency(oldLimit, maxLimit, averageQueueMs, averageDecodeMs, decodeSpikes, observations);
+
 		static void ObserveD3D11GrayByteConcurrency(NativeGrayByteTiming timing) {
 			if (timing.TinyDownloads <= 0 || timing.SampledFrames <= 0)
 				return;
@@ -427,15 +448,8 @@ namespace VDF.Core.FFTools {
 				long averageDecodeMs = D3D11GrayByteTuningDecodeMs / Math.Max(1, observations);
 				int decodeSpikes = D3D11GrayByteTuningDecodeSpikeObservations;
 				int oldLimit = D3D11GrayByteCurrentConcurrencyLimit;
-				int newLimit = oldLimit;
 				int maxLimit = GetNativeGrayByteD3D11AutoMaxConcurrency();
-				bool decodePressure = averageDecodeMs >= NativeGrayByteD3D11AutoDecodeHighMs || decodeSpikes >= Math.Max(2, observations / 3);
-				bool queuePressure = averageQueueMs >= NativeGrayByteD3D11AutoQueueHighMs && averageDecodeMs < NativeGrayByteD3D11AutoDecodeHighMs / 2;
-
-				if (decodePressure && oldLimit > 1)
-					newLimit = oldLimit - 1;
-				else if (queuePressure && oldLimit < maxLimit)
-					newLimit = oldLimit + 1;
+				int newLimit = CalculateNativeGrayByteD3D11AutoConcurrency(oldLimit, maxLimit, averageQueueMs, averageDecodeMs, decodeSpikes, observations);
 
 				D3D11GrayByteTuningObservations = 0;
 				D3D11GrayByteTuningQueueMs = 0;
@@ -527,8 +541,42 @@ namespace VDF.Core.FFTools {
 			if (key == null)
 				return;
 			lock (HardwareDecodeCodecStateLock) {
-				if (HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats) && !stats.Bypass)
+				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
+					stats = new HardwareDecodeCodecStats();
+					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
+				}
+				if (!stats.Bypass) {
 					stats.ConsecutiveFailures = 0;
+					stats.ConsecutiveSoftwareFrameFallbacks = 0;
+					stats.HardwareSuccesses++;
+				}
+			}
+		}
+
+		internal static void RecordD3D11SoftwareFrameFallbackForCodec(string? codecName, string reason) {
+			string? codec = NormalizeHardwareCodecName(codecName);
+			string? key = GetHardwareDecodeCodecKey(codec);
+			if (key == null)
+				return;
+
+			lock (HardwareDecodeCodecStateLock) {
+				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
+					stats = new HardwareDecodeCodecStats();
+					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
+				}
+				if (stats.Bypass || stats.HardwareSuccesses > 0)
+					return;
+
+				stats.ConsecutiveSoftwareFrameFallbacks++;
+				string normalizedReason = NormalizeLogReason(reason, 240);
+				if (stats.ConsecutiveSoftwareFrameFallbacks < D3D11SoftwareFrameCodecBypassMinimumFailures) {
+					Logger.Instance.Info($"FFmpeg D3D11 software-frame fallback observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveSoftwareFrameFallbacks}/{D3D11SoftwareFrameCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated software-frame fallbacks and no hardware success. Reason: {normalizedReason}");
+					return;
+				}
+
+				stats.Bypass = true;
+				stats.Reason = $"codec '{codec}' on {HardwareAccelerationMode}: repeated D3D11 software-frame fallbacks with no hardware decode success: {normalizedReason}";
+				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveSoftwareFrameFallbacks} repeated D3D11 software-frame fallback(s) and no hardware decode success: {normalizedReason}");
 			}
 		}
 
@@ -856,6 +904,35 @@ namespace VDF.Core.FFTools {
 			return outBuf;
 		}
 
+		static unsafe byte[] ExtractJpegFromFrame(VideoStreamDecoder vsd, AVFrame srcFrame, int maxWidth, int jpegQuality, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, out long convertMs, out long copyMs) {
+			Size sourceSize = new(srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width, srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
+			if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+				throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+
+			AVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);
+			if (!IsValidPixelFormat(srcPixFmt))
+				throw new Exception($"Invalid source pixel format {srcPixFmt}");
+
+			Size destinationSize = maxWidth == 0
+				? sourceSize
+				: ScaleToMaxWidth(sourceSize, maxWidth > 0 ? maxWidth : 100);
+			if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSourcePixelFormat) {
+				converter?.Dispose();
+				converter = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, AVPixelFormat.AV_PIX_FMT_YUVJ420P, VideoFrameConverter.ScaleQuality.Bicubic, false);
+				converterSourceSize = sourceSize;
+				converterSourcePixelFormat = srcPixFmt;
+			}
+
+			var phaseSw = Stopwatch.StartNew();
+			AVFrame convertedFrame = converter.Convert(srcFrame);
+			convertMs = phaseSw.ElapsedMilliseconds;
+
+			phaseSw.Restart();
+			byte[] jpeg = JpegFrameEncoder.Encode(convertedFrame, jpegQuality > 0 ? jpegQuality : DefaultJpegQuality);
+			copyMs = phaseSw.ElapsedMilliseconds;
+			return jpeg;
+		}
+
 		static unsafe byte[] ExtractGrayBytesWithDecoder(VideoStreamDecoder vsd, string filePath, TimeSpan position, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, NativeGrayByteTiming timing) {
 			if (!vsd.TryDecodeFrame(out var srcFrame, position, out DecodedFrameTiming decodeTiming))
 				throw new Exception($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
@@ -1166,7 +1243,7 @@ namespace VDF.Core.FFTools {
 					return false;
 				}
 				if (e is D3D11SoftwareFrameFallbackException && !forceCpuDecode) {
-					RecordHardwareDecodeFailureForCodec(codecName, e.Message);
+					RecordD3D11SoftwareFrameFallbackForCodec(codecName, e.Message);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction detected software frames under D3D11 on '{videoFile.Path}', retrying native batch with CPU decode. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
@@ -1617,6 +1694,106 @@ namespace VDF.Core.FFTools {
 		/// position (ignored for images). FFmpeg does the scaling and encoding directly.
 		/// Returns null if extraction fails.
 		/// </summary>
+		public static List<byte[]?> ExtractThumbnailJpegs(string filePath, IReadOnlyList<TimeSpan> positions, int maxWidth = 0, bool extendedLogging = false, int jpegQuality = 0, string? hardwareCodecName = null) {
+			var frames = new byte[]?[positions.Count];
+			if (positions.Count == 0)
+				return frames.ToList();
+
+			bool forceCpuForRemaining = false;
+			if (ShouldUseNativeBinding)
+				TryExtractThumbnailJpegsNative(filePath, positions, maxWidth, extendedLogging, jpegQuality, hardwareCodecName, frames, ref forceCpuForRemaining);
+
+			for (int i = 0; i < positions.Count; i++) {
+				frames[i] ??= GetThumbnail(new FfmpegSettings {
+					File = filePath,
+					Position = positions[i],
+					GrayScale = 0,
+					Fullsize = (byte)(maxWidth == 0 ? 1 : 0),
+					MaxWidth = maxWidth,
+					JpegQuality = jpegQuality,
+					HardwareCodecName = hardwareCodecName,
+					ForceCpuDecode = forceCpuForRemaining,
+				}, extendedLogging);
+			}
+
+			return frames.ToList();
+		}
+
+		static unsafe bool TryExtractThumbnailJpegsNative(
+			string filePath,
+			IReadOnlyList<TimeSpan> positions,
+			int maxWidth,
+			bool extendedLogging,
+			int jpegQuality,
+			string? hardwareCodecName,
+			byte[]?[] frames,
+			ref bool forceCpuForRemaining,
+			bool forceCpuDecode = false) {
+			string hardwarePolicy = forceCpuDecode ? "hardware-decode-failure-cpu-retry" : "unresolved";
+			AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			try {
+				bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(hardwareCodecName, out _);
+				bool enableHardwareAcceleration = !forceCpuDecode && !bypassHardwareForCodec;
+				hardwareDeviceType = GetConfiguredHardwareDeviceType(enableHardwareAcceleration);
+				hardwarePolicy = forceCpuDecode
+					? "hardware-decode-failure-cpu-retry"
+					: bypassHardwareForCodec
+						? "hardware-decode-codec-bypass"
+						: GetHardwarePolicy(hardwareDeviceType, enableHardwareAcceleration);
+
+				var openSw = Stopwatch.StartNew();
+				using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
+				long openMs = openSw.ElapsedMilliseconds;
+				VideoFrameConverter? converter = null;
+				Size converterSourceSize = default;
+				AVPixelFormat converterSourcePixelFormat = AVPixelFormat.AV_PIX_FMT_NONE;
+				bool anySuccess = false;
+				try {
+					for (int i = 0; i < positions.Count; i++) {
+						var totalSw = Stopwatch.StartNew();
+						long openForSampleMs = i == 0 ? openMs : 0;
+						if (!vsd.TryDecodeFrame(out var srcFrame, positions[i], out DecodedFrameTiming frameTiming)) {
+							if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE)
+								throw new Exception($"TryDecodeFrame failed at pos={positions[i]} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+							continue;
+						}
+
+						byte[] jpeg = ExtractJpegFromFrame(vsd, srcFrame, maxWidth, jpegQuality, ref converter, ref converterSourceSize, ref converterSourcePixelFormat, out long convertMs, out long copyMs);
+						frames[i] = jpeg;
+						anySuccess = true;
+						if (ShouldLogNativeSuccessTiming(extendedLogging))
+							LogNativeTiming(filePath, positions[i], false, vsd.IsHardwareDecode, hardwarePolicy, openForSampleMs, frameTiming.SeekMs, frameTiming.DecodeMs, frameTiming.TransferMs, frameTiming.HardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds + openForSampleMs);
+					}
+				}
+				finally {
+					converter?.Dispose();
+				}
+
+				if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+					RecordHardwareDecodeSuccessForCodec(hardwareCodecName);
+				if (anySuccess)
+					RecordNativeSuccess();
+				return anySuccess;
+			}
+			catch (Exception e) {
+				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
+				if (IsNativeBindingLoadFailure(e)) {
+					RecordNativeFailure(filePath, e);
+					return false;
+				}
+				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
+					forceCpuForRemaining = true;
+					MarkConfiguredHardwareDecodeFailure(failureText);
+					RecordHardwareDecodeFailureForCodec(hardwareCodecName, failureText);
+					Logger.Instance.Info($"Native FFmpeg batched thumbnail extraction hit a hardware decode failure on '{filePath}', retrying batch with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
+					return TryExtractThumbnailJpegsNative(filePath, positions, maxWidth, extendedLogging, jpegQuality, hardwareCodecName, frames, ref forceCpuForRemaining, forceCpuDecode: true);
+				}
+
+				Logger.Instance.Info($"Native FFmpeg batched thumbnail extraction failed on '{filePath}', falling back to per-position path. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
+				return false;
+			}
+		}
+
 		public static byte[]? ExtractThumbnailJpeg(string filePath, TimeSpan position, int maxWidth = 0, bool extendedLogging = false, int jpegQuality = 0, string? hardwareCodecName = null) {
 			return GetThumbnail(new FfmpegSettings {
 				File = filePath,
