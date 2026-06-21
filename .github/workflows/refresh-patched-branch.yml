@@ -50,7 +50,6 @@ jobs:
         run: |
           git checkout perf/native-hwaccel-from-crashfix
           before="$(git rev-parse HEAD)"
-          master_sha="$(git rev-parse origin/master)"
 
           set +e
           git merge --no-edit --no-commit origin/master
@@ -74,12 +73,13 @@ jobs:
               git add README.md
             fi
 
-            # One-time resolution for upstream master d3ddf389341b027572b977b28ae7403866bdd358.
-            # Upstream added a Vulkan native-binding crash guard in the same area heavily
-            # rewritten by the perf branch. Keep the perf implementation and apply the
-            # upstream guard to it. The exact-SHA gate prevents this from swallowing future
-            # unrelated conflicts in FfmpegEngine.cs.
-            if [ "$master_sha" = "d3ddf389341b027572b977b28ae7403866bdd358" ] \
+            # One-time resolution for the unchanged perf head while integrating upstream
+            # master d3ddf389341b027572b977b28ae7403866bdd358. Upstream added a Vulkan
+            # native-binding crash guard in the same area heavily rewritten by the perf
+            # branch. Keep the perf implementation and apply that guard to it. The exact
+            # perf-head gate prevents this from swallowing future unrelated conflicts.
+            if [ "$before" = "20c1e404fb9597c052083c85322cdcbd1269909c" ] \
+              && git merge-base --is-ancestor "d3ddf389341b027572b977b28ae7403866bdd358" origin/master \
               && echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FfmpegEngine.cs"; then
               echo "Applying the known Vulkan native-binding guard to the perf FfmpegEngine"
               git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
