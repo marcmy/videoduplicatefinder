@@ -7,6 +7,14 @@ on:
       - Sync master from upstream
     types:
       - completed
+  # Keep workflow-maintenance commits in the perf branch ancestry. The merge step
+  # restores the perf branch's own workflow files, and workflow-only changes do not
+  # dispatch a release build.
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/refresh-patched-branch.yml
 
 permissions:
   contents: write
@@ -18,7 +26,7 @@ concurrency:
 
 jobs:
   refresh:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -73,9 +81,9 @@ jobs:
               echo "$remaining_conflicts"
               exit 1
             fi
-          fi
 
-          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit --no-edit
+          elif git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
 
