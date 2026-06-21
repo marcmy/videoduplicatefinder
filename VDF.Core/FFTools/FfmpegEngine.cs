@@ -65,6 +65,7 @@ namespace VDF.Core.FFTools {
 		const int NativeFailureThreshold = 5;
 		static int NativeConsecutiveFailures;
 		static int NativeDisabledForSession;
+		static int VulkanNativeWarningLogged;
 
 		static bool ShouldUseNativeBinding =>
 			UseNativeBinding
@@ -82,6 +83,7 @@ namespace VDF.Core.FFTools {
 		static void ResetNativeBindingHealth() {
 			Volatile.Write(ref NativeConsecutiveFailures, 0);
 			Volatile.Write(ref NativeDisabledForSession, 0);
+			Volatile.Write(ref VulkanNativeWarningLogged, 0);
 		}
 
 		static void RecordNativeSuccess() =>
@@ -709,6 +711,20 @@ namespace VDF.Core.FFTools {
 			if (!enableHardwareAcceleration)
 				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 
+			// Vulkan through the in-process native binding can segfault the app on
+			// some drivers (#799). Keep Vulkan available to the isolated FFmpeg
+			// process path, but force software decode for native calls.
+			if (HardwareAccelerationMode == FFHardwareAccelerationMode.vulkan) {
+				if (Interlocked.Exchange(ref VulkanNativeWarningLogged, 1) == 0) {
+					Logger.Instance.Info(
+						"Vulkan hardware acceleration is not supported with the native FFmpeg binding " +
+						"(it crashes the process on some drivers, #799); decoding in software instead. " +
+						"Disable 'Use native FFmpeg binding' to run Vulkan via the CLI, or pick another " +
+						"hardware acceleration mode such as 'cuda'.");
+				}
+				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			}
+
 			return HardwareAccelerationMode switch {
 				FFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,
 				FFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
@@ -719,7 +735,6 @@ namespace VDF.Core.FFTools {
 				FFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,
 				FFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,
 				FFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,
-				FFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,
 				_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
 			};
 		}
