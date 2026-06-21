@@ -1,5 +1,6 @@
 name: Refresh perf branch
 
+# Temporary push trigger below runs the repaired refresh once; it is removed after verification.
 on:
   workflow_dispatch:
   workflow_run:
