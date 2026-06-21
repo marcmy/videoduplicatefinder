@@ -99,6 +99,7 @@ namespace VDF.Web.Services {
 			ctx.Response.Cookies.Append(CookieName, token, new CookieOptions {
 				HttpOnly = true,
 				SameSite = SameSiteMode.Strict,
+				Secure = true,
 				// Persistent: survives browser restarts for 30 days.
 				// Otherwise: session cookie, gone when the browser closes.
 				MaxAge = persistent ? CookieMaxAge : null,
@@ -133,9 +134,9 @@ namespace VDF.Web.Services {
 		}
 
 		void PrintPasswordBanner() {
-			// Log via ILogger so it shows up in VS Code Debug Console / structured logging
+			// Never send the password through ILogger because providers may persist structured logs.
 			_logger.LogInformation("============================================");
-			_logger.LogInformation("  Web UI password:  {Password}", _password);
+			_logger.LogInformation("  Web UI authentication is enabled.");
 			_logger.LogInformation("============================================");
 
 			var envOverride = Environment.GetEnvironmentVariable("VDF_WEB_PASSWORD");
