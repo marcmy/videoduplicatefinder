@@ -14,10 +14,31 @@
 // */
 //
 
+using System.Net;
+using Microsoft.AspNetCore.HttpOverrides;
 using VDF.Core;
 using VDF.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<ForwardedHeadersOptions>(options => {
+	// Only the original scheme is needed for Secure-cookie handling. Forwarded
+	// values are accepted solely from loopback or explicitly configured proxies.
+	options.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
+	options.ForwardLimit = 1;
+
+	foreach (string value in SplitList(Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXIES"))) {
+		if (!IPAddress.TryParse(value, out IPAddress? proxy))
+			throw new InvalidOperationException($"Invalid IP address in VDF_TRUSTED_PROXIES: '{value}'");
+		options.KnownProxies.Add(proxy);
+	}
+
+	foreach (string value in SplitList(Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXY_NETWORKS"))) {
+		if (!IPNetwork.TryParse(value, out IPNetwork network))
+			throw new InvalidOperationException($"Invalid CIDR network in VDF_TRUSTED_PROXY_NETWORKS: '{value}'");
+		options.KnownIPNetworks.Add(network);
+	}
+});
 
 builder.Services.AddRazorComponents()
 	.AddInteractiveServerComponents();
@@ -30,6 +51,10 @@ builder.Services.AddSingleton<ScanService>();
 builder.Services.AddSingleton<FFmpegSetupService>();
 
 var app = builder.Build();
+
+// Must run before anything that relies on Request.Scheme. Unknown proxies are
+// ignored, so a client cannot spoof X-Forwarded-Proto to alter cookie security.
+app.UseForwardedHeaders();
 
 // Route unhandled exceptions from ScanEngine's async void methods (post-await) to ScanService
 // so they appear in the UI instead of crashing the process silently.
@@ -121,9 +146,7 @@ app.MapGet("/thumbnail/hq", async (HttpContext ctx, ScanService scan) => {
 		: TimeSpan.FromSeconds(item.Duration.TotalSeconds * 0.1);
 
 	string cacheKey = $"{path}|{position.TotalSeconds:F2}|{width}|{quality}";
-
 	if (!scan.HqThumbCache.TryGetValue(cacheKey, out var jpeg)) {
-		// FFmpeg encodes at the requested quality directly — no re-encode pass needed.
 		jpeg = await Task.Run(() => ScanEngine.ExtractThumbnailJpeg(path, position, width, quality));
 		if (jpeg == null || jpeg.Length == 0) { ctx.Response.StatusCode = 204; return; }
 		if (scan.HqThumbCache.Count >= 4096)
@@ -150,7 +173,6 @@ app.MapGet("/thumbnail/full", async (HttpContext ctx, ScanService scan) => {
 		: TimeSpan.FromSeconds(item.Duration.TotalSeconds * 0.1);
 
 	string cacheKey = $"{path}|{position.TotalSeconds:F2}|full";
-
 	if (!scan.FullThumbCache.TryGetValue(cacheKey, out var jpeg)) {
 		jpeg = await Task.Run(() => ScanEngine.ExtractThumbnailJpeg(path, position, 0));
 		if (jpeg == null || jpeg.Length == 0) { ctx.Response.StatusCode = 204; return; }
@@ -177,7 +199,6 @@ app.MapGet("/export/csv", (ScanService scan) => {
 	var inv = System.Globalization.CultureInfo.InvariantCulture;
 	var sb = new System.Text.StringBuilder();
 	sb.AppendLine("GroupId,Path,SizeBytes,Duration,Resolution,Fps,BitrateKbs,AudioFormat,AudioSampleRate,Similarity,DateCreated,IsImage");
-	// Keep group members on adjacent rows regardless of list order.
 	foreach (var group in scan.Duplicates.GroupBy(i => i.GroupId))
 		foreach (var item in group)
 			sb.AppendLine(string.Join(',',
@@ -193,7 +214,6 @@ app.MapGet("/export/csv", (ScanService scan) => {
 				item.Similarity.ToString(inv),
 				item.DateCreated.ToString("yyyy-MM-dd HH:mm:ss", inv),
 				item.IsImage.ToString()));
-	// UTF-8 BOM so Excel detects the encoding.
 	var utf8 = System.Text.Encoding.UTF8;
 	byte[] bytes = [.. utf8.GetPreamble(), .. utf8.GetBytes(sb.ToString())];
 	return Microsoft.AspNetCore.Http.Results.File(bytes, "text/csv", "vdf-results.csv");
@@ -207,3 +227,8 @@ var ffmpegSetup = app.Services.GetRequiredService<FFmpegSetupService>();
 _ = ffmpegSetup.CheckAndSetupAsync();
 
 app.Run();
+
+static IEnumerable<string> SplitList(string? value) =>
+	(value ?? string.Empty).Split(
+		[',', ';', ' '],
+		StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
