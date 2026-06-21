@@ -7,6 +7,11 @@ on:
       - Sync master from upstream
     types:
       - completed
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/refresh-patched-branch.yml
 
 permissions:
   contents: write
@@ -18,7 +23,7 @@ concurrency:
 
 jobs:
   refresh:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -38,32 +43,26 @@ jobs:
           git fetch origin master
           git fetch origin perf/native-hwaccel-from-crashfix
 
-      - name: Refuse automated workflow-file sync
-        shell: bash
-        run: |
-          workflow_changes="$(git diff --name-only HEAD origin/master -- .github/workflows || true)"
-          if [ -n "$workflow_changes" ]; then
-            echo "::error::origin/master contains workflow file changes that the default GITHUB_TOKEN cannot push from Actions."
-            echo "::error::Sync perf/native-hwaccel-from-crashfix locally with a token that has workflow permission, then rerun this workflow."
-            echo "Workflow files requiring manual sync:"
-            echo "$workflow_changes"
-            exit 1
-          fi
-
       - name: Merge fork master into perf branch
         id: merge
         shell: bash
         run: |
           git checkout perf/native-hwaccel-from-crashfix
           before="$(git rev-parse HEAD)"
+          master_sha="$(git rev-parse origin/master)"
 
           set +e
-          git merge --no-edit origin/master
+          git merge --no-edit --no-commit origin/master
           merge_status=$?
           set -e
 
+          # The perf branch intentionally owns its workflow definitions. Restore them
+          # before committing so the default GITHUB_TOKEN never needs workflow scope.
+          git checkout "$before" -- .github/workflows
+          git add .github/workflows
+
           if [ "$merge_status" -ne 0 ]; then
-            echo "Merge reported conflicts. Auto-resolving known safe README conflict, then checking for remaining conflicts."
+            echo "Merge reported conflicts. Auto-resolving only explicitly known safe conflicts."
 
             conflicted_files="$(git diff --name-only --diff-filter=U)"
             echo "$conflicted_files"
@@ -74,13 +73,100 @@ jobs:
               git add README.md
             fi
 
+            # One-time resolution for upstream master d3ddf389341b027572b977b28ae7403866bdd358.
+            # Upstream added a Vulkan native-binding crash guard in the same area heavily
+            # rewritten by the perf branch. Keep the perf implementation and apply the
+            # upstream guard to it. The exact-SHA gate prevents this from swallowing future
+            # unrelated conflicts in FfmpegEngine.cs.
+            if [ "$master_sha" = "d3ddf389341b027572b977b28ae7403866bdd358" ] \
+              && echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FfmpegEngine.cs"; then
+              echo "Applying the known Vulkan native-binding guard to the perf FfmpegEngine"
+              git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
+              python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
+          text = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  "\t\tstatic int NativeConsecutiveFailures;\n\t\tstatic int NativeDisabledForSession;",
+                  "\t\tstatic int NativeConsecutiveFailures;\n\t\tstatic int NativeDisabledForSession;\n\t\tstatic int VulkanNativeWarningLogged;",
+              ),
+              (
+                  "\t\tstatic void ResetNativeBindingHealth() {\n\t\t\tVolatile.Write(ref NativeConsecutiveFailures, 0);\n\t\t\tVolatile.Write(ref NativeDisabledForSession, 0);\n\t\t}",
+                  "\t\tstatic void ResetNativeBindingHealth() {\n\t\t\tVolatile.Write(ref NativeConsecutiveFailures, 0);\n\t\t\tVolatile.Write(ref NativeDisabledForSession, 0);\n\t\t\tVolatile.Write(ref VulkanNativeWarningLogged, 0);\n\t\t}",
+              ),
+              (
+                  "\t\tstatic AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {\n"
+                  "\t\t\tif (!enableHardwareAcceleration)\n"
+                  "\t\t\t\treturn AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n\n"
+                  "\t\t\treturn HardwareAccelerationMode switch {\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.vulkan => AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN,\n"
+                  "\t\t\t\t_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE\n"
+                  "\t\t\t};\n"
+                  "\t\t}",
+                  "\t\tstatic AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {\n"
+                  "\t\t\tif (!enableHardwareAcceleration)\n"
+                  "\t\t\t\treturn AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n\n"
+                  "\t\t\t// Vulkan through the in-process native binding can segfault the app on\n"
+                  "\t\t\t// some drivers (#799). Keep Vulkan available to the isolated FFmpeg\n"
+                  "\t\t\t// process path, but force software decode for native calls.\n"
+                  "\t\t\tif (HardwareAccelerationMode == FFHardwareAccelerationMode.vulkan) {\n"
+                  "\t\t\t\tif (Interlocked.Exchange(ref VulkanNativeWarningLogged, 1) == 0) {\n"
+                  "\t\t\t\t\tLogger.Instance.Info(\n"
+                  "\t\t\t\t\t\t\"Vulkan hardware acceleration is not supported with the native FFmpeg binding \" +\n"
+                  "\t\t\t\t\t\t\"(it crashes the process on some drivers, #799); decoding in software instead. \" +\n"
+                  "\t\t\t\t\t\t\"Disable 'Use native FFmpeg binding' to run Vulkan via the CLI, or pick another \" +\n"
+                  "\t\t\t\t\t\t\"hardware acceleration mode such as 'cuda'.\");\n"
+                  "\t\t\t\t}\n"
+                  "\t\t\t\treturn AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n"
+                  "\t\t\t}\n\n"
+                  "\t\t\treturn HardwareAccelerationMode switch {\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.vdpau => AVHWDeviceType.AV_HWDEVICE_TYPE_VDPAU,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.dxva2 => AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.vaapi => AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.qsv => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.cuda => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.videotoolbox => AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.d3d11va => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.drm => AVHWDeviceType.AV_HWDEVICE_TYPE_DRM,\n"
+                  "\t\t\t\tFFHardwareAccelerationMode.mediacodec => AVHWDeviceType.AV_HWDEVICE_TYPE_MEDIACODEC,\n"
+                  "\t\t\t\t_ => AVHWDeviceType.AV_HWDEVICE_TYPE_NONE\n"
+                  "\t\t\t};\n"
+                  "\t\t}",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one match, found {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+              git add VDF.Core/FFTools/FfmpegEngine.cs
+            fi
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo "Unresolved conflicts remain:"
               echo "$remaining_conflicts"
               exit 1
             fi
+          fi
 
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
 
