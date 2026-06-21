@@ -413,21 +413,7 @@ public sealed class FFmpegSetupService {
 	}
 
 	static void SafeExtractZip(string archivePath, string targetFolder) {
-		string fullTarget = Path.GetFullPath(targetFolder);
-		using var zip = ZipFile.OpenRead(archivePath);
-		foreach (var entry in zip.Entries) {
-			string dest = Path.GetFullPath(Path.Combine(targetFolder, entry.FullName));
-			if (!dest.StartsWith(fullTarget + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-				&& dest != fullTarget)
-				throw new InvalidOperationException($"ZIP entry '{entry.FullName}' would extract outside target directory");
-			if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\')) {
-				Directory.CreateDirectory(dest);
-			}
-			else {
-				Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-				entry.ExtractToFile(dest, true);
-			}
-		}
+		ZipFile.ExtractToDirectory(archivePath, targetFolder, overwriteFiles: true);
 	}
 
 	static int MapToFfmpegMajor(int avcodecMajor, int avformatMajor, int avutilMajor) {
