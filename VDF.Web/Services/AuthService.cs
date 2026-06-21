@@ -99,27 +99,13 @@ namespace VDF.Web.Services {
 			ctx.Response.Cookies.Append(CookieName, token, new CookieOptions {
 				HttpOnly = true,
 				SameSite = SameSiteMode.Strict,
-				// Docker intentionally supports direct HTTP access. Reverse proxies commonly
-				// report the browser-facing scheme through X-Forwarded-Proto.
-				Secure = IsHttpsRequest(ctx.Request),
+				// Forwarded Headers Middleware updates IsHttps only for configured trusted proxies.
+				Secure = ctx.Request.IsHttps,
 				// Persistent: survives browser restarts for 30 days.
 				// Otherwise: session cookie, gone when the browser closes.
 				MaxAge = persistent ? CookieMaxAge : null,
 				IsEssential = true,
 			});
-		}
-
-		static bool IsHttpsRequest(HttpRequest request) {
-			if (request.IsHttps)
-				return true;
-
-			string forwardedProto = request.Headers["X-Forwarded-Proto"].ToString();
-			if (string.IsNullOrWhiteSpace(forwardedProto))
-				return false;
-
-			int comma = forwardedProto.IndexOf(',');
-			string originalProto = comma >= 0 ? forwardedProto[..comma] : forwardedProto;
-			return string.Equals(originalProto.Trim(), Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
 		}
 
 		string LoadOrGeneratePassword() {
