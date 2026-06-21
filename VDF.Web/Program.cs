@@ -34,7 +34,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options => {
 	}
 
 	foreach (string value in SplitList(Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXY_NETWORKS"))) {
-		if (!IPNetwork.TryParse(value, out IPNetwork network))
+		if (!System.Net.IPNetwork.TryParse(value, out System.Net.IPNetwork network))
 			throw new InvalidOperationException($"Invalid CIDR network in VDF_TRUSTED_PROXY_NETWORKS: '{value}'");
 		options.KnownIPNetworks.Add(network);
 	}
