@@ -99,7 +99,8 @@ namespace VDF.Web.Services {
 			ctx.Response.Cookies.Append(CookieName, token, new CookieOptions {
 				HttpOnly = true,
 				SameSite = SameSiteMode.Strict,
-				Secure = true,
+				// Forwarded Headers Middleware updates IsHttps only for configured trusted proxies.
+				Secure = ctx.Request.IsHttps,
 				// Persistent: survives browser restarts for 30 days.
 				// Otherwise: session cookie, gone when the browser closes.
 				MaxAge = persistent ? CookieMaxAge : null,
