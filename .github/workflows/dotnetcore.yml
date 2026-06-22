@@ -1,15 +1,16 @@
 name: Fix release concurrency isolation
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/release-concurrency-isolation
+      - perf/native-hwaccel-from-crashfix
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.head_ref == 'fix/release-concurrency-isolation'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
