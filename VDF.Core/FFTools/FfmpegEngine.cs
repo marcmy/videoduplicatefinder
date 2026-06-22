@@ -1501,7 +1501,11 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
 
-			psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+			// Skip input seeking for still images: some JPEGs otherwise reach EOF before
+			// a frame enters the filter graph, producing an empty successful output (#801).
+			if (!FileUtils.IsImageFile(settings.File)) {
+				psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+			}
 			psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));
 
 			string? userVfFilter = null;
