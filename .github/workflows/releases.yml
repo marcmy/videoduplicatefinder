@@ -6,45 +6,24 @@ on:
     branches:
       - perf/native-hwaccel-from-crashfix
     paths-ignore:
-      - '.github/workflows/**'
       - 'README.md'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-releases
   cancel-in-progress: true
-    
+
 jobs:
-  cleanup:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
-
-      - name: Delete old release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Delete all existing assets from the 4.0.x release so they get replaced with fresh
-          # builds. '|| true' covers the very first run, before the release exists.
-          gh release view 4.0.x --json assets --jq '.assets[].name' 2>/dev/null | while read -r asset; do
-            gh release delete-asset 4.0.x "$asset" --yes
-          done || true
-
   build-windows:
-    name: Build windows bundle first
-    needs: cleanup
+    name: Build Windows release
     runs-on: windows-2022
     env:
       TARGET: win-x64
+
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
 
       - name: Verify perf branch code is present
         shell: pwsh
@@ -59,24 +38,53 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Declare some variables
-        id: vars
-        shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Build
+      - name: Build, validate, and package
         shell: bash
         run: |
-          # Build GUI
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputGUI"
-          # Build CLI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputCLI"
-          # Build Web
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputWeb"
+          set -euo pipefail
+
+          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r "$TARGET" -o outputGUI
+          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q -p:PublishAot=true -r "$TARGET" -o outputCLI
+          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$TARGET" -o outputWeb
+
+          ./outputCLI/vdf-cli.exe --help >/dev/null
+
+          symbolsDir="Symbols-$TARGET"
+          mkdir -p "$symbolsDir"
+
+          collect_symbols() {
+            src="$1"
+            label="$2"
+            dest="$symbolsDir/$label"
+            mkdir -p "$dest"
+
+            while IFS= read -r -d '' file; do
+              cp -a "$file" "$dest/$(basename "$file")"
+            done < <(find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -print0)
+
+            while IFS= read -r -d '' directory; do
+              cp -a "$directory" "$dest/"
+            done < <(find "$src" -type d -name '*.dSYM' -print0)
+
+            find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -delete
+            while IFS= read -r -d '' directory; do
+              rm -rf "$directory"
+            done < <(find "$src" -type d -name '*.dSYM' -print0)
+          }
+
+          collect_symbols outputGUI GUI
+          collect_symbols outputCLI CLI
+          collect_symbols outputWeb Web
+
+          if ! find "$symbolsDir" -mindepth 2 -print -quit | grep -q .; then
+            echo "No debug symbols were collected." >&2
+            exit 1
+          fi
 
           bundleDir="Bundle-$TARGET"
           mkdir -p "$bundleDir"
           cp -a outputGUI/. "$bundleDir/"
+
           copy_unique() {
             src="$1"
             while IFS= read -r -d '' file; do
@@ -93,108 +101,146 @@ jobs:
               fi
             done < <(find "$src" -type f -print0)
           }
+
           copy_unique outputCLI
           copy_unique outputWeb
+
           for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
             if [ ! -f "$bundleDir/$exe" ]; then
               echo "Bundle is missing required executable: $exe" >&2
               exit 1
             fi
           done
+
+          if find outputGUI outputCLI outputWeb "$bundleDir" \
+              \( -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -o -type d -name '*.dSYM' \) \
+              -print -quit | grep -q .; then
+            echo "A runtime output still contains debug symbols." >&2
+            exit 1
+          fi
+
+          for dir in outputGUI outputCLI outputWeb "$bundleDir" "$symbolsDir"; do
+            echo "=== $dir ==="
+            echo "Files: $(find "$dir" -type f | wc -l)"
+            du -sh "$dir"
+          done
+
           7z a -tzip "GUI-$TARGET.zip" "./outputGUI/*"
           7z a -tzip "CLI-$TARGET.zip" "./outputCLI/*"
           7z a -tzip "Web-$TARGET.zip" "./outputWeb/*"
           7z a -tzip "Bundle-$TARGET.zip" "./$bundleDir"
+          7z a -tzip "Symbols-$TARGET.zip" "./$symbolsDir"
 
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "$bundleDir"
-
-      - name: Publish windows assets
-        uses: softprops/action-gh-release@v3
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ github.token }}
-          tag_name: 4.0.x
-          files: |
-            GUI-*
-            CLI-*
-            Web-*
-            Bundle-*
-          body: |
-            Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
-            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
-            Last build based on ${{ steps.vars.outputs.sha_short }}
-
-      - name: Trigger scoop bucket Excavator
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-            Write-Host "No cross-repo token secret configured; skipping scoop-bucket Excavator trigger. Add SCOOP_BUCKET_TOKEN, GH_PAT, or PAT with repo/workflow access to enable this."
-            exit 0
-          }
-          gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
+          name: release-win-x64
+          path: |
+            GUI-win-x64.zip
+            CLI-win-x64.zip
+            Web-win-x64.zip
+            Bundle-win-x64.zip
+            Symbols-win-x64.zip
+          if-no-files-found: error
+          retention-days: 3
 
   build-other:
-    name: Build other releases
-    needs: build-windows
-
+    name: Build ${{ matrix.name }} release
     strategy:
+      fail-fast: false
       matrix:
-        kind: ['linux', 'macOS', 'macOSarm64', 'linuxarm64']
         include:
-          - kind: linux
+          - name: linux-x64
             os: ubuntu-latest
             target: linux-x64
-            name: linux-x64
-          - kind: macOS
+          - name: macOS-x64
             os: macos-latest
             target: osx-x64
-            name: osx-x64
-          - kind: macOSarm64
+          - name: macOS-arm64
             os: macos-latest
             target: osx-arm64
-            name: osx-arm64
-          - kind: linuxarm64
-            os: ubuntu-latest
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
             target: linux-arm64
-            name: linux-arm64
-            
+
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
 
       - name: Verify perf branch code is present
-        shell: pwsh
+        shell: bash
         run: |
-          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
-          if ($src -notlike '*d3d11-video-processor-gray32*') {
-            throw "Perf D3D11 graybyte fast path missing from checked-out source."
-          }
+          if ! grep -q 'd3d11-video-processor-gray32' VDF.Core/FFTools/FfmpegEngine.cs; then
+            echo "Perf D3D11 graybyte fast path missing from checked-out source." >&2
+            exit 1
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
-      - name: Declare some variables
-        id: vars
-        shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Build
+      - name: Build, validate, and package
         shell: bash
         run: |
-          # Build GUI
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputGUI"
-          # Build CLI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputCLI"
-          # Build Web
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputWeb"
-          # Pack files
-          if [[ "${{ matrix.target }}" == osx-* ]]; then
+          set -euo pipefail
+
+          target="${{ matrix.target }}"
+
+          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r "$target" -o outputGUI
+          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q -p:PublishAot=true -r "$target" -o outputCLI
+          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$target" -o outputWeb
+
+          chmod +x outputCLI/vdf-cli
+          ./outputCLI/vdf-cli --help >/dev/null
+
+          symbolsDir="Symbols-$target"
+          mkdir -p "$symbolsDir"
+
+          collect_symbols() {
+            src="$1"
+            label="$2"
+            dest="$symbolsDir/$label"
+            mkdir -p "$dest"
+
+            while IFS= read -r -d '' file; do
+              cp -a "$file" "$dest/$(basename "$file")"
+            done < <(find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -print0)
+
+            while IFS= read -r -d '' directory; do
+              cp -a "$directory" "$dest/"
+            done < <(find "$src" -type d -name '*.dSYM' -print0)
+
+            find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -delete
+            while IFS= read -r -d '' directory; do
+              rm -rf "$directory"
+            done < <(find "$src" -type d -name '*.dSYM' -print0)
+          }
+
+          collect_symbols outputGUI GUI
+          collect_symbols outputCLI CLI
+          collect_symbols outputWeb Web
+
+          if ! find "$symbolsDir" -mindepth 2 -print -quit | grep -q .; then
+            echo "No debug symbols were collected." >&2
+            exit 1
+          fi
+
+          if find outputGUI outputCLI outputWeb \
+              \( -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -o -type d -name '*.dSYM' \) \
+              -print -quit | grep -q .; then
+            echo "A runtime output still contains debug symbols." >&2
+            exit 1
+          fi
+
+          for dir in outputGUI outputCLI outputWeb "$symbolsDir"; do
+            echo "=== $dir ==="
+            echo "Files: $(find "$dir" -type f | wc -l)"
+            du -sh "$dir"
+          done
+
+          if [[ "$target" == osx-* ]]; then
             mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
             mkdir -p "Video Duplicate Finder.app/Contents/Resources"
             cp -r outputGUI/. "Video Duplicate Finder.app/Contents/MacOS/"
@@ -205,8 +251,7 @@ jobs:
               --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
               "Video Duplicate Finder.app"
             codesign --verify --deep --strict --verbose=2 "Video Duplicate Finder.app"
-            tar czvf "GUI-${{ matrix.target }}.tar.gz" "Video Duplicate Finder.app"
-            chmod +x outputCLI/vdf-cli
+
             chmod +x outputWeb/VDF.Web
             codesign --force --deep --sign - \
               --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
@@ -214,27 +259,141 @@ jobs:
             codesign --force --deep --sign - \
               --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
               outputWeb/VDF.Web
-            tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
-            tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
+
+            tar czf "GUI-$target.tar.gz" "Video Duplicate Finder.app"
+            tar czf "CLI-$target.tar.gz" "outputCLI"
+            tar czf "Web-$target.tar.gz" "outputWeb"
           else
             cp "VDF.GUI/Assets/Linux/icon.png" "outputGUI/icon.png"
             cp "VDF.GUI/Assets/Linux/videoduplicatefinder.desktop" "outputGUI/videoduplicatefinder.desktop"
-            tar czvf "GUI-${{ matrix.target }}.tar.gz" "outputGUI"
-            tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
-            tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
+            tar czf "GUI-$target.tar.gz" "outputGUI"
+            tar czf "CLI-$target.tar.gz" "outputCLI"
+            tar czf "Web-$target.tar.gz" "outputWeb"
           fi
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "Video Duplicate Finder.app"
 
-      - name: Publish non-windows assets
-        uses: softprops/action-gh-release@v3
+          tar czf "Symbols-$target.tar.gz" "$symbolsDir"
+
+      - name: Upload platform release assets
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ github.token }}
-          tag_name: 4.0.x
-          files: |
-            GUI-*
-            CLI-*
-            Web-*
-          body: |
-            Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
-            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
-            Last build based on ${{ steps.vars.outputs.sha_short }}
+          name: release-${{ matrix.target }}
+          path: |
+            GUI-${{ matrix.target }}.tar.gz
+            CLI-${{ matrix.target }}.tar.gz
+            Web-${{ matrix.target }}.tar.gz
+            Symbols-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish validated release
+    if: github.ref_name == 'perf/native-hwaccel-from-crashfix'
+    needs:
+      - build-windows
+      - build-other
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download validated assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate assembled release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            GUI-win-x64.zip
+            CLI-win-x64.zip
+            Web-win-x64.zip
+            Bundle-win-x64.zip
+            Symbols-win-x64.zip
+            GUI-linux-x64.tar.gz
+            CLI-linux-x64.tar.gz
+            Web-linux-x64.tar.gz
+            Symbols-linux-x64.tar.gz
+            GUI-linux-arm64.tar.gz
+            CLI-linux-arm64.tar.gz
+            Web-linux-arm64.tar.gz
+            Symbols-linux-arm64.tar.gz
+            GUI-osx-x64.tar.gz
+            CLI-osx-x64.tar.gz
+            Web-osx-x64.tar.gz
+            Symbols-osx-x64.tar.gz
+            GUI-osx-arm64.tar.gz
+            CLI-osx-arm64.tar.gz
+            Web-osx-arm64.tar.gz
+            Symbols-osx-arm64.tar.gz
+          )
+
+          for asset in "${required[@]}"; do
+            test -s "release-assets/$asset" || {
+              echo "Missing or empty release asset: $asset" >&2
+              exit 1
+            }
+          done
+
+          for archive in release-assets/*.zip; do
+            case "$(basename "$archive")" in
+              Symbols-*) continue ;;
+            esac
+            if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+              echo "Runtime archive contains debug symbols: $archive" >&2
+              exit 1
+            fi
+          done
+
+          for archive in release-assets/*.tar.gz; do
+            case "$(basename "$archive")" in
+              Symbols-*) continue ;;
+            esac
+            if tar tzf "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+              echo "Runtime archive contains debug symbols: $archive" >&2
+              exit 1
+            fi
+          done
+
+          ls -lh release-assets
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+          cat > release-notes.md <<EOF
+          Note: These are daily builds. Assets are automatically replaced after every successful validated build.
+
+          4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed, faster duplicate comparison, and separate debug-symbol archives. GUI and CLI are Native AOT; Web remains self-contained JIT.
+
+          Last build based on $short_sha
+          EOF
+
+          if gh release view 4.0.x >/dev/null 2>&1; then
+            gh release upload 4.0.x release-assets/* --clobber
+            gh release edit 4.0.x --notes-file release-notes.md
+          else
+            gh release create 4.0.x release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "4.0.x" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Trigger Scoop bucket Excavator
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            Write-Host "No cross-repo token secret configured; skipping scoop-bucket Excavator trigger. Add SCOOP_BUCKET_TOKEN, GH_PAT, or PAT with repo/workflow access to enable this."
+            exit 0
+          }
+          gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
