@@ -14,7 +14,7 @@ Adopt upstream's useful Native AOT release model while keeping the fork's hardwa
 - Smoke-test the published CLI.
 - Report output file counts and sizes.
 - Restore explicit read-only permissions in pull-request CI.
-- Always upload TRX test results so failed CI tests can be diagnosed without relying on truncated console logs.
+- Always upload TRX results and complete console logs so failed CI tests can be diagnosed without relying on truncated job output.
 
 ## Phase 2: release safety
 
