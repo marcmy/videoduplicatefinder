@@ -5,6 +5,9 @@ on:
     paths-ignore:
       - '.github/workflows/**'
 
+permissions:
+  contents: read
+
 jobs:
   build:
 
