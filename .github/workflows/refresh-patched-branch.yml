@@ -75,6 +75,40 @@ jobs:
               git add README.md
             fi
 
+            # One-time guarded resolution for upstream issue #801. The perf branch
+            # heavily rewrote this method, while master only added the still-image
+            # guard around input seeking. Refuse to run for any other master commit.
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$remaining_conflicts" = "VDF.Core/FFTools/FfmpegEngine.cs" ]; then
+              expected_master="08a50ec5c5e8074d37a3030c625732421cda7d4a"
+              actual_master="$(git rev-parse origin/master)"
+              if [ "$actual_master" != "$expected_master" ]; then
+                echo "::error::Refusing the one-time FfmpegEngine resolver: expected master $expected_master, got $actual_master."
+                exit 1
+              fi
+
+              echo "Keeping the perf implementation and applying master's still-image seek guard"
+              git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
+              python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
+          text = path.read_text(encoding="utf-8")
+          old = '''\t\t\tpsi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+          \t\t\tpsi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));'''
+          new = '''\t\t\t// Skip input seeking for still images: some JPEGs otherwise reach EOF before
+          \t\t\t// a frame enters the filter graph, producing an empty successful output (#801).
+          \t\t\tif (!FileUtils.IsImageFile(settings.File)) {
+          \t\t\t\tpsi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
+          \t\t\t}
+          \t\t\tpsi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));'''
+          if text.count(old) != 1:
+              raise SystemExit("Expected exactly one unguarded -ss/-i block in FfmpegEngine.cs")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+              git add VDF.Core/FFTools/FfmpegEngine.cs
+            fi
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo "Unresolved conflicts remain:"
