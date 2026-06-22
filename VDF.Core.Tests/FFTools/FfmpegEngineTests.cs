@@ -15,6 +15,7 @@
 //
 
 using VDF.Core.FFTools;
+using VDF.Core.FFTools.FFmpegNative;
 
 namespace VDF.Core.Tests.FFTools;
 
@@ -189,11 +190,14 @@ public class FfmpegEngineTests {
 			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
 			FfmpegEngine.MarkConfiguredHardwareDecodeFailure(failure);
 
-			Assert.True(FfmpegEngine.ShouldAttemptNativeSingleFrameExtraction(new FfmpegSettings {
-				GrayScale = 0,
-				File = "video.mp4",
-				Position = TimeSpan.Zero,
-			}));
+			Assert.False(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
+			Assert.Equal(
+				FFmpegHelper.CanLoadNativeLibraries,
+				FfmpegEngine.ShouldAttemptNativeSingleFrameExtraction(new FfmpegSettings {
+					GrayScale = 0,
+					File = "video.mp4",
+					Position = TimeSpan.Zero,
+				}));
 		}
 		finally {
 			FfmpegEngine.UseNativeBinding = false;
@@ -386,7 +390,7 @@ public class FfmpegEngineTests {
 				FfmpegEngine.RecordNativeFailure($"video-{i}.mkv", new InvalidOperationException("TryDecodeFrame failed"));
 
 			Assert.False(FfmpegEngine.IsNativeBindingDisabledForSessionForTests);
-			Assert.True(FfmpegEngine.ShouldAttemptNativeBinding);
+			Assert.Equal(FFmpegHelper.CanLoadNativeLibraries, FfmpegEngine.ShouldAttemptNativeBinding);
 		}
 		finally {
 			FfmpegEngine.UseNativeBinding = false;
