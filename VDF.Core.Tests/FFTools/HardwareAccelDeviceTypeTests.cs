@@ -1,3 +1,6 @@
+// Copyright (C) 2026 0x90d
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 using System.Reflection;
 using FFmpeg.AutoGen;
 using VDF.Core.FFTools;
