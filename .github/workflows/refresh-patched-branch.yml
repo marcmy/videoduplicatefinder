@@ -1,3 +1,4 @@
+# Trigger refresh after guarded conflict resolution.
 name: Refresh perf branch
 
 on:
