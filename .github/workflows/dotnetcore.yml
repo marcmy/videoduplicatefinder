@@ -26,18 +26,33 @@ jobs:
     - name: Build Web
       run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
     - name: Run Unit Tests
-      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "trx;LogFileName=core-tests.trx" --results-directory TestResults/Core
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force TestResults/Core | Out-Null
+        dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "trx;LogFileName=core-tests.trx" --results-directory TestResults/Core *>&1 |
+          Tee-Object -FilePath TestResults/Core/core-tests.log
+        exit $LASTEXITCODE
     - name: Run CLI Tests
-      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "trx;LogFileName=cli-tests.trx" --results-directory TestResults/CLI
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force TestResults/CLI | Out-Null
+        dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "trx;LogFileName=cli-tests.trx" --results-directory TestResults/CLI *>&1 |
+          Tee-Object -FilePath TestResults/CLI/cli-tests.log
+        exit $LASTEXITCODE
     - name: Install FFmpeg
       run: choco install ffmpeg -y --no-progress
     - name: Run Integration Tests
-      run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration-tests.trx" --results-directory TestResults/Integration
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
+        dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration-tests.trx" --results-directory TestResults/Integration *>&1 |
+          Tee-Object -FilePath TestResults/Integration/integration-tests.log
+        exit $LASTEXITCODE
     - name: Upload test results
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: windows-test-results
-        path: TestResults/**/*.trx
-        if-no-files-found: warn
+        path: TestResults
+        if-no-files-found: error
         retention-days: 7
