@@ -26,10 +26,18 @@ jobs:
     - name: Build Web
       run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
     - name: Run Unit Tests
-      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "trx;LogFileName=core-tests.trx" --results-directory TestResults/Core
     - name: Run CLI Tests
-      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "trx;LogFileName=cli-tests.trx" --results-directory TestResults/CLI
     - name: Install FFmpeg
       run: choco install ffmpeg -y --no-progress
     - name: Run Integration Tests
-      run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+      run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration-tests.trx" --results-directory TestResults/Integration
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-test-results
+        path: TestResults/**/*.trx
+        if-no-files-found: warn
+        retention-days: 7
