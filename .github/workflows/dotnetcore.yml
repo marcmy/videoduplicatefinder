@@ -19,24 +19,34 @@ jobs:
           fetch-depth: 0
 
       - name: Patch release concurrency and restore workflow
-        shell: pwsh
+        shell: bash
         run: |
-          $path = '.github/workflows/releases.yml'
-          $text = Get-Content -LiteralPath $path -Raw
-          $old = @'
-          concurrency:
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/releases.yml')
+          text = path.read_text(encoding='utf-8')
+          old = """concurrency:
             group: build-releases
-            cancel-in-progress: true
-          '@
-          $new = @'
-          concurrency:
-            group: ${{ github.event_name == 'pull_request' && format('build-releases-pr-{0}', github.event.pull_request.number) || 'build-releases-release' }}
-            cancel-in-progress: true
-          '@
-          if (!$text.Contains($old)) {
-              throw 'Expected concurrency block was not found.'
-          }
-          Set-Content -LiteralPath $path -Value ($text.Replace($old, $new)) -Encoding utf8
+            cancel-in-progress: true"""
+          open_expr = '$' + '{{'
+          close_expr = '}}'
+          expression = (
+              "github.event_name == 'pull_request' "
+              "&& format('build-releases-pr-{0}', github.event.pull_request.number) "
+              "|| 'build-releases-release'"
+          )
+          new = (
+              "concurrency:\n"
+              f"  group: {open_expr} {expression} {close_expr}\n"
+              "  cancel-in-progress: true"
+          )
+          if old not in text:
+              raise SystemExit('Expected concurrency block was not found.')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
 
           git fetch origin perf/native-hwaccel-from-crashfix
           git checkout origin/perf/native-hwaccel-from-crashfix -- .github/workflows/dotnetcore.yml
