@@ -1,58 +1,47 @@
-name: Windows 64-bit
+name: Fix release concurrency isolation
 
 on:
-  pull_request:
-    paths-ignore:
-      - '.github/workflows/**'
+  push:
+    branches:
+      - fix/release-concurrency-isolation
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
-
-    runs-on: windows-latest
-
+  patch:
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: '10.0.x'
-    - name: Build GUI
-      run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r win-x64
-    - name: Build CLI
-      run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64
-    - name: Build Web
-      run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
-    - name: Run Unit Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/Core | Out-Null
-        dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "trx;LogFileName=core-tests.trx" --results-directory TestResults/Core *>&1 |
-          Tee-Object -FilePath TestResults/Core/core-tests.log
-        exit $LASTEXITCODE
-    - name: Run CLI Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/CLI | Out-Null
-        dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "trx;LogFileName=cli-tests.trx" --results-directory TestResults/CLI *>&1 |
-          Tee-Object -FilePath TestResults/CLI/cli-tests.log
-        exit $LASTEXITCODE
-    - name: Install FFmpeg
-      run: choco install ffmpeg -y --no-progress
-    - name: Run Integration Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
-        dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration-tests.trx" --results-directory TestResults/Integration *>&1 |
-          Tee-Object -FilePath TestResults/Integration/integration-tests.log
-        exit $LASTEXITCODE
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-test-results
-        path: TestResults
-        if-no-files-found: error
-        retention-days: 7
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/release-concurrency-isolation
+          fetch-depth: 0
+
+      - name: Patch release concurrency and restore workflow
+        shell: pwsh
+        run: |
+          $path = '.github/workflows/releases.yml'
+          $text = Get-Content -LiteralPath $path -Raw
+          $old = @'
+          concurrency:
+            group: build-releases
+            cancel-in-progress: true
+          '@
+          $new = @'
+          concurrency:
+            group: ${{ github.event_name == 'pull_request' && format('build-releases-pr-{0}', github.event.pull_request.number) || 'build-releases-release' }}
+            cancel-in-progress: true
+          '@
+          if (!$text.Contains($old)) {
+              throw 'Expected concurrency block was not found.'
+          }
+          Set-Content -LiteralPath $path -Value ($text.Replace($old, $new)) -Encoding utf8
+
+          git fetch origin perf/native-hwaccel-from-crashfix
+          git checkout origin/perf/native-hwaccel-from-crashfix -- .github/workflows/dotnetcore.yml
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/releases.yml .github/workflows/dotnetcore.yml
+          git commit -m 'Isolate PR and release concurrency groups'
+          git push origin HEAD:fix/release-concurrency-isolation
