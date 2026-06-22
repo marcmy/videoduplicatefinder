@@ -1,4 +1,3 @@
-# Trigger refresh after guarded conflict resolution.
 name: Refresh perf branch
 
 on:
@@ -74,46 +73,6 @@ jobs:
               echo "Keeping origin/master version of README.md"
               git checkout --theirs -- README.md
               git add README.md
-            fi
-
-            # One-time guarded resolution for upstream issue #801. The perf branch
-            # heavily rewrote this method, while upstream only added the still-image
-            # guard around input seeking. Later master commits must be workflow-only.
-            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
-            if [ "$remaining_conflicts" = "VDF.Core/FFTools/FfmpegEngine.cs" ]; then
-              expected_upstream="08a50ec5c5e8074d37a3030c625732421cda7d4a"
-              if ! git merge-base --is-ancestor "$expected_upstream" origin/master; then
-                echo "::error::Refusing the one-time FfmpegEngine resolver: upstream fix $expected_upstream is not in master."
-                exit 1
-              fi
-
-              unexpected_master_changes="$(git diff --name-only "$expected_upstream" origin/master | grep -vFx '.github/workflows/refresh-patched-branch.yml' || true)"
-              if [ -n "$unexpected_master_changes" ]; then
-                echo "::error::Refusing the one-time FfmpegEngine resolver because master changed additional files after $expected_upstream:"
-                echo "$unexpected_master_changes"
-                exit 1
-              fi
-
-              echo "Keeping the perf implementation and applying master's still-image seek guard"
-              git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
-              python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
-          text = path.read_text(encoding="utf-8")
-          old = '''\t\t\tpsi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
-          \t\t\tpsi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));'''
-          new = '''\t\t\t// Skip input seeking for still images: some JPEGs otherwise reach EOF before
-          \t\t\t// a frame enters the filter graph, producing an empty successful output (#801).
-          \t\t\tif (!FileUtils.IsImageFile(settings.File)) {
-          \t\t\t\tpsi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(settings.Position.ToString(null, CultureInfo.InvariantCulture));
-          \t\t\t}
-          \t\t\tpsi.ArgumentList.Add("-i"); psi.ArgumentList.Add(FFToolsUtils.LongPathFix(settings.File));'''
-          if text.count(old) != 1:
-              raise SystemExit("Expected exactly one unguarded -ss/-i block in FfmpegEngine.cs")
-          path.write_text(text.replace(old, new), encoding="utf-8")
-          PY
-              git add VDF.Core/FFTools/FfmpegEngine.cs
             fi
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
