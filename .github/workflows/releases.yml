@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-releases
+  group: ${{ github.event_name == 'pull_request' && format('build-releases-pr-{0}', github.event.pull_request.number) || 'build-releases-release' }}
   cancel-in-progress: true
 
 jobs:
