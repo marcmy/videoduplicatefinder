@@ -2,6 +2,16 @@ name: Build releases
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - perf/native-hwaccel-from-crashfix
+    paths:
+      - '.github/workflows/releases.yml'
+      - 'Directory.*'
+      - 'VDF.CLI/**'
+      - 'VDF.Core/**'
+      - 'VDF.GUI/**'
+      - 'VDF.Web/**'
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
