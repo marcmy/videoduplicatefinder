@@ -76,14 +76,20 @@ jobs:
             fi
 
             # One-time guarded resolution for upstream issue #801. The perf branch
-            # heavily rewrote this method, while master only added the still-image
-            # guard around input seeking. Refuse to run for any other master commit.
+            # heavily rewrote this method, while upstream only added the still-image
+            # guard around input seeking. Later master commits must be workflow-only.
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ "$remaining_conflicts" = "VDF.Core/FFTools/FfmpegEngine.cs" ]; then
-              expected_master="08a50ec5c5e8074d37a3030c625732421cda7d4a"
-              actual_master="$(git rev-parse origin/master)"
-              if [ "$actual_master" != "$expected_master" ]; then
-                echo "::error::Refusing the one-time FfmpegEngine resolver: expected master $expected_master, got $actual_master."
+              expected_upstream="08a50ec5c5e8074d37a3030c625732421cda7d4a"
+              if ! git merge-base --is-ancestor "$expected_upstream" origin/master; then
+                echo "::error::Refusing the one-time FfmpegEngine resolver: upstream fix $expected_upstream is not in master."
+                exit 1
+              fi
+
+              unexpected_master_changes="$(git diff --name-only "$expected_upstream" origin/master | grep -vFx '.github/workflows/refresh-patched-branch.yml' || true)"
+              if [ -n "$unexpected_master_changes" ]; then
+                echo "::error::Refusing the one-time FfmpegEngine resolver because master changed additional files after $expected_upstream:"
+                echo "$unexpected_master_changes"
                 exit 1
               fi
 
