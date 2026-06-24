@@ -1,0 +1,195 @@
+name: Repair perf FFmpeg diagnostics merge
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/repair-perf-ffmpeg-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: repair-perf-ffmpeg-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Repair perf FFmpeg diagnostics merge'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout perf branch
+        uses: actions/checkout@v5
+        with:
+          ref: perf/native-hwaccel-from-crashfix
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge master and port FFmpeg diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin master
+          git fetch origin perf/native-hwaccel-from-crashfix
+          git checkout perf/native-hwaccel-from-crashfix
+          before="$(git rev-parse HEAD)"
+
+          set +e
+          git merge --no-edit --no-commit origin/master
+          merge_status=$?
+          set -e
+
+          # The perf branch owns its workflow definitions. Keep those and exclude
+          # this one-shot repair workflow from the resulting merge commit.
+          git checkout "$before" -- .github/workflows
+          git rm -f --ignore-unmatch .github/workflows/repair-perf-ffmpeg-diagnostics.yml
+          git add .github/workflows
+
+          if [ "$merge_status" -ne 0 ]; then
+            target='VDF.Core/FFTools/FfmpegEngine.cs'
+            conflicted="$(git diff --name-only --diff-filter=U)"
+            printf 'Conflicted files:\n%s\n' "$conflicted"
+
+            if [ "$conflicted" != "$target" ]; then
+              echo 'Unexpected conflict set; refusing an unsafe automatic resolution.'
+              exit 1
+            fi
+
+            # Keep the perf engine implementation, then port the small upstream
+            # diagnostic feature onto it.
+            git checkout --ours -- "$target"
+
+            python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('VDF.Core/FFTools/FfmpegEngine.cs')
+          text = path.read_text(encoding='utf-8')
+
+          helper = '''
+		/// <summary>
+		/// Builds the extra diagnostic suffix for a native failure: FFmpeg log lines
+		/// captured on this thread plus a plain-language hint about the likely cause.
+		/// </summary>
+		static string BuildNativeFailureDetail(Exception e) {
+			string diagnostics = FfmpegLogCapture.GetRecent();
+			string? hint = FfmpegErrorClassifier.Classify(
+				diagnostics.Length > 0 ? $"{diagnostics} {e.Message}" : e.Message);
+			string detail = string.Empty;
+			if (diagnostics.Length > 0)
+				detail += $" FFmpeg log: {diagnostics}.";
+			if (hint != null)
+				detail += $" Hint: {hint}";
+			return detail;
+		}
+
+'''
+          marker = '\t\tstatic void LogNativeTiming('
+          if 'static string BuildNativeFailureDetail(Exception e)' not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit('Could not locate the native timing method insertion point exactly once.')
+              text = text.replace(marker, helper + marker, 1)
+
+          old_disable = '''			Logger.Instance.Info($"{prefix}; using process mode for the rest of this session. Last error on '{file}': {e.GetType().Name}: {e.Message}. If this persists, disable 'Use native FFmpeg binding' or install matching shared FFmpeg libraries.");'''
+          new_disable = '''			Logger.Instance.Info($"{prefix}; using process mode for the rest of this session. Last error on '{file}': {e.GetType().Name}: {e.Message}.{BuildNativeFailureDetail(e)} If this persists, disable 'Use native FFmpeg binding' or install matching shared FFmpeg libraries.");'''
+          if old_disable in text:
+              text = text.replace(old_disable, new_disable, 1)
+          elif new_disable not in text:
+              raise SystemExit('Could not locate the session-disable native failure log.')
+
+          old_observed = '''			Logger.Instance.Info($"Native FFmpeg binding failure observed on '{file}' ({failures}/{NativeFailureThreshold}); keeping native enabled until repeated failures. Reason: {e.GetType().Name}: {e.Message}");'''
+          new_observed = '''			Logger.Instance.Info($"Native FFmpeg binding failure observed on '{file}' ({failures}/{NativeFailureThreshold}); keeping native enabled until repeated failures. Reason: {e.GetType().Name}: {e.Message}{BuildNativeFailureDetail(e)}");'''
+          if old_observed in text:
+              text = text.replace(old_observed, new_observed, 1)
+          elif new_observed not in text:
+              raise SystemExit('Could not locate the observed native failure log.')
+
+          # Preserve existing fallback wording while appending captured diagnostics.
+          text = text.replace(
+              'Exception: {e}");',
+              'Exception: {e}{BuildNativeFailureDetail(e)}");'
+          )
+
+          # Reset capture immediately before every decoder construction. This covers
+          # the perf batch, single-frame, and thumbnail paths without coupling the
+          # diagnostic feature to their differing control flow.
+          lines = text.splitlines(keepends=True)
+          output = []
+          inserted = 0
+          for line in lines:
+              if 'new VideoStreamDecoder(' in line:
+                  previous = next((item.strip() for item in reversed(output) if item.strip()), '')
+                  if previous != 'FfmpegLogCapture.Reset();':
+                      indent = line[:len(line) - len(line.lstrip())]
+                      newline = '\r\n' if line.endswith('\r\n') else '\n'
+                      output.append(f'{indent}FfmpegLogCapture.Reset();{newline}')
+                      inserted += 1
+              output.append(line)
+          text = ''.join(output)
+
+          if inserted == 0 and 'FfmpegLogCapture.Reset();' not in text:
+              raise SystemExit('No decoder construction was instrumented for FFmpeg log capture.')
+          if '<<<<<<<' in text or '=======' in text or '>>>>>>>' in text:
+              raise SystemExit('Conflict markers remain in FfmpegEngine.cs.')
+
+          path.write_text(text, encoding='utf-8', newline='')
+          print(f'Inserted FFmpeg log reset before {inserted} decoder construction(s).')
+          PY
+
+            git add "$target"
+
+            remaining="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$remaining" ]; then
+              printf 'Unresolved conflicts remain:\n%s\n' "$remaining"
+              exit 1
+            fi
+          fi
+
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo 'Expected an in-progress merge, but MERGE_HEAD is absent.'
+            exit 1
+          fi
+
+          git diff --cached --check
+          git commit --no-edit
+
+      - name: Test FFmpeg diagnostic integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test ./VDF.Core.Tests/VDF.Core.Tests.csproj -c Release \
+            --filter 'FullyQualifiedName~FfmpegErrorClassifierTests|FullyQualifiedName~FfmpegLogCaptureTests'
+
+      - name: Push repaired perf branch
+        run: git push origin HEAD:perf/native-hwaccel-from-crashfix
+
+      - name: Dispatch perf release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run releases.yml --repo "${{ github.repository }}" --ref perf/native-hwaccel-from-crashfix
+
+      - name: Remove one-shot repair workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FILE: .github/workflows/repair-perf-ffmpeg-diagnostics.yml
+        shell: bash
+        run: |
+          sha="$(gh api "repos/$REPO/contents/$FILE?ref=master" --jq .sha)"
+          gh api --method DELETE "repos/$REPO/contents/$FILE" \
+            -f message='Remove one-shot perf diagnostics repair workflow' \
+            -f sha="$sha" \
+            -f branch='master'
