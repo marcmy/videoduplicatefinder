@@ -27,6 +27,7 @@ jobs:
           FILE: .github/workflows/dispatch-perf-diagnostics-repair.yml
         shell: bash
         run: |
+          # This deletion is the success marker for the dispatch step above.
           sha="$(gh api "repos/$REPO/contents/$FILE?ref=master" --jq .sha)"
           gh api --method DELETE "repos/$REPO/contents/$FILE" \
             -f message='Remove perf diagnostics repair dispatcher' \
