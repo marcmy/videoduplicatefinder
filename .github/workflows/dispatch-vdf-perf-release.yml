@@ -10,7 +10,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   dispatch:
@@ -21,3 +21,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run releases.yml --repo "${{ github.repository }}" --ref perf/native-hwaccel-from-crashfix
+
+      - name: Remove one-shot dispatcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FILE: .github/workflows/dispatch-vdf-perf-release.yml
+        shell: bash
+        run: |
+          sha="$(gh api "repos/$REPO/contents/$FILE?ref=master" --jq .sha)"
+          gh api --method DELETE "repos/$REPO/contents/$FILE" \
+            -f message='Remove one-shot VDF perf release dispatcher' \
+            -f sha="$sha" \
+            -f branch='master'
