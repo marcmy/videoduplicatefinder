@@ -230,7 +230,11 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			timing = new DecodedFrameTiming(0, 0, 0, 0);
 
 			long targetPts = ToStreamPts(position);
-			SeekTo(targetPts, out long seekMs);
+			long seekMs = 0;
+			// Seeking to zero can overshoot the sole packet in single-frame image
+			// demuxers. Decode forward from the start for position zero instead.
+			if (targetPts > 0)
+				SeekTo(targetPts, out seekMs);
 
 			// Decode forward from keyframe until we reach the target PTS.
 			// Cap iterations to prevent infinite loops on corrupt files.
@@ -243,67 +247,79 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			// to the CLI process. Cap so a truly corrupt file still bails.
 			const int maxBadPackets = 64;
 			int badPacketCount = 0;
+			// Once the demuxer is exhausted, flush the decoder once so buffered
+			// intra frames (notably single-frame MJPEG images) can be received.
+			bool draining = false;
 			for (int iter = 0; iter < maxIterations; iter++) {
-				int error;
-				while (true) {
-					ffmpeg.av_packet_unref(_pPacket);
-					ResetTimeout();
-					error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
-					if (error == ffmpeg.AVERROR_EOF) {
-						frame = *_pFrame;
-						timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
-						return false;
-					}
-					if (error == ffmpeg.AVERROR_INVALIDDATA) {
-						if (++badPacketCount > maxBadPackets) {
-							frame = *_pFrame;
-							timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
-							return false;
+				if (!draining) {
+					int error;
+					while (true) {
+						ffmpeg.av_packet_unref(_pPacket);
+						ResetTimeout();
+						error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
+						if (error == ffmpeg.AVERROR_EOF) {
+							ffmpeg.av_packet_unref(_pPacket);
+							ResetTimeout();
+							ffmpeg.avcodec_send_packet(_pCodecContext, null).ThrowExceptionIfError("avcodec_send_packet(NULL) while draining single frame");
+							draining = true;
+							break;
 						}
-						continue;
+						if (error == ffmpeg.AVERROR_INVALIDDATA) {
+							if (++badPacketCount > maxBadPackets) {
+								frame = *_pFrame;
+								timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+								return false;
+							}
+							continue;
+						}
+						error.ThrowExceptionIfError("av_read_frame while decoding single frame");
+						if (_pPacket->stream_index == _streamIndex) break;
 					}
-					error.ThrowExceptionIfError("av_read_frame while decoding single frame");
-					if (_pPacket->stream_index == _streamIndex) break;
-				}
 
-				int sendErr;
-				try {
-					ResetTimeout();
-					sendErr = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
-				}
-				finally {
-					ffmpeg.av_packet_unref(_pPacket);
-				}
-				if (sendErr == ffmpeg.AVERROR_INVALIDDATA || sendErr == ffmpeg.AVERROR(ffmpeg.EINVAL)) {
-					if (++badPacketCount > maxBadPackets) {
-						frame = *_pFrame;
-						timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
-						return false;
+					if (!draining) {
+						int sendErr;
+						try {
+							ResetTimeout();
+							sendErr = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
+						}
+						finally {
+							ffmpeg.av_packet_unref(_pPacket);
+						}
+						if (sendErr == ffmpeg.AVERROR_INVALIDDATA || sendErr == ffmpeg.AVERROR(ffmpeg.EINVAL)) {
+							if (++badPacketCount > maxBadPackets) {
+								frame = *_pFrame;
+								timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+								return false;
+							}
+							continue;
+						}
+						sendErr.ThrowExceptionIfError("avcodec_send_packet while decoding single frame");
 					}
-					continue;
 				}
-				sendErr.ThrowExceptionIfError("avcodec_send_packet while decoding single frame");
 
 				ResetTimeout();
-				error = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
-				if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
+				int recvErr = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
+				if (recvErr == ffmpeg.AVERROR(ffmpeg.EAGAIN)) {
+					if (draining) {
+						frame = *_pFrame;
+						timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+						return false;
+					}
 					continue;
-				if (error == ffmpeg.AVERROR_EOF) {
+				}
+				if (recvErr == ffmpeg.AVERROR_EOF) {
 					frame = *_pFrame;
 					timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
 					return false;
 				}
-				if (error < 0) {
-					error.ThrowExceptionIfError("avcodec_receive_frame while decoding single frame");
-				}
+				if (recvErr < 0)
+					recvErr.ThrowExceptionIfError("avcodec_receive_frame while decoding single frame");
 
-				// Check if we've reached or passed the target position
 				if (FrameSatisfiesTarget(GetFrameTimestamp(_pFrame), targetPts)) {
 					foundTargetFrame = true;
 					break;
 				}
 
-				// Not at target yet - discard this frame and decode the next
 				ffmpeg.av_frame_unref(_pFrame);
 			}
 
