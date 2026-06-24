@@ -100,7 +100,7 @@ namespace VDF.Core.FFTools {
 		static void DisableNativeBindingForSession(string file, Exception e, string prefix) {
 			if (Interlocked.Exchange(ref NativeDisabledForSession, 1) != 0)
 				return;
-			Logger.Instance.Info($"{prefix}; using process mode for the rest of this session. Last error on '{file}': {e.GetType().Name}: {e.Message}. If this persists, disable 'Use native FFmpeg binding' or install matching shared FFmpeg libraries.");
+			Logger.Instance.Info($"{prefix}; using process mode for the rest of this session. Last error on '{file}': {e.GetType().Name}: {e.Message}.{BuildNativeFailureDetail(e)} If this persists, disable 'Use native FFmpeg binding' or install matching shared FFmpeg libraries.");
 		}
 
 		internal static void RecordNativeFailure(string file, Exception e) {
@@ -117,7 +117,24 @@ namespace VDF.Core.FFTools {
 				return;
 			}
 
-			Logger.Instance.Info($"Native FFmpeg binding failure observed on '{file}' ({failures}/{NativeFailureThreshold}); keeping native enabled until repeated failures. Reason: {e.GetType().Name}: {e.Message}");
+			Logger.Instance.Info($"Native FFmpeg binding failure observed on '{file}' ({failures}/{NativeFailureThreshold}); keeping native enabled until repeated failures. Reason: {e.GetType().Name}: {e.Message}{BuildNativeFailureDetail(e)}");
+		}
+
+
+		/// <summary>
+		/// Builds the extra diagnostic suffix for a native failure: FFmpeg log lines
+		/// captured on this thread plus a plain-language hint about the likely cause.
+		/// </summary>
+		static string BuildNativeFailureDetail(Exception e) {
+			string diagnostics = FfmpegLogCapture.GetRecent();
+			string? hint = FfmpegErrorClassifier.Classify(
+				diagnostics.Length > 0 ? $"{diagnostics} {e.Message}" : e.Message);
+			string detail = string.Empty;
+			if (diagnostics.Length > 0)
+				detail += $" FFmpeg log: {diagnostics}.";
+			if (hint != null)
+				detail += $" Hint: {hint}";
+			return detail;
 		}
 
 		static void LogNativeTiming(string file, TimeSpan position, bool isGrayByte, bool hwDecode, string hardwarePolicy, long openMs, long seekMs, long decodeMs, long transferMs, int hardwareTransfers, long convertMs, long copyMs, long totalMs) {
@@ -1167,6 +1184,7 @@ namespace VDF.Core.FFTools {
 				using IDisposable? d3d11GrayByteConcurrencyLease = EnterD3D11GrayByteConcurrencyLimiter(hardwareDeviceType);
 			long queueMs = d3d11GrayByteConcurrencyLease == null ? 0 : queueSw.ElapsedMilliseconds;
 			var openSw = Stopwatch.StartNew();
+				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
 				NativeGrayByteTiming nativeTiming = new() { QueueMs = queueMs, OpenMs = openSw.ElapsedMilliseconds };
 				VideoFrameConverter? converter = null;
@@ -1294,6 +1312,7 @@ namespace VDF.Core.FFTools {
 					? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
 					: GetConfiguredHardwareDeviceType();
 				try {
+					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
 					VideoFrameConverter? converter = null;
 					Size converterSourceSize = default;
@@ -1341,7 +1360,7 @@ namespace VDF.Core.FFTools {
 							RecordHardwareDecodeFailureForCodec(hardwareCodecName, failureText);
 						}
 					}
-					Logger.Instance.Info($"Native batch frame extraction failed on '{filePath}', falling back to per-frame path. Exception: {e}");
+					Logger.Instance.Info($"Native batch frame extraction failed on '{filePath}', falling back to per-frame path. Exception: {e}{BuildNativeFailureDetail(e)}");
 				}
 			}
 
@@ -1406,6 +1425,7 @@ namespace VDF.Core.FFTools {
 					}
 					if (!isGrayByte)
 						hardwarePolicy = settings.SoftwareDecodeOnly ? "software-decode-only" : GetHardwarePolicy(nativeHardwareDeviceType, enableHardwareAcceleration);
+					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(settings.File, nativeHardwareDeviceType);
 					openMs = phaseSw.ElapsedMilliseconds;
 
@@ -1762,6 +1782,7 @@ namespace VDF.Core.FFTools {
 						: GetHardwarePolicy(hardwareDeviceType, enableHardwareAcceleration);
 
 				var openSw = Stopwatch.StartNew();
+				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
 				long openMs = openSw.ElapsedMilliseconds;
 				VideoFrameConverter? converter = null;
@@ -1851,6 +1872,7 @@ namespace VDF.Core.FFTools {
 				return false;
 			try {
 				// Stills never benefit from HW decoders (and some HW paths reject them).
+				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(path);
 				if (!vsd.TryDecodeFrame(out var srcFrame, TimeSpan.Zero))
 					throw new Exception($"TryDecodeFrame failed for image '{path}'");
@@ -1879,7 +1901,7 @@ namespace VDF.Core.FFTools {
 				if (IsNativeBindingLoadFailure(e))
 					RecordNativeFailure(path, e);
 				if (extendedLogging)
-					Logger.Instance.Info($"Native image decode failed on '{path}', falling back to process mode. Exception: {e}");
+					Logger.Instance.Info($"Native image decode failed on '{path}', falling back to process mode. Exception: {e}{BuildNativeFailureDetail(e)}");
 				return false;
 			}
 		}
@@ -1928,7 +1950,7 @@ namespace VDF.Core.FFTools {
 					if (IsNativeBindingLoadFailure(e))
 						RecordNativeFailure("BGRA thumbnail strip", e);
 					else
-						Logger.Instance.Info($"Native BGRA->JPEG encode failed, falling back to process mode. Exception: {e}");
+						Logger.Instance.Info($"Native BGRA->JPEG encode failed, falling back to process mode. Exception: {e}{BuildNativeFailureDetail(e)}");
 				}
 			}
 
