@@ -1,10 +1,10 @@
 name: Docker (Web UI)
 
 on:
-  push:
-    branches:
-      - perf/native-hwaccel-from-crashfix
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: docker-web-ui
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: perf/native-hwaccel-from-crashfix
+          persist-credentials: false
 
       - name: Set Docker tag SHA
         id: vars
