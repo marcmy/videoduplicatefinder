@@ -1,39 +1,32 @@
-name: Build releases
+name: Build Windows GUI release
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches:
-      - perf/native-hwaccel-from-crashfix
-    paths:
-      - '.github/workflows/releases.yml'
-      - 'Directory.*'
-      - 'VDF.CLI/**'
-      - 'VDF.Core/**'
-      - 'VDF.GUI/**'
-      - 'VDF.Web/**'
   push:
     branches:
       - perf/native-hwaccel-from-crashfix
     paths-ignore:
       - 'README.md'
+      - 'docs/**'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('build-releases-pr-{0}', github.event.pull_request.number) || 'build-releases-release' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-windows:
-    name: Build Windows release
+  build-and-test:
+    name: Build and test Windows GUI
     runs-on: windows-2022
     env:
       TARGET: win-x64
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Verify perf branch code is present
         shell: pwsh
@@ -48,329 +41,127 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Build, validate, and package
-        shell: bash
+      - name: Run core unit tests
+        shell: pwsh
         run: |
-          set -euo pipefail
+          New-Item -ItemType Directory -Force TestResults/Core | Out-Null
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj `
+            -c Release `
+            -v q `
+            --logger "trx;LogFileName=core-tests.trx" `
+            --results-directory TestResults/Core *>&1 |
+            Tee-Object -FilePath TestResults/Core/core-tests.log
+          exit $LASTEXITCODE
 
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r "$TARGET" -o outputGUI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q -p:PublishAot=true -r "$TARGET" -o outputCLI
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$TARGET" -o outputWeb
+      - name: Install FFmpeg
+        shell: pwsh
+        run: choco install ffmpeg -y --no-progress
 
-          ./outputCLI/vdf-cli.exe --help >/dev/null
+      - name: Run FFmpeg integration tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
+          dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj `
+            -c Release `
+            -v normal `
+            --logger "trx;LogFileName=integration-tests.trx" `
+            --results-directory TestResults/Integration *>&1 |
+            Tee-Object -FilePath TestResults/Integration/integration-tests.log
+          exit $LASTEXITCODE
 
-          symbolsDir="Symbols-$TARGET"
-          mkdir -p "$symbolsDir"
+      - name: Publish Native AOT GUI
+        shell: pwsh
+        run: |
+          dotnet publish VDF.GUI/VDF.GUI.csproj `
+            -c Release `
+            -v q `
+            -p:PublishAot=true `
+            -r $env:TARGET `
+            -o outputGUI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          collect_symbols() {
-            src="$1"
-            label="$2"
-            dest="$symbolsDir/$label"
-            mkdir -p "$dest"
-
-            while IFS= read -r -d '' file; do
-              cp -a "$file" "$dest/$(basename "$file")"
-            done < <(find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -print0)
-
-            while IFS= read -r -d '' directory; do
-              cp -a "$directory" "$dest/"
-            done < <(find "$src" -type d -name '*.dSYM' -print0)
-
-            find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -delete
-            while IFS= read -r -d '' directory; do
-              rm -rf "$directory"
-            done < <(find "$src" -type d -name '*.dSYM' -print0)
+      - name: Package GUI-win-x64.zip
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'outputGUI/VDF.GUI.exe'
+          if (!(Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Native AOT publish did not produce VDF.GUI.exe."
           }
 
-          collect_symbols outputGUI GUI
-          collect_symbols outputCLI CLI
-          collect_symbols outputWeb Web
+          Get-ChildItem outputGUI -Recurse -File |
+            Where-Object Extension -in '.pdb', '.dbg' |
+            Remove-Item -Force
 
-          if ! find "$symbolsDir" -mindepth 2 -print -quit | grep -q .; then
-            echo "No debug symbols were collected." >&2
-            exit 1
-          fi
+          Get-ChildItem outputGUI -Recurse -Directory -Filter '*.dSYM' |
+            Remove-Item -Recurse -Force
 
-          bundleDir="Bundle-$TARGET"
-          mkdir -p "$bundleDir"
-          cp -a outputGUI/. "$bundleDir/"
-
-          copy_unique() {
-            src="$1"
-            while IFS= read -r -d '' file; do
-              rel="${file#$src/}"
-              dest="$bundleDir/$rel"
-              mkdir -p "$(dirname "$dest")"
-              if [ -e "$dest" ]; then
-                if ! cmp -s "$file" "$dest"; then
-                  echo "Bundle conflict: '$rel' differs between publish outputs." >&2
-                  exit 1
-                fi
-              else
-                cp -a "$file" "$dest"
-              fi
-            done < <(find "$src" -type f -print0)
+          $symbols = Get-ChildItem outputGUI -Recurse |
+            Where-Object { (!$_.PSIsContainer -and $_.Extension -in '.pdb', '.dbg') -or ($_.PSIsContainer -and $_.Name -like '*.dSYM') }
+          if ($symbols) {
+            throw "Runtime GUI output still contains debug symbols."
           }
 
-          copy_unique outputCLI
-          copy_unique outputWeb
+          7z a -tzip "GUI-$env:TARGET.zip" ".\outputGUI\*"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
-            if [ ! -f "$bundleDir/$exe" ]; then
-              echo "Bundle is missing required executable: $exe" >&2
-              exit 1
-            fi
-          done
+          $archive = Get-Item "GUI-$env:TARGET.zip"
+          if ($archive.Length -le 0) {
+            throw "GUI archive is empty."
+          }
 
-          if find outputGUI outputCLI outputWeb "$bundleDir" \
-              \( -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -o -type d -name '*.dSYM' \) \
-              -print -quit | grep -q .; then
-            echo "A runtime output still contains debug symbols." >&2
-            exit 1
-          fi
-
-          for dir in outputGUI outputCLI outputWeb "$bundleDir" "$symbolsDir"; do
-            echo "=== $dir ==="
-            echo "Files: $(find "$dir" -type f | wc -l)"
-            du -sh "$dir"
-          done
-
-          7z a -tzip "GUI-$TARGET.zip" "./outputGUI/*"
-          7z a -tzip "CLI-$TARGET.zip" "./outputCLI/*"
-          7z a -tzip "Web-$TARGET.zip" "./outputWeb/*"
-          7z a -tzip "Bundle-$TARGET.zip" "./$bundleDir"
-          7z a -tzip "Symbols-$TARGET.zip" "./$symbolsDir"
-
-      - name: Upload Windows release assets
+      - name: Upload validated GUI archive
         uses: actions/upload-artifact@v4
         with:
-          name: release-win-x64
-          path: |
-            GUI-win-x64.zip
-            CLI-win-x64.zip
-            Web-win-x64.zip
-            Bundle-win-x64.zip
-            Symbols-win-x64.zip
+          name: release-win-x64-gui
+          path: GUI-win-x64.zip
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
-  build-other:
-    name: Build ${{ matrix.name }} release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x64
-            os: ubuntu-latest
-            target: linux-x64
-          - name: macOS-x64
-            os: macos-latest
-            target: osx-x64
-          - name: macOS-arm64
-            os: macos-latest
-            target: osx-arm64
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-            target: linux-arm64
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Verify perf branch code is present
-        shell: bash
-        run: |
-          if ! grep -q 'd3d11-video-processor-gray32' VDF.Core/FFTools/FfmpegEngine.cs; then
-            echo "Perf D3D11 graybyte fast path missing from checked-out source." >&2
-            exit 1
-          fi
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Build, validate, and package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          target="${{ matrix.target }}"
-
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r "$target" -o outputGUI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q -p:PublishAot=true -r "$target" -o outputCLI
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$target" -o outputWeb
-
-          chmod +x outputCLI/vdf-cli
-          ./outputCLI/vdf-cli --help >/dev/null
-
-          symbolsDir="Symbols-$target"
-          mkdir -p "$symbolsDir"
-
-          collect_symbols() {
-            src="$1"
-            label="$2"
-            dest="$symbolsDir/$label"
-            mkdir -p "$dest"
-
-            while IFS= read -r -d '' file; do
-              cp -a "$file" "$dest/$(basename "$file")"
-            done < <(find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -print0)
-
-            while IFS= read -r -d '' directory; do
-              cp -a "$directory" "$dest/"
-            done < <(find "$src" -type d -name '*.dSYM' -print0)
-
-            find "$src" -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -delete
-            while IFS= read -r -d '' directory; do
-              rm -rf "$directory"
-            done < <(find "$src" -type d -name '*.dSYM' -print0)
-          }
-
-          collect_symbols outputGUI GUI
-          collect_symbols outputCLI CLI
-          collect_symbols outputWeb Web
-
-          if ! find "$symbolsDir" -mindepth 2 -print -quit | grep -q .; then
-            echo "No debug symbols were collected." >&2
-            exit 1
-          fi
-
-          if find outputGUI outputCLI outputWeb \
-              \( -type f \( -iname '*.pdb' -o -iname '*.dbg' \) -o -type d -name '*.dSYM' \) \
-              -print -quit | grep -q .; then
-            echo "A runtime output still contains debug symbols." >&2
-            exit 1
-          fi
-
-          for dir in outputGUI outputCLI outputWeb "$symbolsDir"; do
-            echo "=== $dir ==="
-            echo "Files: $(find "$dir" -type f | wc -l)"
-            du -sh "$dir"
-          done
-
-          if [[ "$target" == osx-* ]]; then
-            mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
-            mkdir -p "Video Duplicate Finder.app/Contents/Resources"
-            cp -r outputGUI/. "Video Duplicate Finder.app/Contents/MacOS/"
-            cp "VDF.GUI/Assets/macOS/icon.icns" "Video Duplicate Finder.app/Contents/Resources/icon.icns"
-            cp "VDF.GUI/Assets/macOS/Info.plist" "Video Duplicate Finder.app/Contents/Info.plist"
-            chmod +x "Video Duplicate Finder.app/Contents/MacOS/VDF.GUI"
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              "Video Duplicate Finder.app"
-            codesign --verify --deep --strict --verbose=2 "Video Duplicate Finder.app"
-
-            chmod +x outputWeb/VDF.Web
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              outputCLI/vdf-cli
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              outputWeb/VDF.Web
-
-            tar czf "GUI-$target.tar.gz" "Video Duplicate Finder.app"
-            tar czf "CLI-$target.tar.gz" "outputCLI"
-            tar czf "Web-$target.tar.gz" "outputWeb"
-          else
-            cp "VDF.GUI/Assets/Linux/icon.png" "outputGUI/icon.png"
-            cp "VDF.GUI/Assets/Linux/videoduplicatefinder.desktop" "outputGUI/videoduplicatefinder.desktop"
-            tar czf "GUI-$target.tar.gz" "outputGUI"
-            tar czf "CLI-$target.tar.gz" "outputCLI"
-            tar czf "Web-$target.tar.gz" "outputWeb"
-          fi
-
-          tar czf "Symbols-$target.tar.gz" "$symbolsDir"
-
-      - name: Upload platform release assets
+      - name: Upload test results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
-          path: |
-            GUI-${{ matrix.target }}.tar.gz
-            CLI-${{ matrix.target }}.tar.gz
-            Web-${{ matrix.target }}.tar.gz
-            Symbols-${{ matrix.target }}.tar.gz
-          if-no-files-found: error
-          retention-days: 3
+          name: windows-gui-test-results
+          path: TestResults
+          if-no-files-found: warn
+          retention-days: 7
 
   publish:
-    name: Publish validated release
-    if: github.ref_name == 'perf/native-hwaccel-from-crashfix'
-    needs:
-      - build-windows
-      - build-other
+    name: Publish GUI release
+    if: github.event_name == 'push' && github.ref_name == 'perf/native-hwaccel-from-crashfix'
+    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download validated assets
+      - name: Download validated GUI archive
         uses: actions/download-artifact@v4
         with:
+          name: release-win-x64-gui
           path: release-assets
-          merge-multiple: true
 
-      - name: Validate assembled release
+      - name: Validate release archive
         shell: bash
         run: |
           set -euo pipefail
 
-          required=(
-            GUI-win-x64.zip
-            CLI-win-x64.zip
-            Web-win-x64.zip
-            Bundle-win-x64.zip
-            Symbols-win-x64.zip
-            GUI-linux-x64.tar.gz
-            CLI-linux-x64.tar.gz
-            Web-linux-x64.tar.gz
-            Symbols-linux-x64.tar.gz
-            GUI-linux-arm64.tar.gz
-            CLI-linux-arm64.tar.gz
-            Web-linux-arm64.tar.gz
-            Symbols-linux-arm64.tar.gz
-            GUI-osx-x64.tar.gz
-            CLI-osx-x64.tar.gz
-            Web-osx-x64.tar.gz
-            Symbols-osx-x64.tar.gz
-            GUI-osx-arm64.tar.gz
-            CLI-osx-arm64.tar.gz
-            Web-osx-arm64.tar.gz
-            Symbols-osx-arm64.tar.gz
-          )
+          archive="release-assets/GUI-win-x64.zip"
+          test -s "$archive"
 
-          for asset in "${required[@]}"; do
-            test -s "release-assets/$asset" || {
-              echo "Missing or empty release asset: $asset" >&2
-              exit 1
-            }
-          done
+          if ! unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI\.exe$'; then
+            echo "GUI-win-x64.zip does not contain VDF.GUI.exe." >&2
+            exit 1
+          fi
 
-          for archive in release-assets/*.zip; do
-            case "$(basename "$archive")" in
-              Symbols-*) continue ;;
-            esac
-            if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
-              echo "Runtime archive contains debug symbols: $archive" >&2
-              exit 1
-            fi
-          done
+          if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+            echo "GUI-win-x64.zip contains debug symbols." >&2
+            exit 1
+          fi
 
-          for archive in release-assets/*.tar.gz; do
-            case "$(basename "$archive")" in
-              Symbols-*) continue ;;
-            esac
-            if tar tzf "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
-              echo "Runtime archive contains debug symbols: $archive" >&2
-              exit 1
-            fi
-          done
+          unzip -l "$archive"
 
-          ls -lh release-assets
-
-      - name: Publish release assets
+      - name: Publish only GUI-win-x64.zip
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -380,18 +171,24 @@ jobs:
 
           short_sha="${GITHUB_SHA::7}"
           cat > release-notes.md <<EOF
-          Note: These are daily builds. Assets are automatically replaced after every successful validated build.
+          Windows x64 GUI-only Native AOT build from \`perf/native-hwaccel-from-crashfix\`.
 
-          4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed, faster duplicate comparison, and separate debug-symbol archives. GUI and CLI are Native AOT; Web remains self-contained JIT.
+          This release intentionally no longer publishes CLI, Web, Linux, macOS, ARM64, symbol, or full-bundle assets.
 
           Last build based on $short_sha
           EOF
 
           if gh release view 4.0.x >/dev/null 2>&1; then
-            gh release upload 4.0.x release-assets/* --clobber
+            gh release upload 4.0.x release-assets/GUI-win-x64.zip --clobber
             gh release edit 4.0.x --notes-file release-notes.md
+
+            while IFS= read -r asset; do
+              if [[ "$asset" != "GUI-win-x64.zip" ]]; then
+                gh release delete-asset 4.0.x "$asset" --yes
+              fi
+            done < <(gh release view 4.0.x --json assets --jq '.assets[].name')
           else
-            gh release create 4.0.x release-assets/* \
+            gh release create 4.0.x release-assets/GUI-win-x64.zip \
               --target "$GITHUB_SHA" \
               --title "4.0.x" \
               --notes-file release-notes.md
