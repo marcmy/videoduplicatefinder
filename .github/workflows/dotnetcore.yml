@@ -1,58 +1,90 @@
-name: Windows 64-bit
+name: Windows GUI CI
 
 on:
   pull_request:
-    paths-ignore:
-      - '.github/workflows/**'
+    paths:
+      - '.github/workflows/dotnetcore.yml'
+      - '.github/workflows/releases.yml'
+      - 'Directory.*'
+      - 'global.json'
+      - 'NuGet.config'
+      - 'VideoDuplicateFinder.sln'
+      - 'VDF.Core/**'
+      - 'VDF.Core.Tests/**'
+      - 'VDF.GUI/**'
+      - 'VDF.IntegrationTests/**'
+      - 'VDF.TestSupport/**'
 
 permissions:
   contents: read
 
-jobs:
-  build:
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
-    runs-on: windows-latest
+jobs:
+  windows-gui:
+    name: Windows GUI, core, and FFmpeg validation
+    runs-on: windows-2022
 
     steps:
-    - uses: actions/checkout@v5
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: '10.0.x'
-    - name: Build GUI
-      run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r win-x64
-    - name: Build CLI
-      run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64
-    - name: Build Web
-      run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
-    - name: Run Unit Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/Core | Out-Null
-        dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "trx;LogFileName=core-tests.trx" --results-directory TestResults/Core *>&1 |
-          Tee-Object -FilePath TestResults/Core/core-tests.log
-        exit $LASTEXITCODE
-    - name: Run CLI Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/CLI | Out-Null
-        dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "trx;LogFileName=cli-tests.trx" --results-directory TestResults/CLI *>&1 |
-          Tee-Object -FilePath TestResults/CLI/cli-tests.log
-        exit $LASTEXITCODE
-    - name: Install FFmpeg
-      run: choco install ffmpeg -y --no-progress
-    - name: Run Integration Tests
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
-        dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration-tests.trx" --results-directory TestResults/Integration *>&1 |
-          Tee-Object -FilePath TestResults/Integration/integration-tests.log
-        exit $LASTEXITCODE
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-test-results
-        path: TestResults
-        if-no-files-found: error
-        retention-days: 7
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run core unit tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force TestResults/Core | Out-Null
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj `
+            -c Release `
+            -v q `
+            --logger "trx;LogFileName=core-tests.trx" `
+            --results-directory TestResults/Core *>&1 |
+            Tee-Object -FilePath TestResults/Core/core-tests.log
+          exit $LASTEXITCODE
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Run FFmpeg integration tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
+          dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj `
+            -c Release `
+            -v normal `
+            --logger "trx;LogFileName=integration-tests.trx" `
+            --results-directory TestResults/Integration *>&1 |
+            Tee-Object -FilePath TestResults/Integration/integration-tests.log
+          exit $LASTEXITCODE
+
+      - name: Publish Native AOT GUI
+        shell: pwsh
+        run: |
+          dotnet publish VDF.GUI/VDF.GUI.csproj `
+            -c Release `
+            -v q `
+            -p:PublishAot=true `
+            -r win-x64 `
+            -o outputGUI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if (!(Test-Path outputGUI/VDF.GUI.exe -PathType Leaf)) {
+            throw "Native AOT publish did not produce VDF.GUI.exe."
+          }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-test-results
+          path: TestResults
+          if-no-files-found: warn
+          retention-days: 7
