@@ -60,6 +60,16 @@ jobs:
             ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
               -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path *>&1 |
               Tee-Object -FilePath compat-logs/ffmpeg-autogen.log
+
+            $autoGenProject = Resolve-Path '.deps/FFmpeg.AutoGen/FFmpeg.AutoGen/FFmpeg.AutoGen.csproj'
+            $projectXml = Get-Content -LiteralPath $autoGenProject -Raw
+            $projectXml = $projectXml.Replace(
+              '<TargetFrameworks>netstandard2.1;netstandard2.0</TargetFrameworks>',
+              '<TargetFramework>net10.0</TargetFramework>')
+            if ($projectXml -notmatch '<TargetFramework>net10\.0</TargetFramework>') {
+              throw 'Failed to retarget generated FFmpeg.AutoGen project to net10.0.'
+            }
+            Set-Content -LiteralPath $autoGenProject -Value $projectXml -Encoding utf8
           }
           catch {
             $message = $_.Exception.Message.Replace("`r", ' ').Replace("`n", ' ')
