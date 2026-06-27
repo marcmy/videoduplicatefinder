@@ -12,6 +12,17 @@ on:
       - 'VDF.GUI/**'
       - 'VDF.IntegrationTests/**'
       - 'VDF.TestSupport/**'
+  pull_request:
+    branches:
+      - perf/native-hwaccel-from-crashfix
+    paths:
+      - '.github/scripts/prepare-latest-ffmpeg-autogen.ps1'
+      - '.github/workflows/ffmpeg-master-compat.yml'
+      - 'VDF.Core/**'
+      - 'VDF.Core.Tests/**'
+      - 'VDF.GUI/**'
+      - 'VDF.IntegrationTests/**'
+      - 'VDF.TestSupport/**'
   workflow_dispatch:
 
 permissions:
@@ -106,8 +117,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-master-compat-output
-          path: |
-            outputGUI
-            TestResults
+          path: outputGUI
           if-no-files-found: warn
           retention-days: 3
