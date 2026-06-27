@@ -35,52 +35,8 @@ namespace VDF.Core.FFTools {
 			ffMpegPlatformName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? FFmpegExecutableName + ".exe" : FFmpegExecutableName;
 		}
 
-		/// <summary>
-		/// Resolves a Scoop shim executable to the real application executable named by
-		/// the adjacent .shim metadata file. Returning the real path is important for
-		/// native FFmpeg: its versioned DLLs live beside the real ffmpeg.exe, not beside
-		/// the shim in ~/scoop/shims.
-		/// </summary>
-		internal static string ResolveExecutableCandidate(string candidate) {
-			if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || !File.Exists(candidate))
-				return candidate;
-
-			try {
-				string? directory = Path.GetDirectoryName(candidate);
-				if (string.IsNullOrEmpty(directory))
-					return candidate;
-
-				string shimFile = Path.Combine(directory, Path.GetFileNameWithoutExtension(candidate) + ".shim");
-				if (!File.Exists(shimFile))
-					return candidate;
-
-				foreach (string rawLine in File.ReadLines(shimFile)) {
-					int equals = rawLine.IndexOf('=');
-					if (equals <= 0 || !rawLine[..equals].Trim().Equals("path", StringComparison.OrdinalIgnoreCase))
-						continue;
-
-					string target = rawLine[(equals + 1)..].Trim().Trim('"');
-					if (target.Length == 0)
-						break;
-
-					target = Environment.ExpandEnvironmentVariables(target);
-					if (!Path.IsPathRooted(target))
-						target = Path.GetFullPath(Path.Combine(directory, target));
-
-					if (File.Exists(target))
-						return target;
-					break;
-				}
-			}
-			catch (Exception e) {
-				Logger.Instance.Info($"Failed to resolve executable shim '{candidate}': {e.Message}");
-			}
-
-			return candidate;
-		}
-
-		static string? ScanPathDirs(string? pathVariable, string toolExecutable) {
-			if (pathVariable == null) return null;
+		internal static string? ScanPathDirs(string? pathVariable, string toolExecutable) {
+			if (string.IsNullOrWhiteSpace(pathVariable)) return null;
 			foreach (string rawPath in pathVariable.Split(Path.PathSeparator)) {
 				string path = rawPath.Trim().Trim('"');
 				if (!Directory.Exists(path))
@@ -93,7 +49,7 @@ namespace VDF.Core.FFTools {
 					});
 
 					if (files.Length > 0)
-						return ResolveExecutableCandidate(files[0].FullName);
+						return files[0].FullName;
 				}
 				catch (Exception) {
 #if DEBUG
@@ -105,24 +61,22 @@ namespace VDF.Core.FFTools {
 		}
 
 		/// <summary>
-		/// Gets path of ffprobe or ffmpeg. External installations are preferred over
-		/// app-local fallback binaries so this fork follows the user's maintained FFmpeg
-		/// package instead of silently pinning itself to a previously downloaded copy.
+		/// Gets the path of ffprobe or ffmpeg. An executable installed in PATH is
+		/// preferred over app-local fallback binaries, regardless of its FFmpeg version.
 		/// </summary>
 		/// <param name="tool"></param>
 		/// <returns>path or null if not found</returns>
 		internal static string? GetPath(FFTool tool) {
 			var toolExecutable = tool == FFTool.FFmpeg ? ffMpegPlatformName : ffProbePlatformName;
 
-			// Prefer the installed copy from PATH. On Scoop this resolves the shim back to
-			// the real current\bin executable, allowing FFmpegHelper to find the sibling DLLs.
+			// Prefer exactly what the user's current process resolves through PATH.
 			string? toolPath = ScanPathDirs(Environment.GetEnvironmentVariable("PATH"), toolExecutable);
 			if (toolPath != null)
 				return toolPath;
 
-			// The process PATH is a snapshot taken when the app was launched. On Windows an
-			// FFmpeg installed afterwards (winget/scoop/choco or a manual PATH edit) shows up
-			// in new consoles but not here, so re-read the registry-backed PATH values.
+			// The process PATH is a snapshot taken when the app was launched. On Windows,
+			// re-read the current user and machine PATH values so an FFmpeg installation or
+			// PATH edit made after launch is still discovered without restarting VDF.
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
 				toolPath = ScanPathDirs(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User), toolExecutable)
 					?? ScanPathDirs(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine), toolExecutable);
@@ -130,9 +84,8 @@ namespace VDF.Core.FFTools {
 					return toolPath;
 			}
 
-			// A GUI app launched from Finder (macOS) or a desktop launcher (Linux) can inherit
-			// a minimal PATH that omits the directory the binaries actually live in, so probe
-			// standard install locations explicitly.
+			// GUI launchers on macOS/Linux may inherit a reduced PATH. Retain the existing
+			// standard-location fallback after checking PATH.
 			string[] wellKnownBinDirs =
 				RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] :
 				RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? ["/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"] :
@@ -143,8 +96,8 @@ namespace VDF.Core.FFTools {
 					return toolPath;
 			}
 
-			// App-local copies remain supported as a fallback, but no longer override an
-			// installed FFmpeg package found above.
+			// Keep bundled/downloaded binaries only as a last-resort fallback. They must not
+			// override an FFmpeg installation selected by the user's PATH.
 			toolPath = Path.Combine(CoreUtils.CurrentFolder, "bin", toolExecutable);
 			if (File.Exists(toolPath))
 				return toolPath;
