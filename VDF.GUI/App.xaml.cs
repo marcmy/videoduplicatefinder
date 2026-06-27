@@ -15,11 +15,14 @@
 //
 
 using System.Linq;
+using System.Reactive.Linq;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using VDF.Core;
+using VDF.Core.Utils;
 using VDF.GUI.Data;
 using VDF.GUI.ViewModels;
 using VDF.GUI.Views;
@@ -35,9 +38,11 @@ namespace VDF.GUI {
 
 		public override void OnFrameworkInitializationCompleted() {
 			if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
-				desktop.MainWindow = new MainWindow {
+				var mainWindow = new MainWindow {
 					DataContext = new MainWindowVM(),
 				};
+				desktop.MainWindow = mainWindow;
+				mainWindow.Opened += EnsureNativeFfmpegRuntime;
 				desktop.ShutdownRequested += OnShutdownRequested;
 				desktop.Exit += OnExitCleanup; //fallback
 				AppDomain.CurrentDomain.ProcessExit += (_, __) => SafeCleanup();
@@ -48,6 +53,19 @@ namespace VDF.GUI {
 
 			base.OnFrameworkInitializationCompleted();
 		}
+
+		private static void EnsureNativeFfmpegRuntime(object? sender, EventArgs e) {
+			if (sender is not MainWindow { DataContext: MainWindowVM vm }) return;
+			if (!SettingsFile.Instance.UseNativeFfmpegBinding || ScanEngine.NativeFFmpegExists) return;
+
+			Logger.Instance.Info(
+				"Native FFmpeg binding is enabled but matching shared libraries are unavailable; " +
+				"downloading a compatible private FFmpeg runtime.");
+			vm.DownloadSharedFfmpegCommand.Execute().Subscribe(
+				_ => { },
+				ex => Logger.Instance.Info($"Automatic native FFmpeg download command failed: {ex}"));
+		}
+
 		private void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e) => SafeCleanup();
 		private void OnExitCleanup(object? sender, ControlledApplicationLifetimeExitEventArgs e) => SafeCleanup();
 		private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e) {
