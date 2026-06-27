@@ -66,8 +66,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
-            -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path
+          New-Item -ItemType Directory -Force .compat-logs | Out-Null
+          try {
+            ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
+              -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path *>&1 |
+              Tee-Object -FilePath .compat-logs/ffmpeg-autogen.log
+          }
+          catch {
+            $_ | Out-String | Tee-Object -FilePath .compat-logs/ffmpeg-autogen.log -Append | Write-Host
+            throw
+          }
 
       - name: Verify selected FFmpeg executable
         shell: pwsh
@@ -112,11 +120,13 @@ jobs:
             throw 'Native AOT publish did not produce VDF.GUI.exe.'
           }
 
-      - name: Upload compatibility test output
+      - name: Upload compatibility diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-master-compat-output
-          path: outputGUI
+          path: |
+            .compat-logs
+            outputGUI
           if-no-files-found: warn
           retention-days: 3
