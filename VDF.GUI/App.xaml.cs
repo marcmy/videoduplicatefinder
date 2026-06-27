@@ -56,7 +56,9 @@ namespace VDF.GUI {
 
 		private static void EnsureNativeFfmpegRuntime(object? sender, EventArgs e) {
 			if (sender is not MainWindow { DataContext: MainWindowVM vm }) return;
-			if (!SettingsFile.Instance.UseNativeFfmpegBinding || ScanEngine.NativeFFmpegExists) return;
+			if (!NativeFfmpegStartupPolicy.ShouldAutoDownloadNativeRuntime(
+				SettingsFile.Instance.UseNativeFfmpegBinding,
+				ScanEngine.NativeFFmpegExists)) return;
 
 			Logger.Instance.Info(
 				"Native FFmpeg binding is enabled but matching shared libraries are unavailable; " +
