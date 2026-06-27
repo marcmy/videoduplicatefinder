@@ -1,0 +1,113 @@
+name: FFmpeg master native compatibility
+
+on:
+  push:
+    branches:
+      - compat/ffmpeg-master-native-binding
+    paths:
+      - '.github/scripts/prepare-latest-ffmpeg-autogen.ps1'
+      - '.github/workflows/ffmpeg-master-compat.yml'
+      - 'VDF.Core/**'
+      - 'VDF.Core.Tests/**'
+      - 'VDF.GUI/**'
+      - 'VDF.IntegrationTests/**'
+      - 'VDF.TestSupport/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-build-test:
+    name: Generate bindings and build against latest FFmpeg
+    runs-on: windows-2022
+    env:
+      VDF_REQUIRE_NATIVE_FFMPEG: '1'
+
+    steps:
+      - name: Checkout VDF
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Checkout FFmpeg.AutoGen generator
+        uses: actions/checkout@v5
+        with:
+          repository: Ruslan-B/FFmpeg.AutoGen
+          ref: main
+          path: .deps/FFmpeg.AutoGen
+          persist-credentials: false
+
+      - name: Setup .NET 9 and 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Generate bindings from latest ffmpeg-marc-shared
+        id: ffmpeg
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
+            -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path
+
+      - name: Verify selected FFmpeg executable
+        shell: pwsh
+        run: |
+          where.exe ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Run core unit tests
+        shell: pwsh
+        run: |
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj `
+            -c Release `
+            -v normal `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject"
+          exit $LASTEXITCODE
+
+      - name: Run strict native FFmpeg integration tests
+        shell: pwsh
+        run: |
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
+          dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj `
+            -c Release `
+            -v normal `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject"
+          exit $LASTEXITCODE
+
+      - name: Publish Windows x64 Native AOT GUI
+        shell: pwsh
+        run: |
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
+          dotnet publish VDF.GUI/VDF.GUI.csproj `
+            -c Release `
+            -v normal `
+            -p:PublishAot=true `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" `
+            -r win-x64 `
+            -o outputGUI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path outputGUI/VDF.GUI.exe -PathType Leaf)) {
+            throw 'Native AOT publish did not produce VDF.GUI.exe.'
+          }
+
+      - name: Upload compatibility test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-master-compat-output
+          path: |
+            outputGUI
+            TestResults
+          if-no-files-found: warn
+          retention-days: 3
