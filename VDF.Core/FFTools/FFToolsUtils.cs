@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -35,48 +35,54 @@ namespace VDF.Core.FFTools {
 			ffMpegPlatformName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? FFmpegExecutableName + ".exe" : FFmpegExecutableName;
 		}
 
-		internal static string? ScanPathDirs(string? pathVariable, string toolExecutable) {
-			if (string.IsNullOrWhiteSpace(pathVariable)) return null;
-			foreach (string rawPath in pathVariable.Split(Path.PathSeparator)) {
-				string path = rawPath.Trim().Trim('"');
-				if (!Directory.Exists(path))
-					continue;
-
-				try {
-					FileInfo[] files = new DirectoryInfo(path).GetFiles(toolExecutable, new EnumerationOptions {
-						IgnoreInaccessible = true,
-						MatchCasing = MatchCasing.CaseInsensitive
-					});
-
-					if (files.Length > 0)
-						return files[0].FullName;
-				}
-				catch (Exception) {
-#if DEBUG
-					throw;
-#endif
-				}
-			}
-			return null;
-		}
-
 		/// <summary>
-		/// Gets the path of ffprobe or ffmpeg. An executable installed in PATH is
-		/// preferred over app-local fallback binaries, regardless of its FFmpeg version.
+		/// Gets path of ffprobe or ffmpeg
 		/// </summary>
 		/// <param name="tool"></param>
 		/// <returns>path or null if not found</returns>
 		internal static string? GetPath(FFTool tool) {
 			var toolExecutable = tool == FFTool.FFmpeg ? ffMpegPlatformName : ffProbePlatformName;
+			var toolPath = Path.Combine(CoreUtils.CurrentFolder, "bin", toolExecutable);
+			if (File.Exists(toolPath))
+				return toolPath;
 
-			// Prefer exactly what the user's current process resolves through PATH.
-			string? toolPath = ScanPathDirs(Environment.GetEnvironmentVariable("PATH"), toolExecutable);
+			toolPath = Path.Combine(CoreUtils.CurrentFolder, toolExecutable);
+			if (File.Exists(toolPath))
+				return toolPath;
+
+			static string? ScanPathDirs(string? pathVariable, string toolExecutable) {
+				if (pathVariable == null) return null;
+				foreach (var path in pathVariable.Split(Path.PathSeparator)) {
+					if (!Directory.Exists(path))
+						continue;
+
+					try {
+						FileInfo[] files = new DirectoryInfo(path).GetFiles(toolExecutable, new EnumerationOptions {
+							IgnoreInaccessible = true,
+							MatchCasing = MatchCasing.CaseInsensitive
+						});
+
+						if (files.Length > 0)
+							return files[0].FullName;
+					}
+					catch (Exception) {
+#if DEBUG
+						throw;
+#endif
+					}
+				}
+				return null;
+			}
+
+			toolPath = ScanPathDirs(Environment.GetEnvironmentVariable("PATH"), toolExecutable);
 			if (toolPath != null)
 				return toolPath;
 
-			// The process PATH is a snapshot taken when the app was launched. On Windows,
-			// re-read the current user and machine PATH values so an FFmpeg installation or
-			// PATH edit made after launch is still discovered without restarting VDF.
+			// The process PATH is a snapshot taken when the app was launched. On Windows an
+			// FFmpeg installed afterwards (winget/scoop/choco or a manual PATH edit) shows up
+			// in new consoles but not here, so users see "ffmpeg -version" work while VDF
+			// keeps reporting it missing (issue #788). Re-read the registry-backed user and
+			// machine PATH, which is always current.
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
 				toolPath = ScanPathDirs(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User), toolExecutable)
 					?? ScanPathDirs(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine), toolExecutable);
@@ -84,8 +90,10 @@ namespace VDF.Core.FFTools {
 					return toolPath;
 			}
 
-			// GUI launchers on macOS/Linux may inherit a reduced PATH. Retain the existing
-			// standard-location fallback after checking PATH.
+			// A GUI app launched from Finder (macOS) or a desktop launcher (Linux) can inherit
+			// a minimal PATH that omits the directory the binaries actually live in, so the
+			// scan above misses an otherwise correctly installed FFmpeg. Probe the standard
+			// install locations explicitly. See issue #764.
 			string[] wellKnownBinDirs =
 				RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] :
 				RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? ["/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"] :
@@ -95,16 +103,6 @@ namespace VDF.Core.FFTools {
 				if (File.Exists(toolPath))
 					return toolPath;
 			}
-
-			// Keep bundled/downloaded binaries only as a last-resort fallback. They must not
-			// override an FFmpeg installation selected by the user's PATH.
-			toolPath = Path.Combine(CoreUtils.CurrentFolder, "bin", toolExecutable);
-			if (File.Exists(toolPath))
-				return toolPath;
-
-			toolPath = Path.Combine(CoreUtils.CurrentFolder, toolExecutable);
-			if (File.Exists(toolPath))
-				return toolPath;
 
 			return null;
 		}
