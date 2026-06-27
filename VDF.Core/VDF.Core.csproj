@@ -14,8 +14,13 @@
     <InternalsVisibleTo Include="VDF.IntegrationTests" />
     <InternalsVisibleTo Include="VDF.Benchmarks" />
   </ItemGroup>
-  <ItemGroup>
+  <ItemGroup Condition="'$(FFmpegAutoGenProjectPath)' == ''">
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FFmpegAutoGenProjectPath)' != ''">
+    <ProjectReference Include="$(FFmpegAutoGenProjectPath)" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="MemoryPack" Version="1.21.4" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="5.20.1-preview" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
