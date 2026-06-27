@@ -79,12 +79,64 @@ $binDirectory = $avcodecDll.Directory.FullName
 
 $generatorProject = Join-Path $AutoGenRoot 'FFmpeg.AutoGen.CppSharpUnsafeGenerator/FFmpeg.AutoGen.CppSharpUnsafeGenerator.csproj'
 $autoGenProject = Join-Path $AutoGenRoot 'FFmpeg.AutoGen/FFmpeg.AutoGen.csproj'
+$structuresGenerator = Join-Path $AutoGenRoot 'FFmpeg.AutoGen.CppSharpUnsafeGenerator/Generation/StructuresGenerator.cs'
 if (-not (Test-Path -LiteralPath $generatorProject -PathType Leaf)) {
     throw "FFmpeg.AutoGen generator project not found: $generatorProject"
 }
 if (-not (Test-Path -LiteralPath $autoGenProject -PathType Leaf)) {
     throw "FFmpeg.AutoGen project not found: $autoGenProject"
 }
+if (-not (Test-Path -LiteralPath $structuresGenerator -PathType Leaf)) {
+    throw "FFmpeg.AutoGen structures generator not found: $structuresGenerator"
+}
+
+# FFmpeg 9/master currently exposes at least one unnamed struct field. Upstream
+# AutoGen blindly emits `@{field.Name}`, which becomes the invalid C# member `@;`.
+# Give unnamed fields stable synthetic names while preserving field order/layout.
+$generatorSource = Get-Content -LiteralPath $structuresGenerator -Raw
+$oldBlock = @'
+        using (BeginBlock())
+            foreach (var field in structure.Fields)
+            {
+                this.WriteSummary(field);
+                this.WriteObsoletion(field);
+                if (structure.IsUnion) WriteLine("[FieldOffset(0)]");
+                var typeName = ParametersHelper.GetTypeName(field.FieldType, Context.IsLegacyGenerationOn);
+
+                if (!Context.IsLegacyGenerationOn && typeName.Contains("_array"))
+                {
+
+                }
+                WriteLine($"public {typeName} @{field.Name};");
+            }
+'@
+$newBlock = @'
+        using (BeginBlock())
+        {
+            var anonymousFieldIndex = 0;
+            foreach (var field in structure.Fields)
+            {
+                this.WriteSummary(field);
+                this.WriteObsoletion(field);
+                if (structure.IsUnion) WriteLine("[FieldOffset(0)]");
+                var typeName = ParametersHelper.GetTypeName(field.FieldType, Context.IsLegacyGenerationOn);
+
+                if (!Context.IsLegacyGenerationOn && typeName.Contains("_array"))
+                {
+
+                }
+                var fieldName = string.IsNullOrWhiteSpace(field.Name)
+                    ? $"__anonymous_field_{anonymousFieldIndex++}"
+                    : field.Name;
+                WriteLine($"public {typeName} @{fieldName};");
+            }
+        }
+'@
+if (-not $generatorSource.Contains($oldBlock)) {
+    throw 'FFmpeg.AutoGen StructuresGenerator.cs no longer matches the expected upstream source; review the anonymous-field patch.'
+}
+$generatorSource = $generatorSource.Replace($oldBlock, $newBlock)
+Set-Content -LiteralPath $structuresGenerator -Value $generatorSource -Encoding utf8
 
 Write-Host "Generating bindings from headers in $includeDirectory and binaries in $binDirectory..."
 dotnet run `
