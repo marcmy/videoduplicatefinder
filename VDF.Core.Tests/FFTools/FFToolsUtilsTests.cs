@@ -8,30 +8,41 @@ public sealed class FFToolsUtilsTests : IDisposable {
 	public FFToolsUtilsTests() => Directory.CreateDirectory(tempRoot);
 
 	[Fact]
-	public void ResolveExecutableCandidate_ResolvesScoopShimTarget() {
-		if (!OperatingSystem.IsWindows())
-			return;
+	public void ScanPathDirs_ReturnsFirstMatchingExecutable() {
+		string first = Path.Combine(tempRoot, "first");
+		string second = Path.Combine(tempRoot, "second");
+		Directory.CreateDirectory(first);
+		Directory.CreateDirectory(second);
 
-		string shims = Path.Combine(tempRoot, "shims");
-		string appBin = Path.Combine(tempRoot, "apps", "ffmpeg-marc-shared", "current", "bin");
-		Directory.CreateDirectory(shims);
-		Directory.CreateDirectory(appBin);
+		string executableName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+		string expected = Path.Combine(second, executableName);
+		File.WriteAllBytes(expected, [0]);
 
-		string shimExe = Path.Combine(shims, "ffmpeg.exe");
-		string realExe = Path.Combine(appBin, "ffmpeg.exe");
-		File.WriteAllBytes(shimExe, [0]);
-		File.WriteAllBytes(realExe, [0]);
-		File.WriteAllText(Path.Combine(shims, "ffmpeg.shim"), $"path = \"{realExe}\"\n");
+		string path = string.Join(Path.PathSeparator, first, second);
 
-		Assert.Equal(realExe, FFToolsUtils.ResolveExecutableCandidate(shimExe));
+		Assert.Equal(expected, FFToolsUtils.ScanPathDirs(path, executableName));
 	}
 
 	[Fact]
-	public void ResolveExecutableCandidate_LeavesNormalExecutableAlone() {
-		string executable = Path.Combine(tempRoot, OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
-		File.WriteAllBytes(executable, [0]);
+	public void ScanPathDirs_TrimsQuotedPathEntries() {
+		string bin = Path.Combine(tempRoot, "quoted bin");
+		Directory.CreateDirectory(bin);
 
-		Assert.Equal(executable, FFToolsUtils.ResolveExecutableCandidate(executable));
+		string executableName = OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe";
+		string expected = Path.Combine(bin, executableName);
+		File.WriteAllBytes(expected, [0]);
+
+		Assert.Equal(expected, FFToolsUtils.ScanPathDirs($"\"{bin}\"", executableName));
+	}
+
+	[Fact]
+	public void ScanPathDirs_ReturnsNullWhenExecutableIsMissing() {
+		string bin = Path.Combine(tempRoot, "empty");
+		Directory.CreateDirectory(bin);
+
+		string executableName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+
+		Assert.Null(FFToolsUtils.ScanPathDirs(bin, executableName));
 	}
 
 	public void Dispose() {
