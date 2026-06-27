@@ -3,6 +3,7 @@ name: Windows GUI CI
 on:
   pull_request:
     paths:
+      - '.github/scripts/prepare-latest-ffmpeg-autogen.ps1'
       - '.github/workflows/dotnetcore.yml'
       - '.github/workflows/releases.yml'
       - 'Directory.*'
@@ -24,42 +25,73 @@ concurrency:
 
 jobs:
   windows-gui:
-    name: Windows GUI, core, and FFmpeg validation
+    name: Windows GUI, core, and latest FFmpeg validation
     runs-on: windows-2022
+    env:
+      VDF_REQUIRE_NATIVE_FFMPEG: '1'
 
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      - name: Setup .NET
+      - name: Checkout FFmpeg.AutoGen generator
+        uses: actions/checkout@v5
+        with:
+          repository: Ruslan-B/FFmpeg.AutoGen
+          ref: main
+          path: .deps/FFmpeg.AutoGen
+          persist-credentials: false
+
+      - name: Setup .NET 9 and 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Generate bindings from latest ffmpeg-marc-shared
+        id: ffmpeg
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
+            -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path
+
+          $autoGenProject = Resolve-Path '.deps/FFmpeg.AutoGen/FFmpeg.AutoGen/FFmpeg.AutoGen.csproj'
+          $projectXml = Get-Content -LiteralPath $autoGenProject -Raw
+          $projectXml = $projectXml.Replace(
+            '<TargetFrameworks>netstandard2.1;netstandard2.0</TargetFrameworks>',
+            '<TargetFramework>net10.0</TargetFramework>')
+          if ($projectXml -notmatch '<TargetFramework>net10\.0</TargetFramework>') {
+            throw 'Failed to retarget generated FFmpeg.AutoGen project to net10.0.'
+          }
+          Set-Content -LiteralPath $autoGenProject -Value $projectXml -Encoding utf8
 
       - name: Run core unit tests
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force TestResults/Core | Out-Null
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
           dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj `
             -c Release `
             -v q `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" `
             --logger "trx;LogFileName=core-tests.trx" `
             --results-directory TestResults/Core *>&1 |
             Tee-Object -FilePath TestResults/Core/core-tests.log
           exit $LASTEXITCODE
 
-      - name: Install FFmpeg
-        shell: pwsh
-        run: choco install ffmpeg -y --no-progress
-
-      - name: Run FFmpeg integration tests
+      - name: Run strict native FFmpeg integration tests
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force TestResults/Integration | Out-Null
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
           dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj `
             -c Release `
             -v normal `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" `
             --logger "trx;LogFileName=integration-tests.trx" `
             --results-directory TestResults/Integration *>&1 |
             Tee-Object -FilePath TestResults/Integration/integration-tests.log
@@ -68,10 +100,12 @@ jobs:
       - name: Publish Native AOT GUI
         shell: pwsh
         run: |
+          $autoGenProject = '${{ steps.ffmpeg.outputs.autogen_project }}'
           dotnet publish VDF.GUI/VDF.GUI.csproj `
             -c Release `
             -v q `
             -p:PublishAot=true `
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" `
             -r win-x64 `
             -o outputGUI
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
