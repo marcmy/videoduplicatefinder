@@ -95,7 +95,7 @@ dotnet run `
     --headers $includeDirectory `
     --bin $binDirectory `
     --output $AutoGenRoot `
-    --verbose
+    -v
 if ($LASTEXITCODE -ne 0) {
     throw 'FFmpeg.AutoGen generation failed.'
 }
