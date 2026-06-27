@@ -1,17 +1,6 @@
 name: FFmpeg master native compatibility
 
 on:
-  push:
-    branches:
-      - compat/ffmpeg-master-native-binding
-    paths:
-      - '.github/scripts/prepare-latest-ffmpeg-autogen.ps1'
-      - '.github/workflows/ffmpeg-master-compat.yml'
-      - 'VDF.Core/**'
-      - 'VDF.Core.Tests/**'
-      - 'VDF.GUI/**'
-      - 'VDF.IntegrationTests/**'
-      - 'VDF.TestSupport/**'
   pull_request:
     branches:
       - perf/native-hwaccel-from-crashfix
@@ -29,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,7 +82,8 @@ jobs:
           dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj `
             -c Release `
             -v normal `
-            -p:FFmpegAutoGenProjectPath="$autoGenProject"
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" *>&1 |
+            Tee-Object -FilePath compat-logs/core-tests.log
           exit $LASTEXITCODE
 
       - name: Run strict native FFmpeg integration tests
@@ -103,7 +93,8 @@ jobs:
           dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj `
             -c Release `
             -v normal `
-            -p:FFmpegAutoGenProjectPath="$autoGenProject"
+            -p:FFmpegAutoGenProjectPath="$autoGenProject" *>&1 |
+            Tee-Object -FilePath compat-logs/integration-tests.log
           exit $LASTEXITCODE
 
       - name: Publish Windows x64 Native AOT GUI
@@ -116,7 +107,8 @@ jobs:
             -p:PublishAot=true `
             -p:FFmpegAutoGenProjectPath="$autoGenProject" `
             -r win-x64 `
-            -o outputGUI
+            -o outputGUI *>&1 |
+            Tee-Object -FilePath compat-logs/native-aot-publish.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path outputGUI/VDF.GUI.exe -PathType Leaf)) {
             throw 'Native AOT publish did not produce VDF.GUI.exe.'
