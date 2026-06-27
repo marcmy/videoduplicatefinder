@@ -66,14 +66,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          New-Item -ItemType Directory -Force .compat-logs | Out-Null
+          New-Item -ItemType Directory -Force compat-logs | Out-Null
           try {
             ./.github/scripts/prepare-latest-ffmpeg-autogen.ps1 `
               -AutoGenRoot (Resolve-Path '.deps/FFmpeg.AutoGen').Path *>&1 |
-              Tee-Object -FilePath .compat-logs/ffmpeg-autogen.log
+              Tee-Object -FilePath compat-logs/ffmpeg-autogen.log
           }
           catch {
-            $_ | Out-String | Tee-Object -FilePath .compat-logs/ffmpeg-autogen.log -Append | Write-Host
+            $message = $_.Exception.Message.Replace("`r", ' ').Replace("`n", ' ')
+            Write-Host "::error title=FFmpeg binding generation failed::$message"
+            $_ | Out-String | Tee-Object -FilePath compat-logs/ffmpeg-autogen.log -Append | Write-Host
             throw
           }
 
@@ -126,7 +128,7 @@ jobs:
         with:
           name: ffmpeg-master-compat-output
           path: |
-            .compat-logs
+            compat-logs
             outputGUI
           if-no-files-found: warn
           retention-days: 3
