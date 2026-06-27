@@ -18,7 +18,8 @@
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(FFmpegAutoGenProjectPath)' != ''">
-    <ProjectReference Include="$(FFmpegAutoGenProjectPath)" />
+    <ProjectReference Include="$(FFmpegAutoGenProjectPath)"
+                      GlobalPropertiesToRemove="PublishAot;RuntimeIdentifier;SelfContained" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MemoryPack" Version="1.21.4" />
