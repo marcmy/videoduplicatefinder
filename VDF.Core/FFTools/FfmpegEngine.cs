@@ -1608,6 +1608,10 @@ namespace VDF.Core.FFTools {
 				bytes = null;
 			}
 			string ffmpegError = errOut.ToString();
+			// When a still image was extracted successfully, discard FFmpeg's known-benign
+			// PNG demuxer chatter instead of logging a false warning (#805/#809/#815).
+			if (bytes != null && ffmpegError.Length > 0 && FileUtils.IsImageFile(settings.File))
+				ffmpegError = FilterBenignImageDemuxerNoise(ffmpegError);
 			long processTotalMs = processSw.ElapsedMilliseconds;
 			// Failures always log (including FFmpeg's stderr); success-with-warnings only
 			// when extended logging is enabled, to avoid noise from benign decoder chatter.
@@ -1709,6 +1713,42 @@ namespace VDF.Core.FFTools {
 				return false;
 			}
 			return true;
+		}
+
+		// Markers for FFmpeg PNG demuxer false-positives that occur after a still frame
+		// has already been decoded successfully (issues #805/#809/#815).
+		static readonly string[] BenignImageDemuxerMarkers = {
+			"Invalid PNG signature",
+			"chunk too big",
+		};
+
+		/// <summary>
+		/// Strips known-benign FFmpeg demuxer lines (and the png decoder's follow-up
+		/// "Decoding error" line) from captured stderr. Only used for still images whose
+		/// frame was nonetheless extracted, so a non-fatal decode line cannot hide a real
+		/// failure. Returns the surviving lines with the original leading newline layout.
+		/// </summary>
+		static string FilterBenignImageDemuxerNoise(string errOut) {
+			var lines = errOut.Split(Environment.NewLine);
+			var kept = new List<string>(lines.Length);
+			foreach (var line in lines) {
+				if (line.Length == 0)
+					continue;
+				bool benign = false;
+				foreach (var marker in BenignImageDemuxerMarkers)
+					if (line.Contains(marker, StringComparison.OrdinalIgnoreCase)) {
+						benign = true;
+						break;
+					}
+				// The png decoder emits a paired "Decoding error: Invalid data ..." line
+				// alongside the bogus signature; drop it too when it names the png decoder.
+				if (!benign && line.Contains("/png @", StringComparison.Ordinal) &&
+					line.Contains("Decoding error", StringComparison.Ordinal))
+					benign = true;
+				if (!benign)
+					kept.Add(line);
+			}
+			return kept.Count == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, kept);
 		}
 
 		private static List<string> TokenizeArgs(string args) {
