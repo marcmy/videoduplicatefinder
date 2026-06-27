@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -73,7 +73,7 @@ namespace VDF.GUI.ViewModels {
 					try {
 						await DownloadFileAsync(plan.DownloadUrl, downloadPath, plan);
 						IsBusyOverlayText = App.Lang["Message.FfmpegDownloadVerifying"];
-						await VerifyChecksumAsync(plan, downloadPath);
+						await VerifyChecksumAsync(plan.DownloadUrl, downloadPath, plan.ArchiveFileName);
 						IsBusyOverlayText = App.Lang["Message.FfmpegDownloadExtracting"];
 						ExtractArchive(downloadPath, extractedFolder, plan.ArchiveKind);
 
@@ -124,12 +124,7 @@ namespace VDF.GUI.ViewModels {
 			}
 		}
 
-		record FfmpegDownloadPlan(
-			Uri DownloadUrl,
-			string ArchiveFileName,
-			ArchiveType ArchiveKind,
-			string DisplayName,
-			string? ExpectedSha256 = null);
+		record FfmpegDownloadPlan(Uri DownloadUrl, string ArchiveFileName, ArchiveType ArchiveKind, string DisplayName);
 
 		enum ArchiveType {
 			Zip,
@@ -139,26 +134,8 @@ namespace VDF.GUI.ViewModels {
 
 		List<FfmpegDownloadPlan> GetSharedFfmpegDownloadPlans() {
 			var plans = new List<FfmpegDownloadPlan>();
-			Architecture arch = RuntimeInformation.ProcessArchitecture;
-
-			// Release CI generates the native bindings and these download coordinates from
-			// the same shared FFmpeg archive. Prefer that exact archive so the automatic
-			// runtime install can never drift away from the ABI compiled into VDF.
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) &&
-				arch == Architecture.X64 &&
-				!string.IsNullOrWhiteSpace(GeneratedFfmpegDownloadInfo.AssetName) &&
-				Uri.TryCreate(GeneratedFfmpegDownloadInfo.DownloadUrl, UriKind.Absolute, out Uri? generatedDownloadUrl)) {
-				plans.Add(new FfmpegDownloadPlan(
-					generatedDownloadUrl,
-					GeneratedFfmpegDownloadInfo.AssetName,
-					ArchiveType.Zip,
-					$"Windows x64 ({GeneratedFfmpegDownloadInfo.Tag})",
-					GeneratedFfmpegDownloadInfo.Sha256));
-				return plans;
-			}
-
 			int ffMajor = MapToFfmpegMajor(ffmpeg.LIBAVCODEC_VERSION_MAJOR, ffmpeg.LIBAVFORMAT_VERSION_MAJOR, ffmpeg.LIBAVUTIL_VERSION_MAJOR);
-			string? versionTag = ffMajor switch {
+			string versionTag = ffMajor switch {
 				// BtbN/yt-dlp builds publish only the latest minor per major; the n8.0 tag
 				// was retired when 8.1 landed, so a hardcoded "8.0" 404s on every fresh
 				// install. Keep this aligned with whatever minor BtbN currently ships.
@@ -166,11 +143,10 @@ namespace VDF.GUI.ViewModels {
 				7 => "7.1",
 				6 => "6.1",
 				5 => "5.1",
-				_ => null
+				_ => "7.1"
 			};
-			if (versionTag == null)
-				return plans;
 
+			Architecture arch = RuntimeInformation.ProcessArchitecture;
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
 				switch (arch) {
 				case Architecture.X64:
@@ -377,43 +353,37 @@ namespace VDF.GUI.ViewModels {
 			File.Copy(sourcePath, targetPath, true);
 		}
 
-		static async Task VerifyChecksumAsync(FfmpegDownloadPlan plan, string filePath) {
-			string? expectedHash = string.IsNullOrWhiteSpace(plan.ExpectedSha256)
-				? null
-				: plan.ExpectedSha256.Trim().ToLowerInvariant();
+		static async Task VerifyChecksumAsync(Uri downloadUrl, string filePath, string archiveFileName) {
+			var checksumUrl = new Uri(downloadUrl, "checksums.sha256");
+			try {
+				using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+				var checksumText = await client.GetStringAsync(checksumUrl);
 
-			if (expectedHash == null) {
-				var checksumUrl = new Uri(plan.DownloadUrl, "checksums.sha256");
-				try {
-					using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-					var checksumText = await client.GetStringAsync(checksumUrl);
-
-					foreach (var line in checksumText.Split('\n', StringSplitOptions.RemoveEmptyEntries)) {
-						var parts = line.Split("  ", 2, StringSplitOptions.None);
-						if (parts.Length == 2 && parts[1].Trim().Equals(plan.ArchiveFileName, StringComparison.OrdinalIgnoreCase)) {
-							expectedHash = parts[0].Trim().ToLowerInvariant();
-							break;
-						}
+				string? expectedHash = null;
+				foreach (var line in checksumText.Split('\n', StringSplitOptions.RemoveEmptyEntries)) {
+					var parts = line.Split("  ", 2, StringSplitOptions.None);
+					if (parts.Length == 2 && parts[1].Trim().Equals(archiveFileName, StringComparison.OrdinalIgnoreCase)) {
+						expectedHash = parts[0].Trim().ToLowerInvariant();
+						break;
 					}
 				}
-				catch (HttpRequestException) {
-					Logger.Instance.Info("FFmpeg download: could not fetch checksums.sha256, skipping verification");
+
+				if (expectedHash == null) {
+					Logger.Instance.Info($"FFmpeg download: no checksum entry found for '{archiveFileName}', skipping verification");
 					return;
 				}
+
+				await using var fs = File.OpenRead(filePath);
+				var hashBytes = await SHA256.HashDataAsync(fs);
+				var actualHash = Convert.ToHexStringLower(hashBytes);
+
+				if (actualHash != expectedHash)
+					throw new InvalidOperationException(
+						$"Checksum mismatch for '{archiveFileName}': expected {expectedHash}, got {actualHash}. The download may be corrupted or tampered with.");
 			}
-
-			if (expectedHash == null) {
-				Logger.Instance.Info($"FFmpeg download: no checksum entry found for '{plan.ArchiveFileName}', skipping verification");
-				return;
+			catch (HttpRequestException) {
+				Logger.Instance.Info("FFmpeg download: could not fetch checksums.sha256, skipping verification");
 			}
-
-			await using var fs = File.OpenRead(filePath);
-			var hashBytes = await SHA256.HashDataAsync(fs);
-			var actualHash = Convert.ToHexStringLower(hashBytes);
-
-			if (actualHash != expectedHash)
-				throw new InvalidOperationException(
-					$"Checksum mismatch for '{plan.ArchiveFileName}': expected {expectedHash}, got {actualHash}. The download may be corrupted or tampered with.");
 		}
 
 		static void SafeExtractZip(string archivePath, string targetFolder) {
