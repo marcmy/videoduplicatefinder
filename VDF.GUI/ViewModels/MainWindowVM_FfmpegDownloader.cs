@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY without even the implied warranty of
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -28,6 +28,7 @@ using VDF.Core.FFTools;
 using VDF.Core.Utils;
 using System.Reactive;
 using VDF.Core.FFTools.FFmpegNative;
+using VDF.GUI.Data;
 using VDF.GUI.Views;
 
 namespace VDF.GUI.ViewModels {
@@ -39,10 +40,24 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		public ReactiveCommand<Unit, Unit> DownloadSharedFfmpegCommand => ReactiveCommand.CreateFromTask(async () => {
-			await DownloadSharedFfmpegAsync();
+			await DownloadSharedFfmpegAsync(forceDownload: true);
 		});
 
-		async Task DownloadSharedFfmpegAsync() {
+		async Task DownloadSharedFfmpegAsync(bool forceDownload = false) {
+			// Scan startup calls this method when native mode was requested but its exact
+			// shared-library ABI is unavailable. If ffmpeg and ffprobe already resolve from
+			// the user's PATH, keep that installation regardless of version and transparently
+			// use process mode instead of downloading a private VDF copy.
+			if (!forceDownload &&
+				SettingsFile.Instance.UseNativeFfmpegBinding &&
+				!ScanEngine.NativeFFmpegExists &&
+				ScanEngine.FFmpegExists &&
+				ScanEngine.FFprobeExists) {
+				SettingsFile.Instance.UseNativeFfmpegBinding = false;
+				Logger.Instance.Info($"Native FFmpeg libraries do not match VDF's binding; using PATH executables instead: ffmpeg='{FfmpegEngine.FFmpegPath}', ffprobe='{FFProbeEngine.FFprobePath}'.");
+				return;
+			}
+
 			if (IsFfmpegDownloadInProgress) return;
 			IsFfmpegDownloadInProgress = true;
 			IsBusy = true;
