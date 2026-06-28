@@ -18,7 +18,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: refresh-perf-branch
@@ -195,10 +194,3 @@ jobs:
         if: steps.merge.outputs.merge_changed == 'true'
         run: |
           git push origin perf/native-hwaccel-from-crashfix
-
-      - name: Trigger Build releases
-        if: steps.merge.outputs.meaningful_changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run releases.yml --ref perf/native-hwaccel-from-crashfix
