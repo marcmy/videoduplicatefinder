@@ -496,6 +496,13 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		void UpdateFrameImages() {
+			// Every state change invalidates work started for the previous
+			// selection, base position, or offsets. The extraction itself may
+			// still finish and populate its cache, but it must not update the UI.
+			_frameExtractCts?.Cancel();
+			_frameExtractCts = null;
+			IsExtractingFrame = false;
+
 			var baseIdx = BaseThumbnailIndex;
 			var itemA = SelectedItemA;
 			var itemB = SelectedItemB;
@@ -505,7 +512,7 @@ namespace VDF.GUI.ViewModels {
 			bool isVideoA = itemA != null && !itemA.Item.ItemInfo.IsImage && itemA.Frames.Count > 0;
 			bool isVideoB = itemB != null && !itemB.Item.ItemInfo.IsImage && itemB.Frames.Count > 0;
 
-			// Show cached/base frames immediately
+			// Show cached/base frames immediately.
 			ImageA = GetItemFrameSync(itemA, baseIdx, isVideoA ? stepA : 0);
 			ImageB = GetItemFrameSync(itemB, baseIdx, isVideoB ? stepB : 0);
 			this.RaisePropertyChanged(nameof(ImageSingle));
@@ -518,31 +525,50 @@ namespace VDF.GUI.ViewModels {
 				return;
 			}
 
-			_frameExtractCts?.Cancel();
 			var cts = new CancellationTokenSource();
 			_frameExtractCts = cts;
 			IsExtractingFrame = true;
+
+			bool IsStillCurrentRequest() =>
+				!cts.IsCancellationRequested &&
+				ReferenceEquals(_frameExtractCts, cts) &&
+				ReferenceEquals(SelectedItemA, itemA) &&
+				ReferenceEquals(SelectedItemB, itemB) &&
+				BaseThumbnailIndex == baseIdx &&
+				StepA == stepA &&
+				StepB == stepB;
 
 			_ = Task.Run(() => {
 				try {
 					Bitmap? bmpA = needExtractA ? itemA!.ExtractFrameAtOffset(baseIdx, stepA) : null;
 					if (cts.IsCancellationRequested) return;
+
 					Bitmap? bmpB = needExtractB ? itemB!.ExtractFrameAtOffset(baseIdx, stepB) : null;
 					if (cts.IsCancellationRequested) return;
 
 					RxSchedulers.MainThreadScheduler.Schedule(() => {
-						if (cts.IsCancellationRequested) return;
+						if (!IsStillCurrentRequest())
+							return;
+
 						if (needExtractA && bmpA != null)
 							ImageA = bmpA;
 						if (needExtractB && bmpB != null)
 							ImageB = bmpB;
+
 						this.RaisePropertyChanged(nameof(ImageSingle));
+						_frameExtractCts = null;
 						IsExtractingFrame = false;
 						UpdateFrameLabels();
 					});
 				}
 				catch {
-					RxSchedulers.MainThreadScheduler.Schedule(() => IsExtractingFrame = false);
+					RxSchedulers.MainThreadScheduler.Schedule(() => {
+						if (!ReferenceEquals(_frameExtractCts, cts))
+							return;
+
+						_frameExtractCts = null;
+						IsExtractingFrame = false;
+					});
 				}
 			});
 
