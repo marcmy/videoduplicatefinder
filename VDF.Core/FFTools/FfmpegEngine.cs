@@ -946,9 +946,14 @@ namespace VDF.Core.FFTools {
 			if (!IsValidPixelFormat(srcPixFmt))
 				throw new Exception($"Invalid source pixel format {srcPixFmt}");
 
+			AVRational sampleAspectRatio = srcFrame.sample_aspect_ratio;
+			if (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
+				sampleAspectRatio = vsd.StreamSampleAspectRatio;
+			Size displaySize = GetDisplaySizeForSampleAspectRatio(
+				sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
 			Size destinationSize = maxWidth == 0
-				? sourceSize
-				: ScaleToMaxWidth(sourceSize, maxWidth > 0 ? maxWidth : 100);
+				? displaySize
+				: ScaleToMaxWidth(displaySize, maxWidth > 0 ? maxWidth : 100);
 			if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSourcePixelFormat) {
 				converter?.Dispose();
 				converter = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, AVPixelFormat.AV_PIX_FMT_YUVJ420P, VideoFrameConverter.ScaleQuality.Bicubic, false);
@@ -1442,11 +1447,18 @@ namespace VDF.Core.FFTools {
 					if (!IsValidPixelFormat(srcPixFmt)) throw new Exception($"Invalid source pixel format {srcPixFmt}");
 					if (sourceSize.Width <= 0 || sourceSize.Height <= 0) throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
 
+					AVRational sampleAspectRatio = srcFrame.sample_aspect_ratio;
+					if (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
+						sampleAspectRatio = vsd.StreamSampleAspectRatio;
+					Size displaySize = isGrayByte
+						? sourceSize
+						: GetDisplaySizeForSampleAspectRatio(
+							sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
 					Size destinationSize = isGrayByte
 						? new Size(N, N)
 						: settings.Fullsize == 1
-							? sourceSize
-							: ScaleToMaxWidth(sourceSize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
+							? displaySize
+							: ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
 
 					AVPixelFormat destinationPixelFrmt = isGrayByte ? AVPixelFormat.AV_PIX_FMT_GRAY8 : AVPixelFormat.AV_PIX_FMT_YUVJ420P;
 
@@ -1546,16 +1558,25 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("gray");
 			}
 			else {
+				string? vfChain = null;
+				if (!FileUtils.IsImageFile(settings.File)) {
+					// Convert the coded raster to square pixels before encoding the JPEG.
+					// This is the equivalent of a media player's display-size correction.
+					vfChain = "scale=trunc(iw*if(eq(sar\\,0)\\,1\\,sar)):ih,setsar=1";
+				}
+
 				if (settings.Fullsize != 1) {
 					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
-					// Downscale-only fit into a maxW x maxW bounding box (matching the native
-					// path and the old resize semantics) — small sources keep their size.
-					string vfChain = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
-					if (userVfFilter != null) vfChain = $"{vfChain},{userVfFilter}";
-					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
+					// Apply the bounding-box resize after correcting the display aspect ratio.
+					string resizeFilter = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
+					vfChain = vfChain == null ? resizeFilter : $"{vfChain},{resizeFilter}";
 				}
-				else if (userVfFilter != null) {
-					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(userVfFilter);
+
+				if (userVfFilter != null)
+					vfChain = vfChain == null ? userVfFilter : $"{vfChain},{userVfFilter}";
+
+				if (vfChain != null) {
+					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
 				}
 				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mjpeg");
 				// Map 1-100 quality onto MJPEG's 2-31 qscale (lower = better), same curve
@@ -1885,6 +1906,26 @@ namespace VDF.Core.FFTools {
 				JpegQuality = jpegQuality,
 				HardwareCodecName = hardwareCodecName,
 			}, extendedLogging);
+		}
+
+		/// <summary>
+		/// Converts coded video dimensions and sample aspect ratio into the square-pixel
+		/// dimensions a media player displays. Coded dimensions remain untouched elsewhere.
+		/// </summary>
+		internal static Size GetDisplaySizeForSampleAspectRatio(
+			Size source,
+			int sarNumerator,
+			int sarDenominator) {
+			if (source.Width <= 0 || source.Height <= 0)
+				return source;
+			if (sarNumerator <= 0 || sarDenominator <= 0 || sarNumerator == sarDenominator)
+				return source;
+
+			double exactWidth = source.Width * (double)sarNumerator / sarDenominator;
+			if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth >= int.MaxValue)
+				return source;
+
+			return new Size(Math.Max(1, (int)Math.Floor(exactWidth)), source.Height);
 		}
 
 		/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>

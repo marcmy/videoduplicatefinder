@@ -1886,6 +1886,7 @@ namespace VDF.Core {
 		/// the user is trying to recover (issue #748).
 		/// </summary>
 		internal static bool ShouldRetryThumbnails(DuplicateItem item, byte[]? placeholder, int requiredWidth = 0) {
+			if (!item.ThumbnailDisplayAspectCorrected) return true;
 			if (item.ImageList == null || item.ImageList.Count == 0) return true;
 			if (placeholder != null && item.ImageList.Count == 1 && ReferenceEquals(item.ImageList[0], placeholder)) return true;
 			// Explicit reloads also refresh thumbnails extracted at a smaller width than
@@ -1990,6 +1991,9 @@ namespace VDF.Core {
 						}
 					}
 					Debug.Assert(timeStamps != null);
+					if (list != null && list.Count > 0 &&
+						!(NoThumbnailImage != null && list.Count == 1 && ReferenceEquals(list[0], NoThumbnailImage)))
+						entry.ThumbnailDisplayAspectCorrected = true;
 					entry.SetThumbnails(list ?? (NoThumbnailImage != null ? new() { NoThumbnailImage } : new()), timeStamps!);
 
 					return ValueTask.CompletedTask;
@@ -2085,6 +2089,9 @@ namespace VDF.Core {
 						}
 					}
 					Debug.Assert(timeStamps != null);
+					if (list != null && list.Count > 0 &&
+						!(NoThumbnailImage != null && list.Count == 1 && ReferenceEquals(list[0], NoThumbnailImage)))
+						entry.ThumbnailDisplayAspectCorrected = true;
 					entry.SetThumbnails(list ?? (NoThumbnailImage != null ? new() { NoThumbnailImage } : new()), timeStamps!);
 
 					return ValueTask.CompletedTask;

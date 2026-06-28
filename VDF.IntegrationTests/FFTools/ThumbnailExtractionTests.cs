@@ -130,4 +130,15 @@ public class ThumbnailExtractionTests {
 		Assert.NotNull(result);
 		Assert.Equal(1024, result.Length);
 	}
+	[Fact]
+	public void GetDisplaySizeForSampleAspectRatio_UsesPlayerDisplayWidth() {
+		var result = FfmpegEngine.GetDisplaySizeForSampleAspectRatio(
+			new System.Drawing.Size(720, 1080),
+			27,
+			32);
+
+		Assert.Equal(607, result.Width);
+		Assert.Equal(1080, result.Height);
+	}
+
 }
