@@ -1676,7 +1676,7 @@
                                             <ListBox Name="ListboxIncludelist" Grid.Row="1" BorderThickness="1"
                                                      DragDrop.AllowDrop="True"
                                                      ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Includes}" />
-                                            <StackPanel Grid.Row="2">
+                                            <StackPanel x:Name="SearchDirectoriesFooter" Grid.Row="2">
                                                 <TextBlock Margin="5" TextWrapping="Wrap" Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
                                                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.DragDropHint]}" />
                                                 <TextBlock Margin="5" TextWrapping="Wrap" Foreground="{actipro:ThemeResource ControlBackgroundBrushSolidWarning}"
@@ -1689,7 +1689,7 @@
                                             <TextBlock Opacity="0.6" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"
                                                        Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ExcludeDirectoriesHint]}" />
                                         </StackPanel>
-                                        <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto,*">
+                                        <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto,*,Auto">
                                             <Menu Grid.Row="0" MinHeight="30">
                                                 <MenuItem Command="{Binding AddBlacklistToListCommand}">
                                                     <MenuItem.Header>
@@ -1747,6 +1747,11 @@
                                             <ListBox Name="ListboxBlacklist" Grid.Row="1" BorderThickness="1"
                                                      DragDrop.AllowDrop="True"
                                                      ItemsSource="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=Blacklists}" />
+                                            <!-- Match the space occupied by Search Directories guidance so
+                                                 both list boxes end at the same vertical position. -->
+                                            <Border Grid.Row="2"
+                                                    Height="{Binding Bounds.Height, ElementName=SearchDirectoriesFooter}"
+                                                    IsHitTestVisible="False" />
                                         </Grid>
                                     </Grid>
                                 </TabItem>
