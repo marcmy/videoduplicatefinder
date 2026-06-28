@@ -7,6 +7,12 @@ using VDF.Core.FFTools;
 
 namespace VDF.Core.Tests.FFTools;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class HardwareAccelDeviceTypeCollection {
+	public const string Name = "FfmpegEngine hardware acceleration static state";
+}
+
+[Collection(HardwareAccelDeviceTypeCollection.Name)]
 public class HardwareAccelDeviceTypeTests {
 	[Fact]
 	public void Vulkan_DowngradesToSoftwareForNativeBinding() {
