@@ -155,9 +155,18 @@ namespace VDF.GUI.ViewModels {
 		public int BaseThumbnailIndex {
 			get => _baseThumbnailIndex;
 			set {
-				this.RaiseAndSetIfChanged(ref _baseThumbnailIndex, Math.Clamp(value, 0, Math.Max(BaseThumbnailIndexMax, 0)));
+				int clamped = Math.Clamp(
+					value,
+					0,
+					Math.Max(BaseThumbnailIndexMax, 0));
+				if (_baseThumbnailIndex == clamped) return;
+
+				this.RaiseAndSetIfChanged(
+					ref _baseThumbnailIndex,
+					clamped);
 				StepA = 0;
 				StepB = 0;
+				RequestAutoAlign();
 			}
 		}
 		private int _baseThumbnailIndexMax;
@@ -195,6 +204,36 @@ namespace VDF.GUI.ViewModels {
 
 		private bool _isExtractingFrame;
 		public bool IsExtractingFrame { get => _isExtractingFrame; set => this.RaiseAndSetIfChanged(ref _isExtractingFrame, value); }
+		private bool _autoAlignFrames =
+			SettingsFile.Instance.ThumbnailComparerAutoAlignFrames;
+		public bool AutoAlignFrames {
+			get => _autoAlignFrames;
+			set {
+				if (_autoAlignFrames == value) return;
+				this.RaiseAndSetIfChanged(ref _autoAlignFrames, value);
+				SettingsFile.Instance.ThumbnailComparerAutoAlignFrames = value;
+				if (value)
+					RequestAutoAlign();
+				else
+					CancelAutoAlign();
+			}
+		}
+
+		private bool _isAutoAligning;
+		public bool IsAutoAligning {
+			get => _isAutoAligning;
+			private set => this.RaiseAndSetIfChanged(
+				ref _isAutoAligning,
+				value);
+		}
+
+		public bool CanAutoAlign =>
+			SelectedItemA is { } itemA &&
+			SelectedItemB is { } itemB &&
+			!itemA.Item.ItemInfo.IsImage &&
+			!itemB.Item.ItemInfo.IsImage &&
+			itemA.Frames.Count > 0 &&
+			itemB.Frames.Count > 0;
 
 		private double _zoom = 1.0;
 		public double Zoom { get => _zoom; set => this.RaiseAndSetIfChanged(ref _zoom, value); }
@@ -254,6 +293,11 @@ namespace VDF.GUI.ViewModels {
 
 		CancellationTokenSource? _frameExtractCts;
 		CancellationTokenSource? _loadCts;
+		CancellationTokenSource? _autoAlignCts;
+		const int AutoAlignSearchRadiusFrames = 30;
+
+		readonly Dictionary<(string A, string B, int BaseIndex), int>
+			_autoAlignCache = new();
 
 		readonly Func<Guid, bool, (Guid GroupId, List<LargeThumbnailDuplicateItem> Items)?>? _groupNavigator;
 		Guid? _currentGroupId;
@@ -293,11 +337,27 @@ namespace VDF.GUI.ViewModels {
 
 			PrevBaseCommand = ReactiveCommand.Create(() => { if (BaseThumbnailIndex > 0) BaseThumbnailIndex--; });
 			NextBaseCommand = ReactiveCommand.Create(() => { if (BaseThumbnailIndex < BaseThumbnailIndexMax) BaseThumbnailIndex++; });
-			StepAMinusCommand = ReactiveCommand.Create(() => { StepA--; });
-			StepAPlusCommand = ReactiveCommand.Create(() => { StepA++; });
-			StepBMinusCommand = ReactiveCommand.Create(() => { StepB--; });
-			StepBPlusCommand = ReactiveCommand.Create(() => { StepB++; });
-			ResetStepsCommand = ReactiveCommand.Create(() => { StepA = 0; StepB = 0; });
+			StepAMinusCommand = ReactiveCommand.Create(() => {
+				CancelAutoAlign();
+				StepA--;
+			});
+			StepAPlusCommand = ReactiveCommand.Create(() => {
+				CancelAutoAlign();
+				StepA++;
+			});
+			StepBMinusCommand = ReactiveCommand.Create(() => {
+				CancelAutoAlign();
+				StepB--;
+			});
+			StepBPlusCommand = ReactiveCommand.Create(() => {
+				CancelAutoAlign();
+				StepB++;
+			});
+			ResetStepsCommand = ReactiveCommand.Create(() => {
+				CancelAutoAlign();
+				StepA = 0;
+				StepB = 0;
+			});
 
 			if (_groupNavigator != null && _currentGroupId.HasValue) {
 				PreviousGroupCommand = ReactiveCommand.CreateFromTask(() => SwitchGroupAsync(forward: false));
@@ -313,6 +373,7 @@ namespace VDF.GUI.ViewModels {
 			// Cancel any in-flight thumbnail / frame work for the previous group
 			_loadCts?.Cancel();
 			_frameExtractCts?.Cancel();
+			CancelAutoAlign();
 			IsExtractingFrame = false;
 
 			_suppressSelectionUpdates = true;
@@ -358,12 +419,14 @@ namespace VDF.GUI.ViewModels {
 			}
 			UpdateShowFrameControls();
 			UpdateImages();
+			RequestAutoAlign();
 		}
 
 		void OnSelectionChanged() {
 			if (_suppressSelectionUpdates) return;
 			UpdateShowFrameControls();
 			UpdateImages();
+			RequestAutoAlign();
 		}
 
 		// Auto-fallback to Single when only one image is available. Must not write to
@@ -401,6 +464,9 @@ namespace VDF.GUI.ViewModels {
 				BaseThumbnailIndex = BaseThumbnailIndexMax;
 
 			ShowPositionControls = BaseThumbnailIndexMax > 0;
+			this.RaisePropertyChanged(nameof(CanAutoAlign));
+			if (!CanAutoAlign)
+				CancelAutoAlign();
 		}
 
 		void UpdateImages() {
@@ -515,6 +581,217 @@ namespace VDF.GUI.ViewModels {
 				FrameLabelB = SelectedItemB?.FileName ?? string.Empty;
 		}
 
+		void CancelAutoAlign() {
+			_autoAlignCts?.Cancel();
+			_autoAlignCts = null;
+			IsAutoAligning = false;
+		}
+
+		void RequestAutoAlign() {
+			CancelAutoAlign();
+
+			if (!AutoAlignFrames || !CanAutoAlign)
+				return;
+
+			LargeThumbnailDuplicateItem itemA = SelectedItemA!;
+			LargeThumbnailDuplicateItem itemB = SelectedItemB!;
+			int baseIndex = BaseThumbnailIndex;
+
+			if (baseIndex < 0 ||
+				baseIndex >=
+					itemA.Item.ItemInfo.ThumbnailTimestamps.Count ||
+				baseIndex >=
+					itemB.Item.ItemInfo.ThumbnailTimestamps.Count) {
+				return;
+			}
+
+			var cacheKey = (
+				itemA.Item.ItemInfo.Path,
+				itemB.Item.ItemInfo.Path,
+				baseIndex);
+
+			StepA = 0;
+			StepB = 0;
+
+			if (_autoAlignCache.TryGetValue(
+				cacheKey,
+				out int cachedOffset)) {
+				StepB = cachedOffset;
+				return;
+			}
+
+			var cts = new CancellationTokenSource();
+			_autoAlignCts = cts;
+			IsAutoAligning = true;
+
+			_ = RunAutoAlignAsync(
+				itemA,
+				itemB,
+				baseIndex,
+				cacheKey,
+				cts);
+		}
+
+		async Task RunAutoAlignAsync(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			(string A, string B, int BaseIndex) cacheKey,
+			CancellationTokenSource cts) {
+			int? offset = null;
+
+			try {
+				offset = await Task.Run(
+					() => FindBestAlignmentOffset(
+						itemA,
+						itemB,
+						baseIndex,
+						cts.Token),
+					cts.Token);
+			}
+			catch (OperationCanceledException) {
+			}
+			catch (Exception e) {
+				VDF.Core.Utils.Logger.Instance.Info(
+					$"Thumbnail comparer auto-alignment failed for " +
+					$"'{itemA.Item.ItemInfo.Path}' and " +
+					$"'{itemB.Item.ItemInfo.Path}': {e}");
+			}
+
+			RxSchedulers.MainThreadScheduler.Schedule(() => {
+				if (_autoAlignCts != cts)
+					return;
+
+				_autoAlignCts = null;
+				IsAutoAligning = false;
+
+				if (cts.IsCancellationRequested ||
+					!offset.HasValue ||
+					!ReferenceEquals(SelectedItemA, itemA) ||
+					!ReferenceEquals(SelectedItemB, itemB) ||
+					BaseThumbnailIndex != baseIndex) {
+					return;
+				}
+
+				_autoAlignCache[cacheKey] = offset.Value;
+				StepA = 0;
+				StepB = offset.Value;
+			});
+		}
+
+		int? FindBestAlignmentOffset(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			CancellationToken cancellationToken) {
+			cancellationToken.ThrowIfCancellationRequested();
+
+			TimeSpan referenceTimestamp =
+				GetAlignmentFrameTimestamp(itemA, baseIndex, 0);
+			byte[]? reference = FfmpegEngine.ExtractGrayFrames(
+				itemA.Item.ItemInfo.Path,
+				new[] { referenceTimestamp },
+				SettingsFile.Instance.ExtendedFFToolsLogging,
+				itemA.Item.ItemInfo.Format).FirstOrDefault();
+
+			if (reference == null)
+				return null;
+
+			cancellationToken.ThrowIfCancellationRequested();
+
+			IReadOnlyList<int> coarseOffsets =
+				FrameAlignment.BuildCoarseOffsets(
+					AutoAlignSearchRadiusFrames);
+			List<FrameAlignmentCandidate> candidates =
+				ExtractAlignmentCandidates(
+					itemB,
+					baseIndex,
+					coarseOffsets,
+					cancellationToken);
+
+			FrameAlignmentResult? coarseResult =
+				FrameAlignment.FindBest(reference, candidates);
+			if (coarseResult == null)
+				return null;
+
+			int coarseStep =
+				FrameAlignment.CalculateCoarseStep(
+					AutoAlignSearchRadiusFrames);
+			IReadOnlyList<int> fineOffsets =
+				FrameAlignment.BuildFineOffsets(
+					coarseResult.Value.Offset,
+					coarseStep,
+					AutoAlignSearchRadiusFrames,
+					coarseOffsets.ToHashSet());
+
+			if (fineOffsets.Count > 0) {
+				candidates.AddRange(
+					ExtractAlignmentCandidates(
+						itemB,
+						baseIndex,
+						fineOffsets,
+						cancellationToken));
+			}
+
+			return FrameAlignment.FindBest(
+				reference,
+				candidates)?.Offset;
+		}
+
+		List<FrameAlignmentCandidate> ExtractAlignmentCandidates(
+			LargeThumbnailDuplicateItem item,
+			int baseIndex,
+			IReadOnlyList<int> offsets,
+			CancellationToken cancellationToken) {
+			var timestamps = new List<TimeSpan>(offsets.Count);
+			foreach (int offset in offsets) {
+				timestamps.Add(
+					GetAlignmentFrameTimestamp(
+						item,
+						baseIndex,
+						offset));
+			}
+
+			List<byte[]?> frames = FfmpegEngine.ExtractGrayFrames(
+				item.Item.ItemInfo.Path,
+				timestamps,
+				SettingsFile.Instance.ExtendedFFToolsLogging,
+				item.Item.ItemInfo.Format);
+
+			cancellationToken.ThrowIfCancellationRequested();
+
+			var candidates =
+				new List<FrameAlignmentCandidate>(offsets.Count);
+			for (int i = 0; i < offsets.Count; i++) {
+				candidates.Add(
+					new FrameAlignmentCandidate(
+						offsets[i],
+						i < frames.Count ? frames[i] : null));
+			}
+
+			return candidates;
+		}
+
+		static TimeSpan GetAlignmentFrameTimestamp(
+			LargeThumbnailDuplicateItem item,
+			int baseIndex,
+			int offset) {
+			var info = item.Item.ItemInfo;
+			TimeSpan timestamp =
+				info.ThumbnailTimestamps[baseIndex];
+			double fps = info.Fps > 0 ? info.Fps : 30d;
+
+			timestamp += TimeSpan.FromSeconds(offset / fps);
+
+			if (timestamp < TimeSpan.Zero)
+				timestamp = TimeSpan.Zero;
+			if (info.Duration > TimeSpan.Zero &&
+				timestamp > info.Duration) {
+				timestamp = info.Duration;
+			}
+
+			return timestamp;
+		}
 		void Recalc() {
 			if ((!IsSwipe && !IsStacked) || ImageA is null || ImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
 				SwipeClip = null;

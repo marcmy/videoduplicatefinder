@@ -410,6 +410,14 @@ namespace VDF.GUI.Data {
 			get => _ThumbnailComparerMode;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerMode, value);
 		}
+		bool _ThumbnailComparerAutoAlignFrames = true;
+		[JsonPropertyName("ThumbnailComparerAutoAlignFrames")]
+		public bool ThumbnailComparerAutoAlignFrames {
+			get => _ThumbnailComparerAutoAlignFrames;
+			set => this.RaiseAndSetIfChanged(
+				ref _ThumbnailComparerAutoAlignFrames,
+				value);
+		}
 		bool _ShowThumbnailColumn = true;
 		[JsonPropertyName("ShowThumbnailColumn")]
 		public bool ShowThumbnailColumn {
