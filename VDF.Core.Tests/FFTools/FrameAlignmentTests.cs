@@ -65,4 +65,45 @@ public class FrameAlignmentTests {
 		Assert.Contains(15, fine);
 		Assert.True(coarse.Count < radius * 2 + 1);
 	}
+	[Fact]
+	public void ProgressiveOffsets_StartNearAndReachRadius() {
+		IReadOnlyList<IReadOnlyList<int>> batches =
+			FrameAlignment.BuildProgressiveOffsetBatches(30);
+
+		Assert.Equal(new[] { -1, 1 }, batches[0]);
+		Assert.Equal(new[] { -2, 2 }, batches[1]);
+		Assert.Equal(new[] { -30, 30 }, batches[^1]);
+		Assert.Equal(6, batches.Count);
+	}
+
+	[Fact]
+	public void RefinementOffsets_BisectNearestTestedNeighbors() {
+		var tested = new HashSet<int> {
+			-30, -16, -8, 0, 8, 16, 30
+		};
+
+		IReadOnlyList<int> offsets =
+			FrameAlignment.BuildRefinementOffsets(
+				center: -16,
+				testedOffsets: tested,
+				radius: 30);
+
+		Assert.Equal(new[] { -23, -12 }, offsets);
+	}
+
+	[Theory]
+	[InlineData(3, 0.06, true)]
+	[InlineData(4, 0.01, false)]
+	[InlineData(1, 0.07, false)]
+	public void Confidence_RequiresHashAndPixelAgreement(
+		int hashDistance,
+		double meanDifference,
+		bool expected) {
+		var result = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: hashDistance,
+			MeanAbsoluteDifference: meanDifference);
+
+		Assert.Equal(expected, FrameAlignment.IsConfident(result));
+	}
 }
