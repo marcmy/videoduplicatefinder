@@ -128,7 +128,7 @@ jobs:
 
   publish:
     name: Publish GUI release
-    if: github.event_name == 'push' && github.ref_name == 'perf/native-hwaccel-from-crashfix'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/native-hwaccel-from-crashfix'
     needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
@@ -171,7 +171,7 @@ jobs:
 
           short_sha="${GITHUB_SHA::7}"
           cat > release-notes.md <<EOF
-          Windows x64 GUI-only Native AOT build from \`perf/native-hwaccel-from-crashfix\`.
+          Windows x64 GUI-only Native AOT build from `perf/native-hwaccel-from-crashfix`.
 
           This release intentionally no longer publishes CLI, Web, Linux, macOS, ARM64, symbol, or full-bundle assets.
 
