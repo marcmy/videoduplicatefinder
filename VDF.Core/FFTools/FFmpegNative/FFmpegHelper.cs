@@ -22,7 +22,6 @@ using FFmpeg.AutoGen.Native;
 namespace VDF.Core.FFTools.FFmpegNative {
 	static class FFmpegHelper {
 		static readonly LinuxFunctionResolver linuxFunctionResolver = new();
-		static readonly WindowsFunctionResolver windowsFunctionResolver = new();
 		static readonly MacFunctionResolver macFunctionResolver = new();
 
 		private static bool ffmpegLibraryFound;
@@ -100,21 +99,27 @@ namespace VDF.Core.FFTools.FFmpegNative {
 					}
 				}
 
-
-				//Try fast lookup first, credits: @Maltragor
-				try {
-					ffmpeg.RootPath = string.Empty;
-					foreach (KeyValuePair<string, int> item in ffmpeg.LibraryVersionMap) {
-						if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-							windowsFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
-						else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-							linuxFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
-						else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-							macFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+				// Do not use LoadLibrary as a discovery mechanism on Windows. Loading each
+				// expected DLL independently can leave a partial FFmpeg set resident when a
+				// later DLL is absent or incompatible. If the auto-downloader then installs a
+				// complete set in <app>/bin, Windows can still bind the new avcodec DLL to the
+				// stale already-loaded avutil DLL until VDF is restarted. Scan directories for
+				// a complete co-located set instead; the actual native call path loads it later.
+				if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
+					// Try the platform loader first on Linux/macOS because libraries may be
+					// available through ldconfig/rpath even when no searchable directory is known.
+					try {
+						ffmpeg.RootPath = string.Empty;
+						foreach (KeyValuePair<string, int> item in ffmpeg.LibraryVersionMap) {
+							if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+								linuxFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+							else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+								macFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+						}
+						return true;
 					}
-					return true;
+					catch { }
 				}
-				catch { }
 
 				if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
 					string firstLibrary = $"lib{ffmpeg.LibraryVersionMap.Keys.First()}.so.{ffmpeg.LibraryVersionMap.Values.First()}";
