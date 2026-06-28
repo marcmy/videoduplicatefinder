@@ -171,7 +171,11 @@ jobs:
 
           short_sha="${GITHUB_SHA::7}"
           cat > release-notes.md <<EOF
-          Windows x64 GUI-only Native AOT build from `perf/native-hwaccel-from-crashfix`.
+          Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
+
+          4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
+
+          Windows x64 GUI-only Native AOT build from perf/native-hwaccel-from-crashfix.
 
           This release intentionally no longer publishes CLI, Web, Linux, macOS, ARM64, symbol, or full-bundle assets.
 
