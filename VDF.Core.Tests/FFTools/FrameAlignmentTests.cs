@@ -65,4 +65,112 @@ public class FrameAlignmentTests {
 		Assert.Contains(15, fine);
 		Assert.True(coarse.Count < radius * 2 + 1);
 	}
+	[Fact]
+	public void ProgressiveOffsets_StartNearAndReachRadius() {
+		IReadOnlyList<IReadOnlyList<int>> batches =
+			FrameAlignment.BuildProgressiveOffsetBatches(30);
+
+		Assert.Equal(new[] { -1, 1 }, batches[0]);
+		Assert.Equal(new[] { -2, 2 }, batches[1]);
+		Assert.Equal(new[] { -30, 30 }, batches[^1]);
+		Assert.Equal(6, batches.Count);
+	}
+
+	[Fact]
+	public void RefinementOffsets_BisectNearestTestedNeighbors() {
+		var tested = new HashSet<int> {
+			-30, -16, -8, 0, 8, 16, 30
+		};
+
+		IReadOnlyList<int> offsets =
+			FrameAlignment.BuildRefinementOffsets(
+				center: -16,
+				testedOffsets: tested,
+				radius: 30);
+
+		Assert.Equal(new[] { -23, -12 }, offsets);
+	}
+
+	[Theory]
+	[InlineData(3, 0.06, true)]
+	[InlineData(4, 0.01, false)]
+	[InlineData(1, 0.07, false)]
+	public void Confidence_RequiresHashAndPixelAgreement(
+		int hashDistance,
+		double meanDifference,
+		bool expected) {
+		var result = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: hashDistance,
+			MeanAbsoluteDifference: meanDifference);
+
+		Assert.Equal(expected, FrameAlignment.IsConfident(result));
+	}
+	[Fact]
+	public void NonZeroCandidate_MustClearlyBeatZeroBaseline() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 5,
+			MeanAbsoluteDifference: 0.070d);
+		var suspiciousFarMatch = new FrameAlignmentResult(
+			Offset: 29,
+			HashDistance: 3,
+			MeanAbsoluteDifference: 0.058d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				suspiciousFarMatch));
+	}
+
+	[Fact]
+	public void NearbyCandidate_CanBeatZeroWithClearImprovement() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 6,
+			MeanAbsoluteDifference: 0.080d);
+		var aligned = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.050d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				aligned));
+	}
+
+	[Fact]
+	public void LargeOffset_RequiresStrongEvidence() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 12,
+			MeanAbsoluteDifference: 0.120d);
+		var aligned = new FrameAlignmentResult(
+			Offset: 29,
+			HashDistance: 1,
+			MeanAbsoluteDifference: 0.035d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				aligned));
+	}
+
+	[Fact]
+	public void NonConfidentCandidate_NeverOverridesZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 10,
+			MeanAbsoluteDifference: 0.110d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 2,
+			HashDistance: 4,
+			MeanAbsoluteDifference: 0.040d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
 }

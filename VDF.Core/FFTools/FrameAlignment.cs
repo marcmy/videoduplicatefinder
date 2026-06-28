@@ -117,5 +117,98 @@ namespace VDF.Core.FFTools {
 
 			return offsets;
 		}
+		const int ConfidentHashDistance = 3;
+		const double ConfidentMeanDifference = 0.06d;
+
+		internal static bool IsConfident(FrameAlignmentResult result) =>
+			result.HashDistance <= ConfidentHashDistance &&
+			result.MeanAbsoluteDifference <= ConfidentMeanDifference;
+		const int MinimumNonZeroHashImprovement = 2;
+		const double MinimumNonZeroMeanImprovement = 0.006d;
+		const int NonZeroDistancePenaltyEveryFrames = 8;
+
+		internal static bool IsClearImprovementOverZero(
+			FrameAlignmentResult zero,
+			FrameAlignmentResult candidate) {
+			if (candidate.Offset == 0)
+				return true;
+			if (!IsConfident(candidate))
+				return false;
+
+			int distance = Math.Abs(candidate.Offset);
+			int requiredHashImprovement =
+				MinimumNonZeroHashImprovement +
+				(distance / NonZeroDistancePenaltyEveryFrames);
+			double requiredMeanImprovement =
+				MinimumNonZeroMeanImprovement +
+				(Math.Min(distance, 30) * 0.0004d);
+
+			int hashImprovement =
+				zero.HashDistance - candidate.HashDistance;
+			double meanImprovement =
+				zero.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			bool hashLedImprovement =
+				hashImprovement >= requiredHashImprovement &&
+				meanImprovement >= requiredMeanImprovement / 2d;
+			bool pixelLedImprovement =
+				hashImprovement >=
+					Math.Max(1, requiredHashImprovement - 2) &&
+				meanImprovement >= requiredMeanImprovement;
+
+			return hashLedImprovement || pixelLedImprovement;
+		}
+
+		internal static IReadOnlyList<IReadOnlyList<int>>
+			BuildProgressiveOffsetBatches(int radius) {
+			radius = Math.Clamp(radius, 1, 300);
+			int[] preferredSteps = { 1, 2, 4, 8, 16, radius };
+			var seen = new HashSet<int>();
+			var batches = new List<IReadOnlyList<int>>();
+
+			foreach (int step in preferredSteps) {
+				if (step > radius || !seen.Add(step))
+					continue;
+
+				batches.Add(new[] { -step, step });
+			}
+
+			return batches;
+		}
+
+		internal static IReadOnlyList<int> BuildRefinementOffsets(
+			int center,
+			ISet<int> testedOffsets,
+			int radius) {
+			radius = Math.Clamp(radius, 1, 300);
+			int? lower = null;
+			int? upper = null;
+
+			foreach (int offset in testedOffsets) {
+				if (offset < center &&
+					(!lower.HasValue || offset > lower.Value)) {
+					lower = offset;
+				}
+				else if (offset > center &&
+					(!upper.HasValue || offset < upper.Value)) {
+					upper = offset;
+				}
+			}
+
+			var result = new SortedSet<int>();
+
+			if (lower.HasValue && center - lower.Value > 1)
+				result.Add(lower.Value + ((center - lower.Value) / 2));
+			if (upper.HasValue && upper.Value - center > 1)
+				result.Add(center + ((upper.Value - center) / 2));
+
+			result.RemoveWhere(offset =>
+				offset < -radius ||
+				offset > radius ||
+				testedOffsets.Contains(offset));
+
+			return result.ToArray();
+		}
 	}
 }

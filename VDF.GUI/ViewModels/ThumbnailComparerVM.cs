@@ -15,6 +15,7 @@
 //
 
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -295,6 +296,10 @@ namespace VDF.GUI.ViewModels {
 		CancellationTokenSource? _loadCts;
 		CancellationTokenSource? _autoAlignCts;
 		const int AutoAlignSearchRadiusFrames = 30;
+		const int AutoAlignProcessTimeoutMilliseconds = 2_000;
+		const int AutoAlignRefinementRounds = 4;
+		static readonly TimeSpan AutoAlignTimeBudget =
+			TimeSpan.FromSeconds(6);
 
 		readonly Dictionary<(string A, string B, int BaseIndex), int>
 			_autoAlignCache = new();
@@ -710,6 +715,10 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
 			CancellationToken cancellationToken) {
+			var searchStopwatch = Stopwatch.StartNew();
+			var testedOffsets = new HashSet<int>();
+			var candidates = new List<FrameAlignmentCandidate>();
+
 			cancellationToken.ThrowIfCancellationRequested();
 
 			TimeSpan referenceTimestamp =
@@ -718,50 +727,119 @@ namespace VDF.GUI.ViewModels {
 				itemA.Item.ItemInfo.Path,
 				new[] { referenceTimestamp },
 				SettingsFile.Instance.ExtendedFFToolsLogging,
-				itemA.Item.ItemInfo.Format).FirstOrDefault();
+				itemA.Item.ItemInfo.Format,
+				AutoAlignProcessTimeoutMilliseconds).FirstOrDefault();
 
 			if (reference == null)
 				return null;
+			if (searchStopwatch.Elapsed >= AutoAlignTimeBudget)
+				return 0;
 
-			cancellationToken.ThrowIfCancellationRequested();
+			void AddCandidates(IReadOnlyList<int> offsets) {
+				IReadOnlyList<int> untested = offsets
+					.Where(offset =>
+						Math.Abs(offset) <=
+							AutoAlignSearchRadiusFrames &&
+						testedOffsets.Add(offset))
+					.ToArray();
 
-			IReadOnlyList<int> coarseOffsets =
-				FrameAlignment.BuildCoarseOffsets(
-					AutoAlignSearchRadiusFrames);
-			List<FrameAlignmentCandidate> candidates =
-				ExtractAlignmentCandidates(
-					itemB,
-					baseIndex,
-					coarseOffsets,
-					cancellationToken);
+				if (untested.Count == 0)
+					return;
 
-			FrameAlignmentResult? coarseResult =
-				FrameAlignment.FindBest(reference, candidates);
-			if (coarseResult == null)
-				return null;
-
-			int coarseStep =
-				FrameAlignment.CalculateCoarseStep(
-					AutoAlignSearchRadiusFrames);
-			IReadOnlyList<int> fineOffsets =
-				FrameAlignment.BuildFineOffsets(
-					coarseResult.Value.Offset,
-					coarseStep,
-					AutoAlignSearchRadiusFrames,
-					coarseOffsets.ToHashSet());
-
-			if (fineOffsets.Count > 0) {
 				candidates.AddRange(
 					ExtractAlignmentCandidates(
 						itemB,
 						baseIndex,
-						fineOffsets,
+						untested,
 						cancellationToken));
 			}
 
-			return FrameAlignment.FindBest(
-				reference,
-				candidates)?.Offset;
+			FrameAlignmentResult? Best() =>
+				FrameAlignment.FindBest(reference, candidates);
+
+			bool ShouldApplyNonZero(
+				FrameAlignmentResult zero,
+				FrameAlignmentResult? candidate) =>
+				candidate.HasValue &&
+				candidate.Value.Offset != 0 &&
+				FrameAlignment.IsClearImprovementOverZero(
+					zero,
+					candidate.Value);
+
+			// Zero is the baseline. It remains selected unless another
+			// candidate clearly and materially improves on it.
+			AddCandidates(new[] { 0 });
+			FrameAlignmentResult? zeroResult = Best();
+			if (!zeroResult.HasValue)
+				return 0;
+			if (FrameAlignment.IsConfident(zeroResult.Value))
+				return 0;
+
+			bool budgetExpired = false;
+			int batchIndex = 0;
+
+			foreach (IReadOnlyList<int> batch in
+				FrameAlignment.BuildProgressiveOffsetBatches(
+					AutoAlignSearchRadiusFrames)) {
+				cancellationToken.ThrowIfCancellationRequested();
+
+				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+					budgetExpired = true;
+					break;
+				}
+
+				AddCandidates(batch);
+				batchIndex++;
+
+				// Search the complete local ±4-frame neighborhood before
+				// accepting a nearby shift. Farther shifts are judged after
+				// the progressive pass and refinement.
+				if (batchIndex >= 3) {
+					FrameAlignmentResult? localBest = Best();
+					if (localBest.HasValue &&
+						Math.Abs(localBest.Value.Offset) <= 4 &&
+						ShouldApplyNonZero(
+							zeroResult.Value,
+							localBest)) {
+						return localBest.Value.Offset;
+					}
+				}
+			}
+
+			for (int round = 0;
+				round < AutoAlignRefinementRounds &&
+					!budgetExpired;
+				round++) {
+				cancellationToken.ThrowIfCancellationRequested();
+
+				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+					budgetExpired = true;
+					break;
+				}
+
+				FrameAlignmentResult? best = Best();
+				if (!best.HasValue)
+					break;
+
+				IReadOnlyList<int> refinementOffsets =
+					FrameAlignment.BuildRefinementOffsets(
+						best.Value.Offset,
+						testedOffsets,
+						AutoAlignSearchRadiusFrames);
+
+				if (refinementOffsets.Count == 0)
+					break;
+
+				AddCandidates(refinementOffsets);
+			}
+
+			FrameAlignmentResult? finalBest = Best();
+
+			return ShouldApplyNonZero(
+				zeroResult.Value,
+				finalBest)
+					? finalBest!.Value.Offset
+					: 0;
 		}
 
 		List<FrameAlignmentCandidate> ExtractAlignmentCandidates(
@@ -782,7 +860,8 @@ namespace VDF.GUI.ViewModels {
 				item.Item.ItemInfo.Path,
 				timestamps,
 				SettingsFile.Instance.ExtendedFFToolsLogging,
-				item.Item.ItemInfo.Format);
+				item.Item.ItemInfo.Format,
+				AutoAlignProcessTimeoutMilliseconds);
 
 			cancellationToken.ThrowIfCancellationRequested();
 

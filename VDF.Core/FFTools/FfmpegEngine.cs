@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using FFmpeg.AutoGen;
 using VDF.Core.FFTools.FFmpegNative;
 using VDF.Core.Utils;
@@ -1380,7 +1381,7 @@ namespace VDF.Core.FFTools {
 			return frames;
 		}
 
-		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
+		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging, int timeoutMilliseconds = TimeoutDuration) {
 			const int N = 32;
 			const int ExpectedBytes = N * N;
 			bool isGrayByte = settings.GrayScale == 1;
@@ -1502,7 +1503,7 @@ namespace VDF.Core.FFTools {
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(settings.HardwareCodecName, failureText);
 					Logger.Instance.Info($"Native FFmpeg extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
-					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging);
+					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging, timeoutMilliseconds);
 				}
 				Logger.Instance.Info($"Failed using native FFmpeg binding on '{settings.File}', try switching to process mode. hwPolicy={hardwarePolicy}. Reason: {e.Message}");
 			}
@@ -1601,13 +1602,37 @@ namespace VDF.Core.FFTools {
 				});
 				process.BeginErrorReadLine();
 				using var ms = new MemoryStream();
-				process.StandardOutput.BaseStream.CopyTo(ms);
+				int effectiveTimeoutMilliseconds =
+					Math.Clamp(
+						timeoutMilliseconds,
+						250,
+						TimeoutDuration);
+				Task copyTask =
+					process.StandardOutput.BaseStream.CopyToAsync(ms);
 
-				if (!process.WaitForExit(TimeoutDuration)) {
-					throw new TimeoutException($"FFmpeg timed out on file: {settings.File}");
+				if (!copyTask.Wait(effectiveTimeoutMilliseconds)) {
+					throw new TimeoutException(
+						$"FFmpeg timed out after " +
+						$"{effectiveTimeoutMilliseconds}ms on file: " +
+						$"{settings.File}");
 				}
-				else
-					process.WaitForExit(); // Because of asynchronous event handlers, see: https://github.com/dotnet/runtime/issues/18789
+
+				int remainingTimeoutMilliseconds = Math.Max(
+					1,
+					effectiveTimeoutMilliseconds -
+						(int)Math.Min(
+							processSw.ElapsedMilliseconds,
+							effectiveTimeoutMilliseconds - 1L));
+
+				if (!process.WaitForExit(remainingTimeoutMilliseconds)) {
+					throw new TimeoutException(
+						$"FFmpeg timed out after " +
+						$"{effectiveTimeoutMilliseconds}ms on file: " +
+						$"{settings.File}");
+				}
+
+				process.WaitForExit(); // Flush asynchronous stderr handlers.
+				copyTask.GetAwaiter().GetResult();
 
 				if (process.ExitCode != 0) throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}");
 
@@ -1644,7 +1669,7 @@ namespace VDF.Core.FFTools {
 				}
 				if (!settings.ForceCpuDecode && processHardwareFailure && bytes == null) {
 					Logger.Instance.Info($"FFmpeg process extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(ffmpegError, 240)}");
-					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging);
+					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging, timeoutMilliseconds);
 				}
 				string message = $"{(bytes == null ? "ERROR: Failed to retrieve" : "WARNING: Problems while retrieving")} {(isGrayByte ? "graybytes" : "thumbnail")} from: {settings.File}";
 				if (extendedLogging) {
@@ -1803,7 +1828,8 @@ namespace VDF.Core.FFTools {
 			string filePath,
 			IReadOnlyList<TimeSpan> positions,
 			bool extendedLogging = false,
-			string? hardwareCodecName = null) {
+			string? hardwareCodecName = null,
+			int processTimeoutMilliseconds = TimeoutDuration) {
 			var frames = new byte[]?[positions.Count];
 			if (positions.Count == 0)
 				return frames.ToList();
@@ -1826,7 +1852,7 @@ namespace VDF.Core.FFTools {
 					GrayScale = 1,
 					HardwareCodecName = hardwareCodecName,
 					ForceCpuDecode = forceCpuForRemaining,
-				}, extendedLogging);
+				}, extendedLogging, processTimeoutMilliseconds);
 			}
 
 			return frames.ToList();
