@@ -55,7 +55,7 @@ namespace VDF.GUI.ViewModels {
 					// larger width keeps serving the old, lower-resolution JPEG (AppendIfMissing
 					// never overwrites), which the UI then upscales -> fuzzy/pixelated (issue #776).
 					var key = ThumbCacheHelpers.XxHash64Hex(
-						ItemInfo.Path + "|w=" + SettingsFile.Instance.ThumbnailMaxWidth);
+						ItemInfo.Path + "|w=" + SettingsFile.Instance.ThumbnailMaxWidth + "|display-ar=1");
 
 					ThumbCacheHelpers.Provider?.AppendIfMissing(key, stream => {
 						var uiBmp = ImageUtils.JoinImages(ItemInfo.ImageList, stream);
