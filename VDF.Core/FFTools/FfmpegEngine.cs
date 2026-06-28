@@ -36,8 +36,6 @@ namespace VDF.Core.FFTools {
 		const long NativeGrayByteD3D11AutoQueueHighMs = 750;
 		const long NativeGrayByteD3D11AutoDecodeHighMs = 1500;
 		const int D3D11GrayByteAdaptiveMinimumObservations = 3;
-		const int HardwareDecodeCodecBypassMinimumFailures = 3;
-		const int D3D11SoftwareFrameCodecBypassMinimumFailures = 3;
 		const int MaxCapturedFfmpegErrorLines = 80;
 		const long D3D11GrayByteAdaptiveSlowPerSampleMs = 140;
 		static readonly object D3D11GrayByteAdaptiveStateLock = new();
@@ -63,8 +61,6 @@ namespace VDF.Core.FFTools {
 		}
 		public static int ScanMaxDegreeOfParallelism = -1;
 		const int DefaultJpegQuality = 90;
-		const int NativeFailureThreshold = 5;
-		static int NativeConsecutiveFailures;
 		static int NativeDisabledForSession;
 		static int VulkanNativeWarningLogged;
 
@@ -82,43 +78,86 @@ namespace VDF.Core.FFTools {
 			ResetNativeBindingHealth();
 
 		static void ResetNativeBindingHealth() {
-			Volatile.Write(ref NativeConsecutiveFailures, 0);
 			Volatile.Write(ref NativeDisabledForSession, 0);
 			Volatile.Write(ref VulkanNativeWarningLogged, 0);
 		}
 
-		static void RecordNativeSuccess() =>
-			Volatile.Write(ref NativeConsecutiveFailures, 0);
-
-		internal static bool IsNativeBindingLoadFailure(Exception e) =>
-			e is NotSupportedException
-			&& (e.Message.Contains("Specified method is not supported", StringComparison.OrdinalIgnoreCase)
-				|| (e.StackTrace?.Contains("FFmpeg.AutoGen.DynamicallyLoadedBindings", StringComparison.Ordinal) ?? false));
-
-		static bool IsNativeBindingInfrastructureFailure(Exception e) =>
-			e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException;
-
-		static void DisableNativeBindingForSession(string file, Exception e, string prefix) {
-			if (Interlocked.Exchange(ref NativeDisabledForSession, 1) != 0)
-				return;
-			Logger.Instance.Info($"{prefix}; using process mode for the rest of this session. Last error on '{file}': {e.GetType().Name}: {e.Message}.{BuildNativeFailureDetail(e)} If this persists, disable 'Use native FFmpeg binding' or install matching shared FFmpeg libraries.");
+		static void RecordNativeSuccess() {
+			// Successful native work needs no health counter. File-specific
+			// failures never disable the native binding globally.
 		}
 
-		internal static void RecordNativeFailure(string file, Exception e) {
-			if (IsNativeBindingLoadFailure(e)) {
-				DisableNativeBindingForSession(file, e, "Native FFmpeg binding could not call the loaded FFmpeg libraries");
+		static IEnumerable<Exception> EnumerateExceptionChain(
+			Exception exception) {
+			for (Exception? current = exception;
+				current != null;
+				current = current.InnerException) {
+				yield return current;
+			}
+		}
+
+		static bool IsNativeBindingAutoGenFailure(Exception e) =>
+			EnumerateExceptionChain(e).Any(current =>
+				current is NotSupportedException &&
+				(current.Message.Contains(
+					"Specified method is not supported",
+					StringComparison.OrdinalIgnoreCase) ||
+					(current.StackTrace?.Contains(
+						"FFmpeg.AutoGen.DynamicallyLoadedBindings",
+						StringComparison.Ordinal) ?? false)));
+
+		static bool IsNativeBindingInfrastructureFailure(Exception e) =>
+			EnumerateExceptionChain(e).Any(current =>
+				current is DllNotFoundException or
+					EntryPointNotFoundException or
+					BadImageFormatException);
+
+		internal static bool IsNativeBindingLoadFailure(Exception e) =>
+			IsNativeBindingAutoGenFailure(e) ||
+			IsNativeBindingInfrastructureFailure(e);
+
+		static void DisableNativeBindingForSession(
+			string file,
+			Exception e,
+			string prefix) {
+			if (Interlocked.Exchange(
+				ref NativeDisabledForSession,
+				1) != 0) {
 				return;
 			}
-			if (!IsNativeBindingInfrastructureFailure(e))
-				return;
 
-			int failures = Interlocked.Increment(ref NativeConsecutiveFailures);
-			if (failures >= NativeFailureThreshold) {
-				DisableNativeBindingForSession(file, e, $"Native FFmpeg binding failed on {failures} consecutive files");
+			Logger.Instance.Info(
+				$"{prefix}; using process mode for the rest of this " +
+				$"session. Last error on '{file}': " +
+				$"{e.GetType().Name}: {e.Message}." +
+				$"{BuildNativeFailureDetail(e)} If this persists, " +
+				$"disable 'Use native FFmpeg binding' or install " +
+				$"matching shared FFmpeg libraries.");
+		}
+
+		internal static void RecordNativeFailure(
+			string file,
+			Exception e) {
+			if (IsNativeBindingInfrastructureFailure(e)) {
+				DisableNativeBindingForSession(
+					file,
+					e,
+					"Native FFmpeg binding libraries are unavailable " +
+					"or ABI-incompatible");
 				return;
 			}
 
-			Logger.Instance.Info($"Native FFmpeg binding failure observed on '{file}' ({failures}/{NativeFailureThreshold}); keeping native enabled until repeated failures. Reason: {e.GetType().Name}: {e.Message}{BuildNativeFailureDetail(e)}");
+			if (IsNativeBindingAutoGenFailure(e)) {
+				DisableNativeBindingForSession(
+					file,
+					e,
+					"Native FFmpeg binding could not call the loaded " +
+					"FFmpeg libraries");
+			}
+
+			// Decode, seek, conversion, malformed-file, and other media
+			// failures stay local to the current operation. They must never
+			// disable native mode for unrelated files.
 		}
 
 
@@ -235,9 +274,6 @@ namespace VDF.Core.FFTools {
 		}
 
 		sealed class HardwareDecodeCodecStats {
-			public int ConsecutiveFailures;
-			public int ConsecutiveSoftwareFrameFallbacks;
-			public int HardwareSuccesses;
 			public bool Bypass;
 			public string Reason = string.Empty;
 		}
@@ -534,100 +570,209 @@ namespace VDF.Core.FFTools {
 			return string.IsNullOrWhiteSpace(stream?.CodecName) ? null : stream.CodecName.Trim();
 		}
 
-		static string? NormalizeHardwareCodecName(string? codecName) =>
-			string.IsNullOrWhiteSpace(codecName) ? null : codecName.Trim().ToLowerInvariant();
+		static string? NormalizeHardwareCodecName(
+			string? codecName) =>
+				string.IsNullOrWhiteSpace(codecName)
+					? null
+					: codecName.Trim().ToLowerInvariant();
 
-		static string? GetHardwareDecodeCodecKey(string? codecName) {
-			string? codec = NormalizeHardwareCodecName(codecName);
-			if (codec == null || HardwareAccelerationMode == FFHardwareAccelerationMode.none)
+		static string? NormalizeHardwareFamilyKey(
+			string? familyKey) =>
+				string.IsNullOrWhiteSpace(familyKey)
+					? null
+					: familyKey.Trim().ToLowerInvariant();
+
+		static string? GetHardwareDecodeCapabilityKey(
+			string? codecName,
+			string? familyKey,
+			out string description) {
+			description = string.Empty;
+			if (HardwareAccelerationMode ==
+				FFHardwareAccelerationMode.none) {
 				return null;
-			return $"{HardwareAccelerationMode}|{codec}";
+			}
+
+			string? family =
+				NormalizeHardwareFamilyKey(familyKey);
+			if (family != null) {
+				description = $"family '{family}'";
+				return
+					$"{HardwareAccelerationMode}|family|{family}";
+			}
+
+			string? codec =
+				NormalizeHardwareCodecName(codecName);
+			if (codec == null)
+				return null;
+
+			description = $"codec '{codec}'";
+			return
+				$"{HardwareAccelerationMode}|codec|{codec}";
 		}
 
-		internal static bool ShouldBypassHardwareDecodeForCodec(string? codecName, out string reason) {
+		static bool TryGetHardwareDecodeBypass(
+			string? key,
+			out string reason) {
 			reason = string.Empty;
-			string? key = GetHardwareDecodeCodecKey(codecName);
 			if (key == null)
 				return false;
+
 			lock (HardwareDecodeCodecStateLock) {
-				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats) || !stats.Bypass)
+				if (!HardwareDecodeCodecStatsByModeAndCodec
+					.TryGetValue(
+						key,
+						out HardwareDecodeCodecStats? stats) ||
+					!stats.Bypass) {
 					return false;
+				}
+
 				reason = stats.Reason;
 				return true;
 			}
 		}
 
-		internal static void RecordHardwareDecodeSuccessForCodec(string? codecName) {
-			string? key = GetHardwareDecodeCodecKey(codecName);
-			if (key == null)
-				return;
-			lock (HardwareDecodeCodecStateLock) {
-				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
-					stats = new HardwareDecodeCodecStats();
-					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
+		internal static bool ShouldBypassHardwareDecodeForCodec(
+			string? codecName,
+			out string reason,
+			string? familyKey = null) {
+			string? exactKey =
+				GetHardwareDecodeCapabilityKey(
+					codecName,
+					familyKey,
+					out _);
+
+			if (TryGetHardwareDecodeBypass(
+				exactKey,
+				out reason)) {
+				return true;
+			}
+
+			// A codec-only explicit capability failure applies to all of
+			// that codec's families. A family-specific failure does not.
+			if (!string.IsNullOrWhiteSpace(familyKey)) {
+				string? codecKey =
+					GetHardwareDecodeCapabilityKey(
+						codecName,
+						null,
+						out _);
+
+				if (TryGetHardwareDecodeBypass(
+					codecKey,
+					out reason)) {
+					return true;
 				}
-				if (!stats.Bypass) {
-					stats.ConsecutiveFailures = 0;
-					stats.ConsecutiveSoftwareFrameFallbacks = 0;
-					stats.HardwareSuccesses++;
+			}
+
+			reason = string.Empty;
+			return false;
+		}
+
+		internal static void RecordHardwareDecodeSuccessForCodec(
+			string? codecName,
+			string? familyKey = null) {
+			string? exactKey =
+				GetHardwareDecodeCapabilityKey(
+					codecName,
+					familyKey,
+					out _);
+			string? codecKey =
+				GetHardwareDecodeCapabilityKey(
+					codecName,
+					null,
+					out _);
+
+			lock (HardwareDecodeCodecStateLock) {
+				bool cleared = false;
+
+				if (exactKey != null)
+					cleared |=
+						HardwareDecodeCodecStatsByModeAndCodec
+							.Remove(exactKey);
+
+				if (codecKey != null &&
+					!string.Equals(
+						codecKey,
+						exactKey,
+						StringComparison.OrdinalIgnoreCase)) {
+					cleared |=
+						HardwareDecodeCodecStatsByModeAndCodec
+							.Remove(codecKey);
+				}
+
+				if (cleared) {
+					Logger.Instance.Info(
+						$"FFmpeg hardware decode succeeded for " +
+						$"codec '{NormalizeHardwareCodecName(codecName)}' " +
+						$"on {HardwareAccelerationMode}; cleared a stale " +
+						$"capability bypass.");
 				}
 			}
 		}
 
-		internal static void RecordD3D11SoftwareFrameFallbackForCodec(string? codecName, string reason) {
-			string? codec = NormalizeHardwareCodecName(codecName);
-			string? key = GetHardwareDecodeCodecKey(codec);
-			if (key == null)
-				return;
+		internal static void RecordD3D11SoftwareFrameFallbackForCodec(
+			string? codecName,
+			string reason,
+			string? familyKey = null) {
+			string scope =
+				NormalizeHardwareFamilyKey(familyKey) ??
+				NormalizeHardwareCodecName(codecName) ??
+				"unknown";
 
-			lock (HardwareDecodeCodecStateLock) {
-				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
-					stats = new HardwareDecodeCodecStats();
-					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
-				}
-				if (stats.Bypass || stats.HardwareSuccesses > 0)
-					return;
-
-				stats.ConsecutiveSoftwareFrameFallbacks++;
-				string normalizedReason = NormalizeLogReason(reason, 240);
-				if (stats.ConsecutiveSoftwareFrameFallbacks < D3D11SoftwareFrameCodecBypassMinimumFailures) {
-					Logger.Instance.Info($"FFmpeg D3D11 software-frame fallback observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveSoftwareFrameFallbacks}/{D3D11SoftwareFrameCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated software-frame fallbacks and no hardware success. Reason: {normalizedReason}");
-					return;
-				}
-
-				stats.Bypass = true;
-				stats.Reason = $"codec '{codec}' on {HardwareAccelerationMode}: repeated D3D11 software-frame fallbacks with no hardware decode success: {normalizedReason}";
-				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveSoftwareFrameFallbacks} repeated D3D11 software-frame fallback(s) and no hardware decode success: {normalizedReason}");
-			}
+			// Receiving software frames from a requested D3D11 decoder is
+			// handled by retrying this operation with CPU decode. Repetition
+			// does not prove the codec/profile is unsupported and must not
+			// create a session-wide bypass.
+			Logger.Instance.Info(
+				$"FFmpeg D3D11 software-frame fallback observed for " +
+				$"'{scope}' on {HardwareAccelerationMode}; retrying only " +
+				$"the current operation with CPU decode and keeping " +
+				$"hardware enabled. Reason: " +
+				$"{NormalizeLogReason(reason, 240)}");
 		}
 
-		internal static void RecordHardwareDecodeFailureForCodec(string? codecName, string reason) {
+		internal static void RecordHardwareDecodeFailureForCodec(
+			string? codecName,
+			string reason,
+			string? familyKey = null) {
 			if (!IsPersistentHardwareCodecFailure(reason))
 				return;
 
-			string? codec = NormalizeHardwareCodecName(codecName);
-			string? key = GetHardwareDecodeCodecKey(codec);
+			string? key =
+				GetHardwareDecodeCapabilityKey(
+					codecName,
+					familyKey,
+					out string description);
 			if (key == null)
 				return;
+
+			string normalizedReason =
+				NormalizeLogReason(reason, 240);
+
 			lock (HardwareDecodeCodecStateLock) {
-				if (!HardwareDecodeCodecStatsByModeAndCodec.TryGetValue(key, out HardwareDecodeCodecStats? stats)) {
-					stats = new HardwareDecodeCodecStats();
-					HardwareDecodeCodecStatsByModeAndCodec.Add(key, stats);
-				}
-				if (stats.Bypass)
-					return;
-
-				stats.ConsecutiveFailures++;
-				string normalizedReason = NormalizeLogReason(reason, 240);
-				if (stats.ConsecutiveFailures < HardwareDecodeCodecBypassMinimumFailures) {
-					Logger.Instance.Info($"FFmpeg hardware codec support failure observed for codec '{codec}' on {HardwareAccelerationMode} ({stats.ConsecutiveFailures}/{HardwareDecodeCodecBypassMinimumFailures}); keeping hardware enabled for this codec until repeated support failures. Reason: {normalizedReason}");
+				if (HardwareDecodeCodecStatsByModeAndCodec
+					.TryGetValue(
+						key,
+						out HardwareDecodeCodecStats? existing) &&
+					existing.Bypass) {
 					return;
 				}
 
-				stats.Bypass = true;
-				stats.Reason = $"codec '{codec}' on {HardwareAccelerationMode}: {normalizedReason}";
-				Logger.Instance.Info($"FFmpeg hardware decode will use CPU decode for codec '{codec}' on {HardwareAccelerationMode} for the rest of this session after {stats.ConsecutiveFailures} repeated codec support failure(s): {normalizedReason}");
+				HardwareDecodeCodecStatsByModeAndCodec[key] =
+					new HardwareDecodeCodecStats {
+						Bypass = true,
+						Reason =
+							$"{description} on " +
+							$"{HardwareAccelerationMode}: " +
+							normalizedReason,
+					};
 			}
+
+			Logger.Instance.Info(
+				$"FFmpeg hardware decode will use CPU decode for " +
+				$"{description} on {HardwareAccelerationMode} for the " +
+				$"rest of this session because FFmpeg explicitly " +
+				$"reported an unsupported capability: " +
+				$"{normalizedReason}");
 		}
 
 		static bool ShouldBypassGrayByteHardwareForFamily(string? familyKey) {
@@ -789,7 +934,10 @@ namespace VDF.Core.FFTools {
 		}
 
 		static string DescribeProcessGrayByteHardwarePolicy(string? familyKey, string? codecName) {
-			if (ShouldBypassHardwareDecodeForCodec(codecName, out _))
+			if (ShouldBypassHardwareDecodeForCodec(
+				codecName,
+				out _,
+				familyKey))
 				return "hardware-decode-codec-bypass";
 			if (ShouldBypassGrayByteHardwareForFamily(familyKey))
 				return "hardware-decode-failure-cpu-family-bypass";
@@ -820,7 +968,9 @@ namespace VDF.Core.FFTools {
 			if (!hasHardwareContext)
 				return false;
 
-			return value.Contains("not supported", StringComparison.Ordinal)
+			return value.Contains("doesn't support", StringComparison.Ordinal)
+				|| value.Contains("does not support", StringComparison.Ordinal)
+				|| value.Contains("not supported", StringComparison.Ordinal)
 				|| value.Contains("unsupported", StringComparison.Ordinal)
 				|| value.Contains("failed", StringComparison.Ordinal)
 				|| value.Contains("failure", StringComparison.Ordinal)
@@ -833,24 +983,68 @@ namespace VDF.Core.FFTools {
 				|| value.Contains("error", StringComparison.Ordinal);
 		}
 
-		internal static bool IsPersistentHardwareCodecFailure(string? text) {
+		internal static bool IsPersistentHardwareCodecFailure(
+			string? text) {
 			if (!IsHardwareDecodeFailure(text))
 				return false;
 
 			string value = text!.ToLowerInvariant();
-			return value.Contains("doesn't support hardware", StringComparison.Ordinal)
-				|| value.Contains("does not support hardware", StringComparison.Ordinal)
-				|| value.Contains("not supported", StringComparison.Ordinal)
-				|| value.Contains("unsupported", StringComparison.Ordinal)
-				|| value.Contains("failed setup for format", StringComparison.Ordinal)
-				|| value.Contains("hwaccel initialisation", StringComparison.Ordinal)
-				|| value.Contains("hwaccel initialization", StringComparison.Ordinal)
-				|| value.Contains("no device available for decoder", StringComparison.Ordinal)
-				|| value.Contains("device setup failed for decoder", StringComparison.Ordinal)
-				|| value.Contains("av_hwdevice_ctx_create", StringComparison.Ordinal)
-				|| value.Contains("failed to create", StringComparison.Ordinal)
-				|| value.Contains("function not implemented", StringComparison.Ordinal)
-				|| value.Contains("not implemented", StringComparison.Ordinal);
+
+			return
+				value.Contains(
+					"doesn't support hardware accelerated",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"does not support hardware accelerated",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"unsupported hardware codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"unsupported codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"codec is not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"codec not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"does not support this codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"doesn't support this codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"does not support the codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"doesn't support the codec",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"unsupported profile",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"profile is not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"profile not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"unsupported pixel format",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"pixel format is not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"pixel format not supported",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"not supported by this device",
+					StringComparison.Ordinal) ||
+				value.Contains(
+					"not supported by the device",
+					StringComparison.Ordinal);
 		}
 
 		static bool ShouldUseD3D11GrayByteGpuScale(AVHWDeviceType deviceType, ref string hardwarePolicy, out string unavailableReason) {
@@ -1178,7 +1372,10 @@ namespace VDF.Core.FFTools {
 				}
 				else {
 					hardwareDeviceType = GetConfiguredGrayByteHardwareDeviceType(out hardwarePolicy);
-					if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && ShouldBypassHardwareDecodeForCodec(codecName, out _)) {
+					if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && ShouldBypassHardwareDecodeForCodec(
+						codecName,
+						out _,
+						familyKey)) {
 						hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 						hardwarePolicy = "hardware-decode-codec-bypass";
 					}
@@ -1253,7 +1450,9 @@ namespace VDF.Core.FFTools {
 				if (ShouldLogNativeSuccessTiming(extendedLogging))
 					LogNativeBatchTiming(videoFile.Path, GetD3D11GrayByteAdaptiveFamilyKey(videoFile) ?? string.Empty, vsd.IsHardwareDecode, GetEffectiveGrayByteHardwarePolicy(hardwarePolicy, useD3D11GpuScale, nativeTiming), batchMode, requests.Count, nativeTiming, batchSw.ElapsedMilliseconds);
 				if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
-					RecordHardwareDecodeSuccessForCodec(codecName);
+					RecordHardwareDecodeSuccessForCodec(
+						codecName,
+						familyKey);
 				if (useD3D11GpuScale && vsd.IsHardwareDecode) {
 					long d3d11TotalMs = batchSw.ElapsedMilliseconds;
 					ObserveD3D11GrayByteConcurrency(nativeTiming);
@@ -1283,7 +1482,10 @@ namespace VDF.Core.FFTools {
 					return false;
 				}
 				if (e is D3D11SoftwareFrameFallbackException && !forceCpuDecode) {
-					RecordD3D11SoftwareFrameFallbackForCodec(codecName, e.Message);
+					RecordD3D11SoftwareFrameFallbackForCodec(
+						codecName,
+						e.Message,
+						familyKey);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction detected software frames under D3D11 on '{videoFile.Path}', retrying native batch with CPU decode. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
@@ -1291,7 +1493,10 @@ namespace VDF.Core.FFTools {
 				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
 				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
-					RecordHardwareDecodeFailureForCodec(codecName, failureText);
+					RecordHardwareDecodeFailureForCodec(
+						codecName,
+						failureText,
+						familyKey);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction hit a hardware decode failure on '{videoFile.Path}', retrying native batch with CPU decode. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "hardware-decode-failure-cpu-retry");
@@ -1387,7 +1592,10 @@ namespace VDF.Core.FFTools {
 			bool isGrayByte = settings.GrayScale == 1;
 			string hardwarePolicy = "unresolved";
 			bool bypassHardwareForFamily = isGrayByte && ShouldBypassGrayByteHardwareForFamily(settings.HardwareFamilyKey);
-			bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(settings.HardwareCodecName, out _);
+			bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(
+				settings.HardwareCodecName,
+				out _,
+				settings.HardwareFamilyKey);
 			bool enableHardwareAcceleration;
 			if (settings.SoftwareDecodeOnly) {
 				hardwarePolicy = "software-decode-only";
@@ -1475,7 +1683,9 @@ namespace VDF.Core.FFTools {
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
-							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
+							RecordHardwareDecodeSuccessForCodec(
+							settings.HardwareCodecName,
+							settings.HardwareFamilyKey);
 						RecordNativeSuccess();
 						return outBuf;
 					}
@@ -1488,7 +1698,9 @@ namespace VDF.Core.FFTools {
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, false, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
 						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
-							RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
+							RecordHardwareDecodeSuccessForCodec(
+							settings.HardwareCodecName,
+							settings.HardwareFamilyKey);
 						RecordNativeSuccess();
 						return jpeg;
 					}
@@ -1501,7 +1713,10 @@ namespace VDF.Core.FFTools {
 				}
 				else if (!settings.ForceCpuDecode && enableHardwareAcceleration && nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
-					RecordHardwareDecodeFailureForCodec(settings.HardwareCodecName, failureText);
+					RecordHardwareDecodeFailureForCodec(
+					settings.HardwareCodecName,
+					failureText,
+					settings.HardwareFamilyKey);
 					Logger.Instance.Info($"Native FFmpeg extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
 					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging, timeoutMilliseconds);
 				}
@@ -1643,7 +1858,9 @@ namespace VDF.Core.FFTools {
 					bytes = null;
 				}
 				if (bytes != null && processAttemptedHardware)
-					RecordHardwareDecodeSuccessForCodec(settings.HardwareCodecName);
+					RecordHardwareDecodeSuccessForCodec(
+							settings.HardwareCodecName,
+							settings.HardwareFamilyKey);
 			}
 			catch (Exception e) {
 				errOut.AppendLine(e.Message);
@@ -1665,7 +1882,10 @@ namespace VDF.Core.FFTools {
 				bool processHardwareFailure = processAttemptedHardware && IsHardwareDecodeFailure(ffmpegError);
 				if (processHardwareFailure) {
 					MarkConfiguredHardwareDecodeFailure(ffmpegError);
-					RecordHardwareDecodeFailureForCodec(settings.HardwareCodecName, ffmpegError);
+					RecordHardwareDecodeFailureForCodec(
+						settings.HardwareCodecName,
+						ffmpegError,
+						settings.HardwareFamilyKey);
 				}
 				if (!settings.ForceCpuDecode && processHardwareFailure && bytes == null) {
 					Logger.Instance.Info($"FFmpeg process extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(ffmpegError, 240)}");
