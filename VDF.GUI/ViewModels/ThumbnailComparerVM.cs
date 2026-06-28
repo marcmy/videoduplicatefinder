@@ -754,30 +754,25 @@ namespace VDF.GUI.ViewModels {
 						cancellationToken));
 			}
 
-			FrameAlignmentResult? Best() =>
-				FrameAlignment.FindBest(reference, candidates);
+			IReadOnlyList<FrameAlignmentResult> Results() =>
+				FrameAlignment.MeasureCandidates(reference, candidates);
 
-			bool ShouldApplyNonZero(
-				FrameAlignmentResult zero,
-				FrameAlignmentResult? candidate) =>
-				candidate.HasValue &&
-				candidate.Value.Offset != 0 &&
-				FrameAlignment.IsClearImprovementOverZero(
-					zero,
-					candidate.Value);
+			FrameAlignmentResult? Best(
+				IReadOnlyList<FrameAlignmentResult> results) =>
+				FrameAlignment.FindBestResult(results);
 
 			// Zero is the baseline. Only a nearly exact zero match ends the
 			// search immediately; otherwise candidates are judged by their
 			// relative improvement over zero.
 			AddCandidates(new[] { 0 });
-			FrameAlignmentResult? zeroResult = Best();
+			IReadOnlyList<FrameAlignmentResult> zeroResults = Results();
+			FrameAlignmentResult? zeroResult = Best(zeroResults);
 			if (!zeroResult.HasValue)
 				return 0;
 			if (FrameAlignment.IsNearlyExact(zeroResult.Value))
 				return 0;
 
 			bool budgetExpired = false;
-			int batchIndex = 0;
 
 			foreach (IReadOnlyList<int> batch in
 				FrameAlignment.BuildProgressiveOffsetBatches(
@@ -790,21 +785,6 @@ namespace VDF.GUI.ViewModels {
 				}
 
 				AddCandidates(batch);
-				batchIndex++;
-
-				// Search the complete local ±4-frame neighborhood before
-				// accepting a nearby shift. Farther shifts are judged after
-				// the progressive pass and refinement.
-				if (batchIndex >= 3) {
-					FrameAlignmentResult? localBest = Best();
-					if (localBest.HasValue &&
-						Math.Abs(localBest.Value.Offset) <= 4 &&
-						ShouldApplyNonZero(
-							zeroResult.Value,
-							localBest)) {
-						return localBest.Value.Offset;
-					}
-				}
 			}
 
 			for (int round = 0;
@@ -818,7 +798,13 @@ namespace VDF.GUI.ViewModels {
 					break;
 				}
 
-				FrameAlignmentResult? best = Best();
+				IReadOnlyList<FrameAlignmentResult> currentResults =
+					Results();
+				FrameAlignmentResult? best =
+					FrameAlignment.FindBestClearImprovementOverZero(
+						zeroResult.Value,
+						currentResults) ??
+					Best(currentResults);
 				if (!best.HasValue)
 					break;
 
@@ -834,13 +820,58 @@ namespace VDF.GUI.ViewModels {
 				AddCandidates(refinementOffsets);
 			}
 
-			FrameAlignmentResult? finalBest = Best();
-
-			return ShouldApplyNonZero(
+			IReadOnlyList<FrameAlignmentResult> finalResults = Results();
+			FrameAlignmentResult? finalBest =
+				FrameAlignment.FindBestClearImprovementOverZero(
+					zeroResult.Value,
+					finalResults);
+			LogAutoAlignDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				finalResults,
 				zeroResult.Value,
-				finalBest)
-					? finalBest!.Value.Offset
-					: 0;
+				finalBest,
+				budgetExpired,
+				searchStopwatch.Elapsed);
+
+			return finalBest?.Offset ?? 0;
+		}
+
+		static void LogAutoAlignDiagnostics(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			IReadOnlyList<FrameAlignmentResult> results,
+			FrameAlignmentResult zero,
+			FrameAlignmentResult? selected,
+			bool budgetExpired,
+			TimeSpan elapsed) {
+			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
+				return;
+
+			static string Format(FrameAlignmentResult result) =>
+				$"{result.Offset}:h={result.HashDistance},mad=" +
+				$"{result.MeanAbsoluteDifference:F4}";
+
+			string resultText = string.Join(
+				"; ",
+				results
+					.OrderBy(result => result.Offset)
+					.Select(Format));
+			string selectedText =
+				selected.HasValue ? Format(selected.Value) : "0";
+
+			VDF.Core.Utils.Logger.Instance.Info(
+				$"Thumbnail comparer auto-align " +
+				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
+				$"vs " +
+				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
+				$"base={baseIndex}: zero={Format(zero)}, " +
+				$"selected={selectedText}, " +
+				$"budgetExpired={budgetExpired}, " +
+				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
+				$"candidates=[{resultText}]");
 		}
 
 		List<FrameAlignmentCandidate> ExtractAlignmentCandidates(
