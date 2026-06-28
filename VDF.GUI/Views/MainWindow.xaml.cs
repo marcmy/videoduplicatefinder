@@ -40,7 +40,7 @@ namespace VDF.GUI.Views {
 		bool keepBackupFile;
 		bool hasExited;
 		ScrollViewer? resultsScrollViewer;
-		double lastResultsThumbnailColumnWidth = double.NaN;
+		bool resultsColumnWidthsRestored;
 
 		public readonly Core.FFTools.FFHardwareAccelerationMode InitialHwMode;
 		public MainWindow() {
@@ -49,7 +49,7 @@ namespace VDF.GUI.Views {
 			App.Lang.CurrentLanguage = SettingsFile.Instance.LanguageCode;
 
 			InitializeComponent();
-			ConfigureResultsGridScrolling();
+			ConfigureResultsGrid();
 			Closing += MainWindow_Closing;
 			Opened += MainWindow_Opened;
 			//Don't use this Window.OnClosing event,
@@ -102,64 +102,98 @@ namespace VDF.GUI.Views {
 			ShowAlgoView();
 		}
 
-		void ConfigureResultsGridScrolling() {
+		static readonly IReadOnlyDictionary<string, double>
+			DefaultResultsColumnWidthWeights =
+				new Dictionary<string, double>(
+					StringComparer.Ordinal) {
+						["Thumbnail"] = 0.43d,
+						["Path"] = 0.21d,
+						["Duration"] = 0.09d,
+						["Format"] = 0.09d,
+						["Audio"] = 0.08d,
+						["Similarity"] = 0.05d,
+						["ClipOffset"] = 0.05d,
+					};
+
+		void ConfigureResultsGrid() {
 			var grid =
 				this.FindControl<DataGrid>("dataGridGrouping")!;
 
 			// DataGrid's default wheel path advances through virtualized rows.
-			// With grouped results and large rows this can pause at realization
-			// boundaries even though thumb dragging remains smooth. Intercept the
-			// wheel in the tunnel phase and move the underlying ScrollViewer by
-			// pixels instead.
+			// With grouped results this can pause at realization boundaries even
+			// though thumb dragging remains smooth. Move the underlying
+			// ScrollViewer by pixels instead.
 			grid.AddHandler(
 				PointerWheelChangedEvent,
 				OnResultsGridPointerWheelChanged,
 				RoutingStrategies.Tunnel,
 				handledEventsToo: true);
 
-			// Keep one deterministic row height for virtualization, but scale it
-			// when the user resizes the thumbnail column. This restores the old
-			// useful thumbnail growth without allowing each realized row to
-			// independently change the scroll extent.
-			grid.LayoutUpdated += (_, _) =>
-				UpdateResultsRowHeight(grid);
-			UpdateResultsRowHeight(grid);
+			// Apply persisted pixel widths only after the grid has a real
+			// viewport. On first run, divide that viewport proportionally so no
+			// auto/star column can consume the entire window.
+			grid.Loaded += (_, _) =>
+				RestoreResultsColumnWidths(grid);
 		}
 
-		void UpdateResultsRowHeight(DataGrid grid) {
-			var thumbnailColumn = grid.Columns.FirstOrDefault(
-				column =>
-					string.Equals(
-						column.Tag as string,
-						"Thumbnail",
-						StringComparison.Ordinal));
-
-			if (thumbnailColumn == null)
+		void RestoreResultsColumnWidths(DataGrid grid) {
+			if (resultsColumnWidthsRestored)
 				return;
 
-			double width = thumbnailColumn.ActualWidth;
-			if (!double.IsFinite(width) || width <= 0)
-				return;
+			double availableWidth = Math.Max(
+				600d,
+				grid.Bounds.Width - 54d);
+			var saved =
+				SettingsFile.Instance.ResultsColumnWidths;
 
-			if (double.IsFinite(lastResultsThumbnailColumnWidth) &&
-				Math.Abs(
-					width -
-					lastResultsThumbnailColumnWidth) < 0.5d) {
-				return;
+			foreach (DataGridColumn column in grid.Columns) {
+				if (column.Tag is not string key ||
+					!DefaultResultsColumnWidthWeights.TryGetValue(
+						key,
+						out double weight)) {
+					continue;
+				}
+
+				double width;
+				if (!saved.TryGetValue(key, out width) ||
+					!double.IsFinite(width) ||
+					width < 40d) {
+					width = availableWidth * weight;
+				}
+
+				column.Width = new DataGridLength(
+					Math.Clamp(width, 40d, 2400d),
+					DataGridLengthUnitType.Pixel);
 			}
 
-			lastResultsThumbnailColumnWidth = width;
+			resultsColumnWidthsRestored = true;
+		}
 
-			// A quarter-ish of the column width gives multi-frame strips enough
-			// height to inspect while still keeping a practical number of rows
-			// visible. The bounds prevent absurdly tiny or giant result rows.
-			double rowHeight = Math.Clamp(
-				Math.Round(width * 0.28d + 12d),
-				96d,
-				260d);
+		void SaveResultsColumnWidths() {
+			var grid =
+				this.FindControl<DataGrid>("dataGridGrouping");
+			if (grid == null)
+				return;
 
-			if (Math.Abs(grid.RowHeight - rowHeight) >= 0.5d)
-				grid.RowHeight = rowHeight;
+			var widths =
+				new Dictionary<string, double>(
+					SettingsFile.Instance.ResultsColumnWidths,
+					StringComparer.Ordinal);
+
+			foreach (DataGridColumn column in grid.Columns) {
+				if (!column.IsVisible ||
+					column.Tag is not string key ||
+					!DefaultResultsColumnWidthWeights.ContainsKey(key)) {
+					continue;
+				}
+
+				double width = column.ActualWidth;
+				if (double.IsFinite(width) && width >= 40d)
+					widths[key] = Math.Round(width, 2);
+			}
+
+			SettingsFile.Instance.ResultsColumnWidths =
+				widths;
 		}
 
 		void OnResultsGridPointerWheelChanged(
@@ -294,6 +328,7 @@ namespace VDF.GUI.Views {
 		}
 
 		void SaveWindowPlacement() {
+			SaveResultsColumnWidths();
 			var settings = SettingsFile.Instance;
 			settings.MainWindowMaximized = WindowState == WindowState.Maximized;
 			// Size/position are only meaningful in the normal state; keep the last

@@ -28,6 +28,7 @@ namespace VDF.GUI.Data {
 	/// </summary>
 	[JsonSerializable(typeof(SettingsFile))]
 	[JsonSerializable(typeof(Dictionary<string, string>))]
+	[JsonSerializable(typeof(Dictionary<string, double>))]
 	[JsonSerializable(typeof(CustomSelectionData))]
 	[JsonSerializable(typeof(CleanupDryRunReport))]
 	internal partial class GuiJsonContext : JsonSerializerContext { }

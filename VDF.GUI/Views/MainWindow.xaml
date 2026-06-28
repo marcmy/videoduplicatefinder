@@ -645,10 +645,10 @@
                                         Name="dataGridGrouping"
                                         CanUserResizeColumns="True"
                                         LoadingRowGroup="OnLoadingRowGroup"
-                                        RowHeight="120">
-                                        <!-- RowHeight is kept deterministic for virtualization, but
-                                             code-behind scales it with the thumbnail column width so
-                                             thumbnails remain useful and respond to column resizing. -->
+                                        RowHeight="88">
+                                        <!-- Keep one compact, deterministic item extent. Column
+                                             resizing must never change row height or the virtualized
+                                             scroll extent underneath the scrollbar. -->
                                         <!-- KeyBindings are applied programmatically by KeyboardShortcutManager -->
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn>
@@ -672,16 +672,16 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+                                            <DataGridTemplateColumn Width="320" Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
                                                         <Grid>
                                                             <!-- Skeleton shimmer while thumbnail is loading -->
                                                             <Border Classes="skeleton-shimmer"
-                                                                    Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ThumbnailMaxWidth}"
-                                                                    Margin="4"
+                                                                    Height="84"
+                                                                    Margin="2"
                                                                     HorizontalAlignment="Stretch"
-                                                                    VerticalAlignment="Stretch"
+                                                                    VerticalAlignment="Center"
                                                                     Background="#18808080">
                                                                 <Border.IsVisible>
                                                                     <MultiBinding Converter="{StaticResource ShowSkeletonConverter}">
@@ -691,17 +691,18 @@
                                                                 </Border.IsVisible>
                                                             </Border>
                                                             <!-- Actual thumbnail.
-                                                                 The fixed, bounded DataGrid row height now prevents the runaway
-                                                                 single-image growth that originally required DownOnly, so allow
-                                                                 normal upscaling to use the full resized thumbnail cell. -->
+                                                                 Fit the compact row without enlarging the cached bitmap beyond
+                                                                 its native resolution; widening the column reveals more width
+                                                                 but never inflates row height or blurs the image. -->
                                                             <Image
                                                                 Name="ThumbnailImage"
+                                                                Height="84"
                                                                 Margin="2"
                                                                 Source="{Binding Thumbnail}"
                                                                 Stretch="Uniform"
-                                                                StretchDirection="Both"
-                                                                HorizontalAlignment="Stretch"
-                                                                VerticalAlignment="Stretch"
+                                                                StretchDirection="DownOnly"
+                                                                HorizontalAlignment="Left"
+                                                                VerticalAlignment="Center"
                                                                 ToolTip.Tip="{Binding ItemInfo.Path}">
                                                                 <i:Interaction.Behaviors>
                                                                     <ic:ExecuteCommandOnDoubleTappedBehavior Command="{Binding $parent[DataGrid].((vm:MainWindowVM)DataContext).ThumbnailDoubleClickCommand}" />
@@ -712,7 +713,7 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTemplateColumn
-                                                Width="1*"
+                                                Width="220"
                                                 Header="Path"
                                                 Tag="Path"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}">
@@ -725,7 +726,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                                            <DataGridTemplateColumn Width="100" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.DurationCompact]}"
@@ -807,7 +808,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                                            <DataGridTemplateColumn Width="100" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.VideoCompact]}"
@@ -871,7 +872,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="1*" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
+                                            <DataGridTemplateColumn Width="90" Tag="Audio" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.AudioCompact]}"
@@ -935,8 +936,9 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTemplateColumn
-                                                Width="1*"
+                                                Width="80"
                                                 Header="Similarity"
+                                                Tag="Similarity"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
@@ -958,11 +960,12 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTextColumn
-                                                Width="1*"
+                                                Width="90"
                                                 x:DataType="vm:DuplicateItemVM"
                                                 Binding="{Binding ItemInfo.PartialClipOffsetDisplay, TargetNullValue=''}"
                                                 Header="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.ClipOffset]}"
-                                                IsReadOnly="True" />
+                                                IsReadOnly="True"
+                                                Tag="ClipOffset" />
                                         </DataGrid.Columns>
                                         <DataGrid.ContextMenu>
                                             <ContextMenu>
