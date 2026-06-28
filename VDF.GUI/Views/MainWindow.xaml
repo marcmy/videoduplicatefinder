@@ -644,6 +644,7 @@
                                     <DataGrid
                                         Name="dataGridGrouping"
                                         CanUserResizeColumns="True"
+                                        HorizontalScrollBarVisibility="Disabled"
                                         LoadingRowGroup="OnLoadingRowGroup"
                                         RowHeight="88">
                                         <!-- Keep one compact, deterministic item extent. Column
@@ -672,7 +673,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="320" Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+                                            <DataGridTemplateColumn Width="43*" Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
                                                         <Grid>
@@ -713,7 +714,7 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTemplateColumn
-                                                Width="220"
+                                                Width="21*"
                                                 Header="Path"
                                                 Tag="Path"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}">
@@ -726,7 +727,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="100" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                                            <DataGridTemplateColumn Width="9*" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.DurationCompact]}"
@@ -808,7 +809,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="100" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                                            <DataGridTemplateColumn Width="9*" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.VideoCompact]}"
@@ -872,7 +873,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="90" Tag="Audio" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
+                                            <DataGridTemplateColumn Width="8*" Tag="Audio" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.AudioCompact]}"
@@ -936,7 +937,7 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTemplateColumn
-                                                Width="80"
+                                                Width="5*"
                                                 Header="Similarity"
                                                 Tag="Similarity"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}">
@@ -960,7 +961,7 @@
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
                                             <DataGridTextColumn
-                                                Width="90"
+                                                Width="5*"
                                                 x:DataType="vm:DuplicateItemVM"
                                                 Binding="{Binding ItemInfo.PartialClipOffsetDisplay, TargetNullValue=''}"
                                                 Header="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.ClipOffset]}"
