@@ -192,7 +192,7 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
-	public void NearbyModerateImprovement_CanOverrideZero() {
+	public void NearbyTinyImprovement_DoesNotOverrideZero() {
 		var zero = new FrameAlignmentResult(
 			Offset: 0,
 			HashDistance: 5,
@@ -202,10 +202,87 @@ public class FrameAlignmentTests {
 			HashDistance: 4,
 			MeanAbsoluteDifference: 0.068d);
 
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+
+	[Fact]
+	public void StrongImprovementCanOverrideConfidentZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 3,
+			MeanAbsoluteDifference: 0.050d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 2,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.025d);
+
 		Assert.True(
 			FrameAlignment.IsClearImprovementOverZero(
 				zero,
 				candidate));
+	}
+
+	[Fact]
+	public void WeakImprovementDoesNotOverrideConfidentZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 3,
+			MeanAbsoluteDifference: 0.050d);
+		var candidate = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 1,
+			MeanAbsoluteDifference: 0.044d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+
+	[Fact]
+	public void BestImprovementIgnoresHashBestCandidateThatFailsPixelGate() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 7,
+			MeanAbsoluteDifference: 0.080d);
+		var hashBest = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.079d);
+		var aligned = new FrameAlignmentResult(
+			Offset: 2,
+			HashDistance: 4,
+			MeanAbsoluteDifference: 0.065d);
+
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestClearImprovementOverZero(
+				zero,
+				new[] { zero, hashBest, aligned });
+
+		Assert.NotNull(result);
+		Assert.Equal(2, result.Value.Offset);
+	}
+
+	[Fact]
+	public void BestImprovementReturnsNullWhenOnlyTinyNearbyShiftImproves() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 5,
+			MeanAbsoluteDifference: 0.075d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 4,
+			MeanAbsoluteDifference: 0.068d);
+
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestClearImprovementOverZero(
+				zero,
+				new[] { zero, candidate });
+
+		Assert.Null(result);
 	}
 
 	[Fact]

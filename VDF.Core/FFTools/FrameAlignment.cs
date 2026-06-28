@@ -20,6 +20,12 @@ namespace VDF.Core.FFTools {
 		internal static FrameAlignmentResult? FindBest(
 			byte[] reference,
 			IEnumerable<FrameAlignmentCandidate> candidates) {
+			return FindBestResult(MeasureCandidates(reference, candidates));
+		}
+
+		internal static IReadOnlyList<FrameAlignmentResult> MeasureCandidates(
+			byte[] reference,
+			IEnumerable<FrameAlignmentCandidate> candidates) {
 			ArgumentNullException.ThrowIfNull(reference);
 			if (reference.Length != 32 * 32) {
 				throw new ArgumentException(
@@ -29,7 +35,7 @@ namespace VDF.Core.FFTools {
 
 			ulong referenceHash =
 				pHash.PerceptualHash.ComputePHashFromGray32x32(reference);
-			FrameAlignmentResult? best = null;
+			var results = new List<FrameAlignmentResult>();
 
 			foreach (FrameAlignmentCandidate candidate in candidates) {
 				byte[]? gray = candidate.GrayBytes;
@@ -52,7 +58,17 @@ namespace VDF.Core.FFTools {
 					candidate.Offset,
 					hashDistance,
 					meanDifference);
+				results.Add(result);
+			}
 
+			return results;
+		}
+
+		internal static FrameAlignmentResult? FindBestResult(
+			IEnumerable<FrameAlignmentResult> results) {
+			FrameAlignmentResult? best = null;
+
+			foreach (FrameAlignmentResult result in results) {
 				if (best == null || IsBetter(result, best.Value))
 					best = result;
 			}
@@ -126,6 +142,8 @@ namespace VDF.Core.FFTools {
 		const int MinimumNonZeroHashImprovement = 2;
 		const double MinimumNonZeroMeanImprovement = 0.006d;
 		const int NonZeroDistancePenaltyEveryFrames = 8;
+		const int ConfidentZeroHashImprovementBonus = 1;
+		const double ConfidentZeroMeanImprovementBonus = 0.006d;
 
 		const int NearlyExactHashDistance = 1;
 		const double NearlyExactMeanDifference = 0.018d;
@@ -153,25 +171,8 @@ namespace VDF.Core.FFTools {
 				return false;
 			}
 
-			int distance = Math.Abs(candidate.Offset);
-			int requiredHashImprovement;
-			double requiredMeanImprovement;
-
-			if (distance <= 4) {
-				requiredHashImprovement = 1;
-				requiredMeanImprovement = 0.003d;
-			}
-			else if (distance <= 12) {
-				requiredHashImprovement = 2;
-				requiredMeanImprovement = 0.007d;
-			}
-			else {
-				requiredHashImprovement =
-					4 + ((distance - 13) / 8);
-				requiredMeanImprovement =
-					0.014d +
-					((distance - 13) * 0.0005d);
-			}
+			(int requiredHashImprovement, double requiredMeanImprovement) =
+				GetRequiredImprovement(zero, candidate);
 
 			int hashImprovement =
 				zero.HashDistance - candidate.HashDistance;
@@ -180,11 +181,50 @@ namespace VDF.Core.FFTools {
 				candidate.MeanAbsoluteDifference;
 
 			// Both independent measures must improve. Nearby corrections need
-			// only a modest advantage; large jumps need progressively stronger
-			// evidence, which blocks repeated-scene false matches.
+			// clear evidence, and a zero frame that is already confident adds
+			// hysteresis so noise does not nudge an aligned pair off zero.
 			return
 				hashImprovement >= requiredHashImprovement &&
 				meanImprovement >= requiredMeanImprovement;
+		}
+
+		static (int Hash, double Mean) GetRequiredImprovement(
+			FrameAlignmentResult zero,
+			FrameAlignmentResult candidate) {
+			int distance = Math.Abs(candidate.Offset);
+			int requiredHashImprovement =
+				MinimumNonZeroHashImprovement +
+				(distance / NonZeroDistancePenaltyEveryFrames);
+			double requiredMeanImprovement =
+				MinimumNonZeroMeanImprovement +
+				(Math.Min(distance, 30) * 0.0004d);
+
+			if (IsConfident(zero)) {
+				requiredHashImprovement +=
+					ConfidentZeroHashImprovementBonus;
+				requiredMeanImprovement +=
+					ConfidentZeroMeanImprovementBonus;
+			}
+
+			return (requiredHashImprovement, requiredMeanImprovement);
+		}
+
+		internal static FrameAlignmentResult? FindBestClearImprovementOverZero(
+			FrameAlignmentResult zero,
+			IEnumerable<FrameAlignmentResult> results) {
+			FrameAlignmentResult? best = null;
+
+			foreach (FrameAlignmentResult result in results) {
+				if (result.Offset == 0 ||
+					!IsClearImprovementOverZero(zero, result)) {
+					continue;
+				}
+
+				if (best == null || IsBetter(result, best.Value))
+					best = result;
+			}
+
+			return best;
 		}
 
 		internal static IReadOnlyList<IReadOnlyList<int>>
