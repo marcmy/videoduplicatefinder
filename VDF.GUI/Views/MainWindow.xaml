@@ -645,7 +645,11 @@
                                         Name="dataGridGrouping"
                                         CanUserResizeColumns="True"
                                         LoadingRowGroup="OnLoadingRowGroup"
-                                        >
+                                        RowHeight="88">
+                                        <!-- Keep item extent deterministic for DataGrid virtualization.
+                                             Auto-sized rows are remeasured as wrapped text and lazy
+                                             thumbnails enter the viewport, which can make the scrollbar
+                                             extent grow while slowly scrolling upward. -->
                                         <!-- KeyBindings are applied programmatically by KeyboardShortcutManager -->
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn>
@@ -692,10 +696,13 @@
                                                                  video strips (N thumbnails wide) stay small (issue #787). -->
                                                             <Image
                                                                 Name="ThumbnailImage"
+                                                                Height="56"
+                                                                MaxWidth="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ThumbnailMaxWidth}"
                                                                 Source="{Binding Thumbnail}"
                                                                 Stretch="Uniform"
                                                                 StretchDirection="DownOnly"
                                                                 HorizontalAlignment="Left"
+                                                                VerticalAlignment="Center"
                                                                 ToolTip.Tip="{Binding ItemInfo.Path}">
                                                                 <i:Interaction.Behaviors>
                                                                     <ic:ExecuteCommandOnDoubleTappedBehavior Command="{Binding $parent[DataGrid].((vm:MainWindowVM)DataContext).ThumbnailDoubleClickCommand}" />
