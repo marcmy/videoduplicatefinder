@@ -129,9 +129,10 @@ namespace VDF.GUI.Views {
 				RoutingStrategies.Tunnel,
 				handledEventsToo: true);
 
-			// Apply persisted pixel widths only after the grid has a real
-			// viewport. On first run, divide that viewport proportionally so no
-			// auto/star column can consume the entire window.
+			// Apply persisted widths only after the grid has a real viewport.
+			// They are restored as star weights: the same window size reproduces
+			// the saved pixel layout, while narrower/wider windows proportionally
+			// squeeze or expand every visible column without horizontal overflow.
 			grid.Loaded += (_, _) =>
 				RestoreResultsColumnWidths(grid);
 		}
@@ -140,9 +141,6 @@ namespace VDF.GUI.Views {
 			if (resultsColumnWidthsRestored)
 				return;
 
-			double availableWidth = Math.Max(
-				600d,
-				grid.Bounds.Width - 54d);
 			var saved =
 				SettingsFile.Instance.ResultsColumnWidths;
 
@@ -150,20 +148,24 @@ namespace VDF.GUI.Views {
 				if (column.Tag is not string key ||
 					!DefaultResultsColumnWidthWeights.TryGetValue(
 						key,
-						out double weight)) {
+						out double defaultWeight)) {
 					continue;
 				}
 
-				double width;
-				if (!saved.TryGetValue(key, out width) ||
-					!double.IsFinite(width) ||
-					width < 40d) {
-					width = availableWidth * weight;
+				// Saved values are the exact rendered pixel widths from the
+				// previous session. Using those pixels as relative star weights
+				// reproduces the same proportions at the same viewport size and
+				// automatically squeezes every column when space is tighter.
+				double weight;
+				if (!saved.TryGetValue(key, out weight) ||
+					!double.IsFinite(weight) ||
+					weight < 40d) {
+					weight = defaultWeight;
 				}
 
 				column.Width = new DataGridLength(
-					Math.Clamp(width, 40d, 2400d),
-					DataGridLengthUnitType.Pixel);
+					Math.Clamp(weight, 0.01d, 2400d),
+					DataGridLengthUnitType.Star);
 			}
 
 			resultsColumnWidthsRestored = true;
