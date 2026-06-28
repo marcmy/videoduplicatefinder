@@ -158,7 +158,7 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
-	public void NonConfidentCandidate_NeverOverridesZero() {
+	public void RelativeImprovementCanOverrideAbsoluteConfidence() {
 		var zero = new FrameAlignmentResult(
 			Offset: 0,
 			HashDistance: 10,
@@ -167,6 +167,57 @@ public class FrameAlignmentTests {
 			Offset: 2,
 			HashDistance: 4,
 			MeanAbsoluteDifference: 0.040d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+	[Theory]
+	[InlineData(1, 0.018, true)]
+	[InlineData(2, 0.010, false)]
+	[InlineData(1, 0.025, false)]
+	public void NearlyExact_RequiresVeryCloseAgreement(
+		int hashDistance,
+		double meanDifference,
+		bool expected) {
+		var result = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: hashDistance,
+			MeanAbsoluteDifference: meanDifference);
+
+		Assert.Equal(
+			expected,
+			FrameAlignment.IsNearlyExact(result));
+	}
+
+	[Fact]
+	public void NearbyModerateImprovement_CanOverrideZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 5,
+			MeanAbsoluteDifference: 0.075d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 4,
+			MeanAbsoluteDifference: 0.068d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+
+	[Fact]
+	public void ImprovementInOnlyOneMetric_DoesNotOverrideZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 7,
+			MeanAbsoluteDifference: 0.080d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 2,
+			HashDistance: 3,
+			MeanAbsoluteDifference: 0.079d);
 
 		Assert.False(
 			FrameAlignment.IsClearImprovementOverZero(

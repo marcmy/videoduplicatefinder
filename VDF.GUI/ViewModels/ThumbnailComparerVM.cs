@@ -766,13 +766,14 @@ namespace VDF.GUI.ViewModels {
 					zero,
 					candidate.Value);
 
-			// Zero is the baseline. It remains selected unless another
-			// candidate clearly and materially improves on it.
+			// Zero is the baseline. Only a nearly exact zero match ends the
+			// search immediately; otherwise candidates are judged by their
+			// relative improvement over zero.
 			AddCandidates(new[] { 0 });
 			FrameAlignmentResult? zeroResult = Best();
 			if (!zeroResult.HasValue)
 				return 0;
-			if (FrameAlignment.IsConfident(zeroResult.Value))
+			if (FrameAlignment.IsNearlyExact(zeroResult.Value))
 				return 0;
 
 			bool budgetExpired = false;
