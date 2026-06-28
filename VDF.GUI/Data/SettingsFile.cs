@@ -418,6 +418,15 @@ namespace VDF.GUI.Data {
 				ref _ThumbnailComparerAutoAlignFrames,
 				value);
 		}
+		Dictionary<string, double> _ResultsColumnWidths = new();
+		[JsonPropertyName("ResultsColumnWidths")]
+		public Dictionary<string, double> ResultsColumnWidths {
+			get => _ResultsColumnWidths;
+			set => this.RaiseAndSetIfChanged(
+				ref _ResultsColumnWidths,
+				value ?? new());
+		}
+
 		bool _ShowThumbnailColumn = true;
 		[JsonPropertyName("ShowThumbnailColumn")]
 		public bool ShowThumbnailColumn {
