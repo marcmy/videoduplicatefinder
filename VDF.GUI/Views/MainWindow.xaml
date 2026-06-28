@@ -644,22 +644,24 @@
                                     <DataGrid
                                         Name="dataGridGrouping"
                                         CanUserResizeColumns="True"
+                                        CanUserSortColumns="True"
                                         HorizontalScrollBarVisibility="Disabled"
                                         LoadingRowGroup="OnLoadingRowGroup"
-                                        RowHeight="88">
+                                        RowHeight="88"
+                                        Sorting="OnResultsGridSorting">
                                         <!-- Keep one compact, deterministic item extent. Column
                                              resizing must never change row height or the virtualized
                                              scroll extent underneath the scrollbar. -->
                                         <!-- KeyBindings are applied programmatically by KeyboardShortcutManager -->
                                         <DataGrid.Columns>
-                                            <DataGridTemplateColumn>
+                                            <DataGridTemplateColumn CanUserSort="False">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
                                                         <CheckBox Margin="0,0,5,0" HorizontalAlignment="Center" IsChecked="{Binding Checked}" />
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="24">
+                                            <DataGridTemplateColumn Width="24" CanUserSort="False">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
                                                         <Button Padding="2" Margin="0" MinWidth="18" MinHeight="18" Width="18" Height="18"
@@ -673,7 +675,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="43*" Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
+                                            <DataGridTemplateColumn Width="43*" CanUserSort="False" Header="Thumbnail" Tag="Thumbnail" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowThumbnailColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
                                                     <DataTemplate x:DataType="vm:DuplicateItemVM">
                                                         <Grid>
@@ -716,6 +718,7 @@
                                             <DataGridTemplateColumn
                                                 Width="21*"
                                                 Header="Path"
+                                                SortMemberPath="ItemInfo.Path"
                                                 Tag="Path"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPathColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
@@ -727,7 +730,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="9*" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.SizeLong" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.DurationCompact]}"
@@ -809,7 +812,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="9*" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.BitRateKbs" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.VideoCompact]}"
@@ -873,7 +876,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="8*" Tag="Audio" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
+                                            <DataGridTemplateColumn Width="8*" SortMemberPath="ItemInfo.AudioFormat" Tag="Audio" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowAudioColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.AudioCompact]}"
@@ -939,6 +942,7 @@
                                             <DataGridTemplateColumn
                                                 Width="5*"
                                                 Header="Similarity"
+                                                SortMemberPath="ItemInfo.Similarity"
                                                 Tag="Similarity"
                                                 IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowSimilarityColumn}">
                                                 <DataGridTemplateColumn.CellTemplate>
@@ -966,6 +970,7 @@
                                                 Binding="{Binding ItemInfo.PartialClipOffsetDisplay, TargetNullValue=''}"
                                                 Header="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.ClipOffset]}"
                                                 IsReadOnly="True"
+                                                SortMemberPath="ItemInfo.PartialClipOffset"
                                                 Tag="ClipOffset" />
                                         </DataGrid.Columns>
                                         <DataGrid.ContextMenu>
@@ -1562,6 +1567,9 @@
                                                     <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UsePHashing]}"
                                                               IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UsePHash}" IsThreeState="False"
                                                               ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.UsePHashingTooltip]}" />
+                                                    <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSampling]}"
+                                                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AlwaysRetryFailedSampling}" IsThreeState="False"
+                                                              ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSamplingTooltip]}" />
                                                     <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CompareHorizontallyFlipped]}"
                                                               IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=CompareHorizontallyFlipped}" IsThreeState="False"
                                                               ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.CompareHorizontallyFlippedTooltip]}" />
@@ -1586,10 +1594,7 @@
 
                                                     <Separator Margin="0,4" />
 
-                                                    <!-- Retry and result persistence -->
-                                                    <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSampling]}"
-                                                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=AlwaysRetryFailedSampling}" IsThreeState="False"
-                                                              ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AlwaysRetryFailedSamplingTooltip]}" />
+                                                    <!-- Result persistence -->
                                                     <CheckBox Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoBackupScanResults]}"
                                                               IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=BackupAfterListChanged}" IsThreeState="False"
                                                               ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.AutoBackupScanResultsTooltip]}" />
