@@ -99,27 +99,19 @@ namespace VDF.GUI.Data {
 			InvalidateVisual();
 		}
 
-		private double GetDividerViewportPos(Point viewportPoint) {
-			if (SwipeVertical) {
-				var contentY = SwipeTopOffset + SwipeDisplayHeight * SwipeRatio;
-				return contentY * Zoom + OffsetY;
-			}
-			else {
-				var contentX = SwipeLeftOffset + SwipeDisplayWidth * SwipeRatio;
-				return contentX * Zoom + OffsetX;
-			}
-		}
+		private Point GetContentPosition(PointerEventArgs e) =>
+			Content is Visual contentVisual ? e.GetPosition(contentVisual) : e.GetPosition(this);
 
-		private bool IsNearDivider(Point viewportPoint) {
+		private bool IsNearDivider(PointerEventArgs e) {
+			Point contentPoint = GetContentPosition(e);
+			double contentGrabDistance = SwipeGrabDistance / Math.Max(Math.Abs(Zoom), 0.0001);
 			if (SwipeVertical) {
-				var divY = SwipeTopOffset + SwipeDisplayHeight * SwipeRatio;
-				var divViewportY = divY * Zoom + OffsetY;
-				return Math.Abs(viewportPoint.Y - divViewportY) <= SwipeGrabDistance;
+				var dividerY = SwipeTopOffset + SwipeDisplayHeight * SwipeRatio;
+				return Math.Abs(contentPoint.Y - dividerY) <= contentGrabDistance;
 			}
 			else {
-				var divX = SwipeLeftOffset + SwipeDisplayWidth * SwipeRatio;
-				var divViewportX = divX * Zoom + OffsetX;
-				return Math.Abs(viewportPoint.X - divViewportX) <= SwipeGrabDistance;
+				var dividerX = SwipeLeftOffset + SwipeDisplayWidth * SwipeRatio;
+				return Math.Abs(contentPoint.X - dividerX) <= contentGrabDistance;
 			}
 		}
 
@@ -141,7 +133,7 @@ namespace VDF.GUI.Data {
 		private void OnPressed(object? s, PointerPressedEventArgs e) {
 			var props = e.GetCurrentPoint(this).Properties;
 
-			if (IsAnySwipe && props.IsLeftButtonPressed && IsNearDivider(e.GetPosition(this))) {
+			if (IsAnySwipe && props.IsLeftButtonPressed && IsNearDivider(e)) {
 				_swiping = true;
 				UpdateSwipeFromPointer(e);
 				e.Pointer.Capture(this);
@@ -189,7 +181,7 @@ namespace VDF.GUI.Data {
 			}
 
 			if (IsAnySwipe) {
-				var near = IsNearDivider(e.GetPosition(this));
+				var near = IsNearDivider(e);
 				Cursor = near
 					? new Cursor(SwipeVertical ? StandardCursorType.SizeNorthSouth : StandardCursorType.SizeWestEast)
 					: Cursor.Default;
@@ -197,18 +189,16 @@ namespace VDF.GUI.Data {
 		}
 
 		private void UpdateSwipeFromPointer(PointerEventArgs e) {
-			var p = e.GetPosition(this);
+			Point contentPoint = GetContentPosition(e);
 			if (SwipeVertical) {
-				var contentY = (p.Y - OffsetY) / Zoom;
 				var displayH = SwipeDisplayHeight;
 				if (displayH <= 0) displayH = Math.Max(Bounds.Height, 1);
-				SwipeRatio = Math.Clamp((contentY - SwipeTopOffset) / displayH, 0, 1);
+				SwipeRatio = Math.Clamp((contentPoint.Y - SwipeTopOffset) / displayH, 0, 1);
 			}
 			else {
-				var contentX = (p.X - OffsetX) / Zoom;
 				var displayW = SwipeDisplayWidth;
 				if (displayW <= 0) displayW = Math.Max(Bounds.Width, 1);
-				SwipeRatio = Math.Clamp((contentX - SwipeLeftOffset) / displayW, 0, 1);
+				SwipeRatio = Math.Clamp((contentPoint.X - SwipeLeftOffset) / displayW, 0, 1);
 			}
 		}
 	}
