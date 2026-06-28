@@ -14,6 +14,7 @@
 // */
 //
 
+using System.ComponentModel;
 using System.Linq;
 using System.Windows.Input;
 using System.Runtime.InteropServices;
@@ -41,6 +42,7 @@ namespace VDF.GUI.Views {
 		bool hasExited;
 		ScrollViewer? resultsScrollViewer;
 		bool resultsColumnWidthsRestored;
+		MainWindowVM? resultsGridViewModel;
 
 		public readonly Core.FFTools.FFHardwareAccelerationMode InitialHwMode;
 		public MainWindow() {
@@ -102,13 +104,52 @@ namespace VDF.GUI.Views {
 			ShowAlgoView();
 		}
 
+		sealed record ResultColumnSortChoice(
+			string Name,
+			string PropertyPath);
+
+		static readonly IReadOnlyDictionary<
+			string,
+			ResultColumnSortChoice[]>
+			ResultsColumnSortChoices =
+				new Dictionary<string, ResultColumnSortChoice[]>(
+					StringComparer.Ordinal) {
+						["Path"] = [
+							new("Path", "ItemInfo.Path"),
+						],
+						["Duration"] = [
+							new("Duration", "ItemInfo.Duration"),
+							new("Resolution", "ItemInfo.FrameSizeInt"),
+							new("Size", "ItemInfo.SizeLong"),
+							new("Date Created", "ItemInfo.DateCreated"),
+						],
+						["Format"] = [
+							new("Format", "ItemInfo.Format"),
+							new("FPS", "ItemInfo.Fps"),
+							new("Video Bitrate", "ItemInfo.BitRateKbs"),
+							new("HDR", "ItemInfo.HdrFormatRank"),
+						],
+						["Audio"] = [
+							new("Audio Format", "ItemInfo.AudioFormat"),
+							new("Audio Channels", "ItemInfo.AudioChannel"),
+							new("Audio Sample Rate", "ItemInfo.AudioSampleRate"),
+							new("Audio Bitrate", "ItemInfo.AudioBitRateKbs"),
+						],
+						["Similarity"] = [
+							new("Similarity", "ItemInfo.Similarity"),
+						],
+						["ClipOffset"] = [
+							new("Clip Offset", "ItemInfo.PartialClipOffset"),
+						],
+					};
+
 		static readonly IReadOnlyDictionary<string, string>
-			ResultsColumnPrimarySortNames =
+			DefaultResultsColumnSortNames =
 				new Dictionary<string, string>(
 					StringComparer.Ordinal) {
 						["Path"] = "Path",
-						["Duration"] = "Duration",
-						["Format"] = "Format",
+						["Duration"] = "Size",
+						["Format"] = "Video Bitrate",
 						["Audio"] = "Audio Format",
 						["Similarity"] = "Similarity",
 						["ClipOffset"] = "Clip Offset",
@@ -140,6 +181,26 @@ namespace VDF.GUI.Views {
 				OnResultsGridPointerWheelChanged,
 				RoutingStrategies.Tunnel,
 				handledEventsToo: true);
+
+			foreach (DataGridColumn column in grid.Columns) {
+				if (column.Tag is not string key ||
+					!ResultsColumnSortChoices.TryGetValue(
+						key,
+						out ResultColumnSortChoice[]? choices)) {
+					continue;
+				}
+
+				column.SortMemberPath =
+					GetResultsColumnSortChoice(key).PropertyPath;
+
+				if (choices.Length > 1)
+					column.HeaderPointerPressed +=
+						OnResultsColumnHeaderPointerPressed;
+			}
+
+			DataContextChanged += (_, _) =>
+				AttachResultsGridViewModel();
+			AttachResultsGridViewModel();
 
 			// Apply persisted widths only after the grid has a real viewport.
 			// They are restored as star weights: the same window size reproduces
@@ -210,43 +271,306 @@ namespace VDF.GUI.Views {
 				widths;
 		}
 
+		ResultColumnSortChoice GetResultsColumnSortChoice(
+			string columnKey) {
+			ResultColumnSortChoice[] choices =
+				ResultsColumnSortChoices[columnKey];
+
+			string selectedName =
+				SettingsFile.Instance.ResultsColumnSortFields
+					.TryGetValue(columnKey, out string? savedName)
+					? savedName
+					: DefaultResultsColumnSortNames[columnKey];
+
+			return choices.FirstOrDefault(choice =>
+					string.Equals(
+						choice.Name,
+						selectedName,
+						StringComparison.Ordinal))
+				?? choices.First(choice =>
+					string.Equals(
+						choice.Name,
+						DefaultResultsColumnSortNames[columnKey],
+						StringComparison.Ordinal));
+		}
+
+		void RememberResultsColumnSortChoice(
+			string columnKey,
+			ResultColumnSortChoice choice) {
+			if (!ResultsColumnSortChoices.TryGetValue(
+					columnKey,
+					out ResultColumnSortChoice[]? choices) ||
+				choices.Length <= 1) {
+				return;
+			}
+
+			Dictionary<string, string> current =
+				SettingsFile.Instance.ResultsColumnSortFields;
+
+			if (current.TryGetValue(
+					columnKey,
+					out string? currentName) &&
+				string.Equals(
+					currentName,
+					choice.Name,
+					StringComparison.Ordinal)) {
+				return;
+			}
+
+			var updated =
+				new Dictionary<string, string>(
+					current,
+					StringComparer.Ordinal) {
+						[columnKey] = choice.Name,
+					};
+
+			SettingsFile.Instance.ResultsColumnSortFields =
+				updated;
+		}
+
+		static void ApplyResultsSortOrder(
+			MainWindowVM viewModel,
+			string sortName,
+			bool descending) {
+			string optionName =
+				$"{sortName} " +
+				(descending ? "Descending" : "Ascending");
+
+			SortOrderOption? option =
+				viewModel.SortOrders.FirstOrDefault(order =>
+					string.Equals(
+						order.Name,
+						optionName,
+						StringComparison.Ordinal));
+
+			if (option != null)
+				viewModel.SortOrder = option;
+		}
+
+		bool TryFindResultsSortChoice(
+			string sortOrderName,
+			out string columnKey,
+			out ResultColumnSortChoice choice) {
+			const string ascendingSuffix = " Ascending";
+			const string descendingSuffix = " Descending";
+
+			string sortName = sortOrderName;
+			if (sortName.EndsWith(
+					ascendingSuffix,
+					StringComparison.Ordinal)) {
+				sortName =
+					sortName[..^ascendingSuffix.Length];
+			}
+			else if (sortName.EndsWith(
+					descendingSuffix,
+					StringComparison.Ordinal)) {
+				sortName =
+					sortName[..^descendingSuffix.Length];
+			}
+
+			foreach (var pair in ResultsColumnSortChoices) {
+				ResultColumnSortChoice? match =
+					pair.Value.FirstOrDefault(candidate =>
+						string.Equals(
+							candidate.Name,
+							sortName,
+							StringComparison.Ordinal));
+
+				if (match != null) {
+					columnKey = pair.Key;
+					choice = match;
+					return true;
+				}
+			}
+
+			columnKey = string.Empty;
+			choice = null!;
+			return false;
+		}
+
+		void AttachResultsGridViewModel() {
+			if (ReferenceEquals(
+					resultsGridViewModel,
+					DataContext)) {
+				return;
+			}
+
+			if (resultsGridViewModel != null) {
+				resultsGridViewModel.PropertyChanged -=
+					OnResultsGridViewModelPropertyChanged;
+			}
+
+			resultsGridViewModel =
+				DataContext as MainWindowVM;
+
+			if (resultsGridViewModel == null)
+				return;
+
+			resultsGridViewModel.PropertyChanged +=
+				OnResultsGridViewModelPropertyChanged;
+
+			SyncResultsGridSortColumn(
+				resultsGridViewModel.SortOrder.Name);
+		}
+
+		void OnResultsGridViewModelPropertyChanged(
+			object? sender,
+			PropertyChangedEventArgs e) {
+			if (e.PropertyName == nameof(MainWindowVM.SortOrder) &&
+				sender is MainWindowVM viewModel) {
+				SyncResultsGridSortColumn(
+					viewModel.SortOrder.Name);
+			}
+		}
+
+		void SyncResultsGridSortColumn(
+			string sortOrderName) {
+			if (!TryFindResultsSortChoice(
+					sortOrderName,
+					out string columnKey,
+					out ResultColumnSortChoice choice)) {
+				return;
+			}
+
+			DataGrid? grid =
+				this.FindControl<DataGrid>(
+					"dataGridGrouping");
+			DataGridColumn? column =
+				grid?.Columns.FirstOrDefault(candidate =>
+					candidate.Tag is string key &&
+					string.Equals(
+						key,
+						columnKey,
+						StringComparison.Ordinal));
+
+			if (column == null)
+				return;
+
+			column.SortMemberPath =
+				choice.PropertyPath;
+			RememberResultsColumnSortChoice(
+				columnKey,
+				choice);
+		}
+
 		void OnResultsGridSorting(
 			object? sender,
 			DataGridColumnEventArgs e) {
 			if (DataContext is not MainWindowVM viewModel ||
 				e.Column.Tag is not string columnKey ||
-				!ResultsColumnPrimarySortNames.TryGetValue(
-					columnKey,
-					out string? sortBaseName)) {
+				!ResultsColumnSortChoices.ContainsKey(
+					columnKey)) {
 				return;
 			}
 
-			// Use the existing SortOrder property rather than DataGrid's default
-			// sorting path. That keeps the Filter / Sort combo, LastSortOrder,
-			// collection view, and header arrow all describing the same state.
+			// Route clicks through the existing SortOrder property so the
+			// Filter / Sort combo, persistence, collection view, and arrow
+			// all continue to describe one shared sort state.
 			e.Handled = true;
 
-			string ascendingName =
-				$"{sortBaseName} Ascending";
-			string descendingName =
-				$"{sortBaseName} Descending";
-			string nextName =
+			ResultColumnSortChoice choice =
+				GetResultsColumnSortChoice(columnKey);
+			e.Column.SortMemberPath =
+				choice.PropertyPath;
+
+			bool descending =
 				string.Equals(
 					viewModel.SortOrder.Name,
-					ascendingName,
-					StringComparison.Ordinal)
-					? descendingName
-					: ascendingName;
+					$"{choice.Name} Ascending",
+					StringComparison.Ordinal);
 
-			SortOrderOption? nextOrder =
-				viewModel.SortOrders.FirstOrDefault(order =>
-					string.Equals(
-						order.Name,
-						nextName,
-						StringComparison.Ordinal));
+			ApplyResultsSortOrder(
+				viewModel,
+				choice.Name,
+				descending);
+		}
 
-			if (nextOrder != null)
-				viewModel.SortOrder = nextOrder;
+		void OnResultsColumnHeaderPointerPressed(
+			object? sender,
+			PointerPressedEventArgs e) {
+			if (sender is not DataGridColumn column ||
+				column.Tag is not string columnKey ||
+				!ResultsColumnSortChoices.TryGetValue(
+					columnKey,
+					out ResultColumnSortChoice[]? choices) ||
+				choices.Length <= 1 ||
+				!e.GetCurrentPoint(this)
+					.Properties
+					.IsRightButtonPressed) {
+				return;
+			}
+
+			Control? source =
+				e.Source as Control;
+			DataGridColumnHeader? header =
+				source as DataGridColumnHeader ??
+				source?
+					.GetVisualAncestors()
+					.OfType<DataGridColumnHeader>()
+					.FirstOrDefault();
+
+			if (header == null)
+				return;
+
+			e.Handled = true;
+
+			ResultColumnSortChoice selected =
+				GetResultsColumnSortChoice(columnKey);
+			var menu = new ContextMenu();
+			var items = new List<MenuItem>();
+
+			foreach (ResultColumnSortChoice choice in choices) {
+				var item = new MenuItem {
+					Header = choice.Name,
+					ToggleType = MenuItemToggleType.Radio,
+					GroupName = $"results-sort-{columnKey}",
+					IsChecked = string.Equals(
+						choice.Name,
+						selected.Name,
+						StringComparison.Ordinal),
+				};
+
+				item.Click += (_, _) => {
+					SelectResultsColumnSortChoice(
+						column,
+						columnKey,
+						choice);
+					menu.Close();
+				};
+
+				items.Add(item);
+			}
+
+			menu.ItemsSource = items;
+			header.ContextMenu = menu;
+			menu.Open(header);
+		}
+
+		void SelectResultsColumnSortChoice(
+			DataGridColumn column,
+			string columnKey,
+			ResultColumnSortChoice choice) {
+			RememberResultsColumnSortChoice(
+				columnKey,
+				choice);
+			column.SortMemberPath =
+				choice.PropertyPath;
+
+			if (DataContext is not MainWindowVM viewModel)
+				return;
+
+			bool preserveDescending =
+				ResultsColumnSortChoices[columnKey]
+					.Any(candidate =>
+						string.Equals(
+							viewModel.SortOrder.Name,
+							$"{candidate.Name} Descending",
+							StringComparison.Ordinal));
+
+			ApplyResultsSortOrder(
+				viewModel,
+				choice.Name,
+				preserveDescending);
 		}
 
 		void OnResultsGridPointerWheelChanged(

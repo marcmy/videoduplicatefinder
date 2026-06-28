@@ -730,7 +730,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.Duration" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
+                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.SizeLong" Tag="Duration" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowDurationColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.DurationCompact]}"
@@ -812,7 +812,7 @@
                                                     </DataTemplate>
                                                 </DataGridTemplateColumn.CellTemplate>
                                             </DataGridTemplateColumn>
-                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.Format" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
+                                            <DataGridTemplateColumn Width="9*" SortMemberPath="ItemInfo.BitRateKbs" Tag="Format" IsVisible="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowFormatColumn}">
                                                 <DataGridTemplateColumn.Header>
                                                     <TextBlock
                                                         Text="{Binding Source={x:Static local:App.Lang}, Path=[DuplicateList.Header.VideoCompact]}"
