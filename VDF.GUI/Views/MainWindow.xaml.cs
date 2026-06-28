@@ -102,6 +102,18 @@ namespace VDF.GUI.Views {
 			ShowAlgoView();
 		}
 
+		static readonly IReadOnlyDictionary<string, string>
+			ResultsColumnPrimarySortNames =
+				new Dictionary<string, string>(
+					StringComparer.Ordinal) {
+						["Path"] = "Path",
+						["Duration"] = "Duration",
+						["Format"] = "Format",
+						["Audio"] = "Audio Format",
+						["Similarity"] = "Similarity",
+						["ClipOffset"] = "Clip Offset",
+					};
+
 		static readonly IReadOnlyDictionary<string, double>
 			DefaultResultsColumnWidthWeights =
 				new Dictionary<string, double>(
@@ -196,6 +208,45 @@ namespace VDF.GUI.Views {
 
 			SettingsFile.Instance.ResultsColumnWidths =
 				widths;
+		}
+
+		void OnResultsGridSorting(
+			object? sender,
+			DataGridColumnEventArgs e) {
+			if (DataContext is not MainWindowVM viewModel ||
+				e.Column.Tag is not string columnKey ||
+				!ResultsColumnPrimarySortNames.TryGetValue(
+					columnKey,
+					out string? sortBaseName)) {
+				return;
+			}
+
+			// Use the existing SortOrder property rather than DataGrid's default
+			// sorting path. That keeps the Filter / Sort combo, LastSortOrder,
+			// collection view, and header arrow all describing the same state.
+			e.Handled = true;
+
+			string ascendingName =
+				$"{sortBaseName} Ascending";
+			string descendingName =
+				$"{sortBaseName} Descending";
+			string nextName =
+				string.Equals(
+					viewModel.SortOrder.Name,
+					ascendingName,
+					StringComparison.Ordinal)
+					? descendingName
+					: ascendingName;
+
+			SortOrderOption? nextOrder =
+				viewModel.SortOrders.FirstOrDefault(order =>
+					string.Equals(
+						order.Name,
+						nextName,
+						StringComparison.Ordinal));
+
+			if (nextOrder != null)
+				viewModel.SortOrder = nextOrder;
 		}
 
 		void OnResultsGridPointerWheelChanged(
