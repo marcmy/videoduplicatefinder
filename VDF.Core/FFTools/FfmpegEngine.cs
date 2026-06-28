@@ -713,21 +713,13 @@ namespace VDF.Core.FFTools {
 			string? codecName,
 			string reason,
 			string? familyKey = null) {
-			string scope =
-				NormalizeHardwareFamilyKey(familyKey) ??
-				NormalizeHardwareCodecName(codecName) ??
-				"unknown";
+			_ = codecName;
+			_ = reason;
+			_ = familyKey;
 
-			// Receiving software frames from a requested D3D11 decoder is
-			// handled by retrying this operation with CPU decode. Repetition
-			// does not prove the codec/profile is unsupported and must not
-			// create a session-wide bypass.
-			Logger.Instance.Info(
-				$"FFmpeg D3D11 software-frame fallback observed for " +
-				$"'{scope}' on {HardwareAccelerationMode}; retrying only " +
-				$"the current operation with CPU decode and keeping " +
-				$"hardware enabled. Reason: " +
-				$"{NormalizeLogReason(reason, 240)}");
+			// This is intentionally not cached or logged as a codec/family
+			// capability. The caller logs the affected file and retries only
+			// that operation with native CPU decode.
 		}
 
 		internal static void RecordHardwareDecodeFailureForCodec(
