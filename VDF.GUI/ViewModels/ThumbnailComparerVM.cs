@@ -757,46 +757,67 @@ namespace VDF.GUI.ViewModels {
 			FrameAlignmentResult? Best() =>
 				FrameAlignment.FindBest(reference, candidates);
 
-			// Most sampled positions already correspond. Avoid searching the full
-			// ±30-frame window when offset zero is already a strong match.
+			bool ShouldApplyNonZero(
+				FrameAlignmentResult zero,
+				FrameAlignmentResult? candidate) =>
+				candidate.HasValue &&
+				candidate.Value.Offset != 0 &&
+				FrameAlignment.IsClearImprovementOverZero(
+					zero,
+					candidate.Value);
+
+			// Zero is the baseline. It remains selected unless another
+			// candidate clearly and materially improves on it.
 			AddCandidates(new[] { 0 });
-			FrameAlignmentResult? best = Best();
-			if (best.HasValue &&
-				FrameAlignment.IsConfident(best.Value)) {
-				return best.Value.Offset;
-			}
+			FrameAlignmentResult? zeroResult = Best();
+			if (!zeroResult.HasValue)
+				return 0;
+			if (FrameAlignment.IsConfident(zeroResult.Value))
+				return 0;
 
 			bool budgetExpired = false;
+			int batchIndex = 0;
+
 			foreach (IReadOnlyList<int> batch in
 				FrameAlignment.BuildProgressiveOffsetBatches(
 					AutoAlignSearchRadiusFrames)) {
 				cancellationToken.ThrowIfCancellationRequested();
+
 				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
 					budgetExpired = true;
 					break;
 				}
 
 				AddCandidates(batch);
-				best = Best();
-				if (best.HasValue &&
-					FrameAlignment.IsConfident(best.Value)) {
-					return best.Value.Offset;
+				batchIndex++;
+
+				// Search the complete local ±4-frame neighborhood before
+				// accepting a nearby shift. Farther shifts are judged after
+				// the progressive pass and refinement.
+				if (batchIndex >= 3) {
+					FrameAlignmentResult? localBest = Best();
+					if (localBest.HasValue &&
+						Math.Abs(localBest.Value.Offset) <= 4 &&
+						ShouldApplyNonZero(
+							zeroResult.Value,
+							localBest)) {
+						return localBest.Value.Offset;
+					}
 				}
 			}
 
-			// Refine only around the best coarse result. Each round bisects the
-			// nearest tested gaps, so difficult offsets do not require decoding
-			// every frame in the entire search window.
 			for (int round = 0;
-				round < AutoAlignRefinementRounds && !budgetExpired;
+				round < AutoAlignRefinementRounds &&
+					!budgetExpired;
 				round++) {
 				cancellationToken.ThrowIfCancellationRequested();
+
 				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
 					budgetExpired = true;
 					break;
 				}
 
-				best = Best();
+				FrameAlignmentResult? best = Best();
 				if (!best.HasValue)
 					break;
 
@@ -810,25 +831,15 @@ namespace VDF.GUI.ViewModels {
 					break;
 
 				AddCandidates(refinementOffsets);
-				best = Best();
-				if (best.HasValue &&
-					FrameAlignment.IsConfident(best.Value)) {
-					return best.Value.Offset;
-				}
 			}
 
-			best = Best();
-			if (!best.HasValue)
-				return null;
+			FrameAlignmentResult? finalBest = Best();
 
-			// When a pathological file exhausts the soft budget, do not apply a
-			// weak guess. A confident partial result is safe; otherwise retain 0.
-			if (budgetExpired &&
-				!FrameAlignment.IsConfident(best.Value)) {
-				return 0;
-			}
-
-			return best.Value.Offset;
+			return ShouldApplyNonZero(
+				zeroResult.Value,
+				finalBest)
+					? finalBest!.Value.Offset
+					: 0;
 		}
 
 		List<FrameAlignmentCandidate> ExtractAlignmentCandidates(

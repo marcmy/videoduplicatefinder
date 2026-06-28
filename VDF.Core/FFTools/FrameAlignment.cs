@@ -123,6 +123,42 @@ namespace VDF.Core.FFTools {
 		internal static bool IsConfident(FrameAlignmentResult result) =>
 			result.HashDistance <= ConfidentHashDistance &&
 			result.MeanAbsoluteDifference <= ConfidentMeanDifference;
+		const int MinimumNonZeroHashImprovement = 2;
+		const double MinimumNonZeroMeanImprovement = 0.006d;
+		const int NonZeroDistancePenaltyEveryFrames = 8;
+
+		internal static bool IsClearImprovementOverZero(
+			FrameAlignmentResult zero,
+			FrameAlignmentResult candidate) {
+			if (candidate.Offset == 0)
+				return true;
+			if (!IsConfident(candidate))
+				return false;
+
+			int distance = Math.Abs(candidate.Offset);
+			int requiredHashImprovement =
+				MinimumNonZeroHashImprovement +
+				(distance / NonZeroDistancePenaltyEveryFrames);
+			double requiredMeanImprovement =
+				MinimumNonZeroMeanImprovement +
+				(Math.Min(distance, 30) * 0.0004d);
+
+			int hashImprovement =
+				zero.HashDistance - candidate.HashDistance;
+			double meanImprovement =
+				zero.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			bool hashLedImprovement =
+				hashImprovement >= requiredHashImprovement &&
+				meanImprovement >= requiredMeanImprovement / 2d;
+			bool pixelLedImprovement =
+				hashImprovement >=
+					Math.Max(1, requiredHashImprovement - 2) &&
+				meanImprovement >= requiredMeanImprovement;
+
+			return hashLedImprovement || pixelLedImprovement;
+		}
 
 		internal static IReadOnlyList<IReadOnlyList<int>>
 			BuildProgressiveOffsetBatches(int radius) {

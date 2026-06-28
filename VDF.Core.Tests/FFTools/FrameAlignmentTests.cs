@@ -106,4 +106,71 @@ public class FrameAlignmentTests {
 
 		Assert.Equal(expected, FrameAlignment.IsConfident(result));
 	}
+	[Fact]
+	public void NonZeroCandidate_MustClearlyBeatZeroBaseline() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 5,
+			MeanAbsoluteDifference: 0.070d);
+		var suspiciousFarMatch = new FrameAlignmentResult(
+			Offset: 29,
+			HashDistance: 3,
+			MeanAbsoluteDifference: 0.058d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				suspiciousFarMatch));
+	}
+
+	[Fact]
+	public void NearbyCandidate_CanBeatZeroWithClearImprovement() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 6,
+			MeanAbsoluteDifference: 0.080d);
+		var aligned = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.050d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				aligned));
+	}
+
+	[Fact]
+	public void LargeOffset_RequiresStrongEvidence() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 12,
+			MeanAbsoluteDifference: 0.120d);
+		var aligned = new FrameAlignmentResult(
+			Offset: 29,
+			HashDistance: 1,
+			MeanAbsoluteDifference: 0.035d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				aligned));
+	}
+
+	[Fact]
+	public void NonConfidentCandidate_NeverOverridesZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 10,
+			MeanAbsoluteDifference: 0.110d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 2,
+			HashDistance: 4,
+			MeanAbsoluteDifference: 0.040d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
 }
