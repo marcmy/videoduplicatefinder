@@ -21,6 +21,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
 using Avalonia.Markup.Xaml.Styling;
@@ -38,6 +39,8 @@ namespace VDF.GUI.Views {
 	public class MainWindow : Window {
 		bool keepBackupFile;
 		bool hasExited;
+		ScrollViewer? resultsScrollViewer;
+		double lastResultsThumbnailColumnWidth = double.NaN;
 
 		public readonly Core.FFTools.FFHardwareAccelerationMode InitialHwMode;
 		public MainWindow() {
@@ -46,6 +49,7 @@ namespace VDF.GUI.Views {
 			App.Lang.CurrentLanguage = SettingsFile.Instance.LanguageCode;
 
 			InitializeComponent();
+			ConfigureResultsGridScrolling();
 			Closing += MainWindow_Closing;
 			Opened += MainWindow_Opened;
 			//Don't use this Window.OnClosing event,
@@ -96,6 +100,110 @@ namespace VDF.GUI.Views {
 			};
 
 			ShowAlgoView();
+		}
+
+		void ConfigureResultsGridScrolling() {
+			var grid =
+				this.FindControl<DataGrid>("dataGridGrouping")!;
+
+			// DataGrid's default wheel path advances through virtualized rows.
+			// With grouped results and large rows this can pause at realization
+			// boundaries even though thumb dragging remains smooth. Intercept the
+			// wheel in the tunnel phase and move the underlying ScrollViewer by
+			// pixels instead.
+			grid.AddHandler(
+				PointerWheelChangedEvent,
+				OnResultsGridPointerWheelChanged,
+				RoutingStrategies.Tunnel,
+				handledEventsToo: true);
+
+			// Keep one deterministic row height for virtualization, but scale it
+			// when the user resizes the thumbnail column. This restores the old
+			// useful thumbnail growth without allowing each realized row to
+			// independently change the scroll extent.
+			grid.LayoutUpdated += (_, _) =>
+				UpdateResultsRowHeight(grid);
+			UpdateResultsRowHeight(grid);
+		}
+
+		void UpdateResultsRowHeight(DataGrid grid) {
+			var thumbnailColumn = grid.Columns.FirstOrDefault(
+				column =>
+					string.Equals(
+						column.Tag as string,
+						"Thumbnail",
+						StringComparison.Ordinal));
+
+			if (thumbnailColumn == null)
+				return;
+
+			double width = thumbnailColumn.ActualWidth;
+			if (!double.IsFinite(width) || width <= 0)
+				return;
+
+			if (double.IsFinite(lastResultsThumbnailColumnWidth) &&
+				Math.Abs(
+					width -
+					lastResultsThumbnailColumnWidth) < 0.5d) {
+				return;
+			}
+
+			lastResultsThumbnailColumnWidth = width;
+
+			// A quarter-ish of the column width gives multi-frame strips enough
+			// height to inspect while still keeping a practical number of rows
+			// visible. The bounds prevent absurdly tiny or giant result rows.
+			double rowHeight = Math.Clamp(
+				Math.Round(width * 0.28d + 12d),
+				96d,
+				260d);
+
+			if (Math.Abs(grid.RowHeight - rowHeight) >= 0.5d)
+				grid.RowHeight = rowHeight;
+		}
+
+		void OnResultsGridPointerWheelChanged(
+			object? sender,
+			PointerWheelEventArgs e) {
+			if (sender is not DataGrid grid ||
+				Math.Abs(e.Delta.Y) < 0.001d) {
+				return;
+			}
+
+			resultsScrollViewer ??=
+				grid
+					.GetVisualDescendants()
+					.OfType<ScrollViewer>()
+					.Where(viewer =>
+						viewer.Viewport.Height > 0)
+					.OrderByDescending(viewer =>
+						viewer.Extent.Height -
+						viewer.Viewport.Height)
+					.FirstOrDefault();
+
+			if (resultsScrollViewer == null)
+				return;
+
+			double maxOffset = Math.Max(
+				0d,
+				resultsScrollViewer.Extent.Height -
+					resultsScrollViewer.Viewport.Height);
+
+			double pixelsPerNotch = Math.Clamp(
+				grid.RowHeight * 0.65d,
+				64d,
+				160d);
+
+			double targetY = Math.Clamp(
+				resultsScrollViewer.Offset.Y -
+					e.Delta.Y * pixelsPerNotch,
+				0d,
+				maxOffset);
+
+			resultsScrollViewer.Offset = new Vector(
+				resultsScrollViewer.Offset.X,
+				targetY);
+			e.Handled = true;
 		}
 
 		async void ShowAlgoView() {

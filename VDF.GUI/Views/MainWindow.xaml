@@ -645,11 +645,10 @@
                                         Name="dataGridGrouping"
                                         CanUserResizeColumns="True"
                                         LoadingRowGroup="OnLoadingRowGroup"
-                                        RowHeight="88">
-                                        <!-- Keep item extent deterministic for DataGrid virtualization.
-                                             Auto-sized rows are remeasured as wrapped text and lazy
-                                             thumbnails enter the viewport, which can make the scrollbar
-                                             extent grow while slowly scrolling upward. -->
+                                        RowHeight="120">
+                                        <!-- RowHeight is kept deterministic for virtualization, but
+                                             code-behind scales it with the thumbnail column width so
+                                             thumbnails remain useful and respond to column resizing. -->
                                         <!-- KeyBindings are applied programmatically by KeyboardShortcutManager -->
                                         <DataGrid.Columns>
                                             <DataGridTemplateColumn>
@@ -680,8 +679,9 @@
                                                             <!-- Skeleton shimmer while thumbnail is loading -->
                                                             <Border Classes="skeleton-shimmer"
                                                                     Width="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ThumbnailMaxWidth}"
-                                                                    Height="56"
                                                                     Margin="4"
+                                                                    HorizontalAlignment="Stretch"
+                                                                    VerticalAlignment="Stretch"
                                                                     Background="#18808080">
                                                                 <Border.IsVisible>
                                                                     <MultiBinding Converter="{StaticResource ShowSkeletonConverter}">
@@ -696,13 +696,12 @@
                                                                  video strips (N thumbnails wide) stay small (issue #787). -->
                                                             <Image
                                                                 Name="ThumbnailImage"
-                                                                Height="56"
-                                                                MaxWidth="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ThumbnailMaxWidth}"
+                                                                Margin="4"
                                                                 Source="{Binding Thumbnail}"
                                                                 Stretch="Uniform"
                                                                 StretchDirection="DownOnly"
-                                                                HorizontalAlignment="Left"
-                                                                VerticalAlignment="Center"
+                                                                HorizontalAlignment="Stretch"
+                                                                VerticalAlignment="Stretch"
                                                                 ToolTip.Tip="{Binding ItemInfo.Path}">
                                                                 <i:Interaction.Behaviors>
                                                                     <ic:ExecuteCommandOnDoubleTappedBehavior Command="{Binding $parent[DataGrid].((vm:MainWindowVM)DataContext).ThumbnailDoubleClickCommand}" />
