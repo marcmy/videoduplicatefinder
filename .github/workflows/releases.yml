@@ -206,54 +206,42 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish:
-    name: Publish GUI release
+  publish-windows:
+    name: Publish Windows GUI release
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/native-hwaccel-from-crashfix'
-    needs:
-      - build-windows-gui
-      - build-other-gui
+    needs: build-windows-gui
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download validated GUI archives
+      - name: Download validated Windows GUI archive
         uses: actions/download-artifact@v8
         with:
-          pattern: release-*-gui
+          name: release-win-x64-gui
           path: release-assets
-          merge-multiple: true
 
-      - name: Validate release archives
+      - name: Validate Windows release archive
         shell: bash
         run: |
           set -euo pipefail
 
-          declare -A expected_entry=(
-            ["GUI-win-x64.zip"]="VDF.GUI.exe"
-            ["GUI-linux-x64.zip"]="VDF.GUI"
-            ["GUI-osx-x64.zip"]="VDF.GUI"
-            ["GUI-osx-arm64.zip"]="VDF.GUI"
-          )
+          archive="release-assets/GUI-win-x64.zip"
+          test -s "$archive"
 
-          for archive_name in "${!expected_entry[@]}"; do
-            archive="release-assets/$archive_name"
-            test -s "$archive"
+          if ! unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI\.exe$'; then
+            echo "GUI-win-x64.zip does not contain VDF.GUI.exe." >&2
+            exit 1
+          fi
 
-            if ! unzip -Z1 "$archive" | grep -Eq "(^|/)${expected_entry[$archive_name]}$"; then
-              echo "$archive_name does not contain ${expected_entry[$archive_name]}." >&2
-              exit 1
-            fi
+          if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+            echo "GUI-win-x64.zip contains debug symbols." >&2
+            exit 1
+          fi
 
-            if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
-              echo "$archive_name contains debug symbols." >&2
-              exit 1
-            fi
+          unzip -l "$archive"
 
-            unzip -l "$archive"
-          done
-
-      - name: Publish GUI archives
+      - name: Publish Windows GUI archive
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -281,7 +269,7 @@ jobs:
           allowed_assets=$'GUI-win-x64.zip\nGUI-linux-x64.zip\nGUI-osx-x64.zip\nGUI-osx-arm64.zip'
 
           if gh release view 4.0.x >/dev/null 2>&1; then
-            gh release upload 4.0.x release-assets/GUI-*.zip --clobber
+            gh release upload 4.0.x release-assets/GUI-win-x64.zip --clobber
             gh release edit 4.0.x --notes-file release-notes.md
 
             while IFS= read -r asset; do
@@ -290,7 +278,7 @@ jobs:
               fi
             done < <(gh release view 4.0.x --json assets --jq '.assets[].name')
           else
-            gh release create 4.0.x release-assets/GUI-*.zip \
+            gh release create 4.0.x release-assets/GUI-win-x64.zip \
               --target "$GITHUB_SHA" \
               --title "4.0.x" \
               --notes-file release-notes.md
@@ -306,3 +294,84 @@ jobs:
             exit 0
           }
           gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
+
+  publish-other:
+    name: Publish Linux and macOS GUI releases
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/native-hwaccel-from-crashfix'
+    needs: build-other-gui
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download validated Linux and macOS GUI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*-gui
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate Linux and macOS release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for archive_name in GUI-linux-x64.zip GUI-osx-x64.zip GUI-osx-arm64.zip; do
+            archive="release-assets/$archive_name"
+            test -s "$archive"
+
+            if ! unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI$'; then
+              echo "$archive_name does not contain VDF.GUI." >&2
+              exit 1
+            fi
+
+            if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+              echo "$archive_name contains debug symbols." >&2
+              exit 1
+            fi
+
+            unzip -l "$archive"
+          done
+
+      - name: Publish Linux and macOS GUI archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+          cat > release-notes.md <<EOF
+          Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
+
+          4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
+
+          GUI-only Native AOT builds from perf/native-hwaccel-from-crashfix:
+          - Windows x64
+          - Linux x64
+          - macOS x64
+          - macOS ARM64
+
+          This release intentionally no longer publishes CLI, Web, symbol, or full-bundle assets.
+
+          Last build based on $short_sha
+          EOF
+
+          allowed_assets=$'GUI-win-x64.zip\nGUI-linux-x64.zip\nGUI-osx-x64.zip\nGUI-osx-arm64.zip'
+
+          if gh release view 4.0.x >/dev/null 2>&1; then
+            gh release upload 4.0.x release-assets/GUI-linux-x64.zip release-assets/GUI-osx-x64.zip release-assets/GUI-osx-arm64.zip --clobber
+            gh release edit 4.0.x --notes-file release-notes.md
+
+            while IFS= read -r asset; do
+              if ! grep -Fxq "$asset" <<< "$allowed_assets"; then
+                gh release delete-asset 4.0.x "$asset" --yes
+              fi
+            done < <(gh release view 4.0.x --json assets --jq '.assets[].name')
+          else
+            gh release create 4.0.x release-assets/GUI-linux-x64.zip release-assets/GUI-osx-x64.zip release-assets/GUI-osx-arm64.zip \
+              --target "$GITHUB_SHA" \
+              --title "4.0.x" \
+              --notes-file release-notes.md
+          fi
