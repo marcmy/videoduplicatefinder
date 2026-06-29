@@ -226,6 +226,40 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void NearHashPerfectCandidateCanOverrideConfidentButNotExactZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.0141d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0116d);
+
+		Assert.True(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+
+	[Fact]
+	public void NearHashPerfectCandidateDoesNotOverrideNearlyExactZero() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 1,
+			MeanAbsoluteDifference: 0.0141d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0116d);
+
+		Assert.False(
+			FrameAlignment.IsClearImprovementOverZero(
+				zero,
+				candidate));
+	}
+
+	[Fact]
 	public void WeakImprovementDoesNotOverrideConfidentZero() {
 		var zero = new FrameAlignmentResult(
 			Offset: 0,

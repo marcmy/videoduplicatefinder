@@ -144,6 +144,10 @@ namespace VDF.Core.FFTools {
 		const int NonZeroDistancePenaltyEveryFrames = 8;
 		const int ConfidentZeroHashImprovementBonus = 1;
 		const double ConfidentZeroMeanImprovementBonus = 0.006d;
+		const int HashDominantNearMaxDistance = 4;
+		const int HashDominantCandidateHashDistance = 1;
+		const int HashDominantMinimumHashImprovement = 2;
+		const double HashDominantMinimumMeanImprovement = 0.002d;
 
 		const int NearlyExactHashDistance = 1;
 		const double NearlyExactMeanDifference = 0.018d;
@@ -180,6 +184,14 @@ namespace VDF.Core.FFTools {
 				zero.MeanAbsoluteDifference -
 				candidate.MeanAbsoluteDifference;
 
+			if (IsStrongNearHashImprovement(
+				zero,
+				candidate,
+				hashImprovement,
+				meanImprovement)) {
+				return true;
+			}
+
 			// Both independent measures must improve. Nearby corrections need
 			// clear evidence, and a zero frame that is already confident adds
 			// hysteresis so noise does not nudge an aligned pair off zero.
@@ -187,6 +199,18 @@ namespace VDF.Core.FFTools {
 				hashImprovement >= requiredHashImprovement &&
 				meanImprovement >= requiredMeanImprovement;
 		}
+
+		static bool IsStrongNearHashImprovement(
+			FrameAlignmentResult zero,
+			FrameAlignmentResult candidate,
+			int hashImprovement,
+			double meanImprovement) =>
+			!IsNearlyExact(zero) &&
+			Math.Abs(candidate.Offset) <= HashDominantNearMaxDistance &&
+			candidate.HashDistance <= HashDominantCandidateHashDistance &&
+			candidate.MeanAbsoluteDifference <= NearlyExactMeanDifference &&
+			hashImprovement >= HashDominantMinimumHashImprovement &&
+			meanImprovement >= HashDominantMinimumMeanImprovement;
 
 		static (int Hash, double Mean) GetRequiredImprovement(
 			FrameAlignmentResult zero,
