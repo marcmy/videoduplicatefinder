@@ -138,7 +138,7 @@ jobs:
             target: linux-x64
             archive: GUI-linux-x64.zip
           - label: macOS x64
-            runner: macos-13
+            runner: macos-15-intel
             target: osx-x64
             archive: GUI-osx-x64.zip
           - label: macOS ARM64
