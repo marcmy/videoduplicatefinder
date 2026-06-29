@@ -301,11 +301,67 @@ public class FrameAlignmentTests {
 			new[] { zero, nudge },
 			new Dictionary<int, double> {
 				[0] = 0.0500d,
+				[-1] = 0.0484d,
 				[1] = 0.0475d,
 			});
 
 		Assert.NotNull(result);
 		Assert.Equal(1, result.Value.Offset);
+	}
+
+	[Fact]
+	public void NearbyNudgeAllowsSubtleUniqueDetailWinner() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0300d);
+		var opposite = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0301d);
+		var nudge = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0300d);
+
+		FrameAlignmentResult? result = FrameAlignment.FindBestNearbyNudge(
+			zero,
+			new[] { opposite, zero, nudge },
+			new Dictionary<int, double> {
+				[-1] = 0.0040d,
+				[0] = 0.0037d,
+				[1] = 0.0035d,
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(1, result.Value.Offset);
+	}
+
+	[Fact]
+	public void NearbyNudgeRejectsOppositeSideTie() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0411d);
+		var candidate = new FrameAlignmentResult(
+			Offset: -1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0405d);
+		var opposite = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.0401d);
+
+		FrameAlignmentResult? result = FrameAlignment.FindBestNearbyNudge(
+			zero,
+			new[] { candidate, zero, opposite },
+			new Dictionary<int, double> {
+				[-1] = 0.0142d,
+				[0] = 0.0146d,
+				[1] = 0.0142d,
+			});
+
+		Assert.Null(result);
 	}
 
 	[Fact]
@@ -346,7 +402,7 @@ public class FrameAlignmentTests {
 			new[] { zero, candidate },
 			new Dictionary<int, double> {
 				[0] = 0.0500d,
-				[1] = 0.0498d,
+				[1] = 0.0499d,
 			});
 
 		Assert.Null(result);
