@@ -1,4 +1,4 @@
-name: Build Windows GUI release
+name: Build GUI releases
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  build-windows-gui:
     name: Build and test Windows GUI
     runs-on: windows-2022
     env:
@@ -109,7 +109,7 @@ jobs:
             throw "GUI archive is empty."
           }
 
-      - name: Upload validated GUI archive
+      - name: Upload validated Windows GUI archive
         uses: actions/upload-artifact@v7
         with:
           name: release-win-x64-gui
@@ -126,42 +126,134 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  build-other-gui:
+    name: Build ${{ matrix.label }} GUI
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-24.04
+            target: linux-x64
+            archive: GUI-linux-x64.zip
+          - label: macOS x64
+            runner: macos-13
+            target: osx-x64
+            archive: GUI-osx-x64.zip
+          - label: macOS ARM64
+            runner: macos-14
+            target: osx-arm64
+            archive: GUI-osx-arm64.zip
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Linux Native AOT dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT GUI
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          dotnet publish VDF.GUI/VDF.GUI.csproj \
+            -c Release \
+            -v q \
+            -p:PublishAot=true \
+            -r "$TARGET" \
+            -o outputGUI
+
+          test -f outputGUI/VDF.GUI
+
+      - name: Package GUI archive
+        shell: bash
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+
+          find outputGUI -type f \( -name '*.pdb' -o -name '*.dbg' \) -delete
+          find outputGUI -type d -name '*.dSYM' -prune -exec rm -rf {} +
+
+          if find outputGUI \( -type f \( -name '*.pdb' -o -name '*.dbg' \) -o -type d -name '*.dSYM' \) | grep -q .; then
+            echo "Runtime GUI output still contains debug symbols." >&2
+            exit 1
+          fi
+
+          (cd outputGUI && zip -r "../$ARCHIVE" .)
+          test -s "$ARCHIVE"
+
+      - name: Upload validated GUI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}-gui
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: Publish GUI release
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/native-hwaccel-from-crashfix'
-    needs: build-and-test
+    needs:
+      - build-windows-gui
+      - build-other-gui
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download validated GUI archive
+      - name: Download validated GUI archives
         uses: actions/download-artifact@v8
         with:
-          name: release-win-x64-gui
+          pattern: release-*-gui
           path: release-assets
+          merge-multiple: true
 
-      - name: Validate release archive
+      - name: Validate release archives
         shell: bash
         run: |
           set -euo pipefail
 
-          archive="release-assets/GUI-win-x64.zip"
-          test -s "$archive"
+          declare -A expected_entry=(
+            ["GUI-win-x64.zip"]="VDF.GUI.exe"
+            ["GUI-linux-x64.zip"]="VDF.GUI"
+            ["GUI-osx-x64.zip"]="VDF.GUI"
+            ["GUI-osx-arm64.zip"]="VDF.GUI"
+          )
 
-          if ! unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI\.exe$'; then
-            echo "GUI-win-x64.zip does not contain VDF.GUI.exe." >&2
-            exit 1
-          fi
+          for archive_name in "${!expected_entry[@]}"; do
+            archive="release-assets/$archive_name"
+            test -s "$archive"
 
-          if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
-            echo "GUI-win-x64.zip contains debug symbols." >&2
-            exit 1
-          fi
+            if ! unzip -Z1 "$archive" | grep -Eq "(^|/)${expected_entry[$archive_name]}$"; then
+              echo "$archive_name does not contain ${expected_entry[$archive_name]}." >&2
+              exit 1
+            fi
 
-          unzip -l "$archive"
+            if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+              echo "$archive_name contains debug symbols." >&2
+              exit 1
+            fi
 
-      - name: Publish only GUI-win-x64.zip
+            unzip -l "$archive"
+          done
+
+      - name: Publish GUI archives
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -175,24 +267,30 @@ jobs:
 
           4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
 
-          Windows x64 GUI-only Native AOT build from perf/native-hwaccel-from-crashfix.
+          GUI-only Native AOT builds from perf/native-hwaccel-from-crashfix:
+          - Windows x64
+          - Linux x64
+          - macOS x64
+          - macOS ARM64
 
-          This release intentionally no longer publishes CLI, Web, Linux, macOS, ARM64, symbol, or full-bundle assets.
+          This release intentionally no longer publishes CLI, Web, symbol, or full-bundle assets.
 
           Last build based on $short_sha
           EOF
 
+          allowed_assets=$'GUI-win-x64.zip\nGUI-linux-x64.zip\nGUI-osx-x64.zip\nGUI-osx-arm64.zip'
+
           if gh release view 4.0.x >/dev/null 2>&1; then
-            gh release upload 4.0.x release-assets/GUI-win-x64.zip --clobber
+            gh release upload 4.0.x release-assets/GUI-*.zip --clobber
             gh release edit 4.0.x --notes-file release-notes.md
 
             while IFS= read -r asset; do
-              if [[ "$asset" != "GUI-win-x64.zip" ]]; then
+              if ! grep -Fxq "$asset" <<< "$allowed_assets"; then
                 gh release delete-asset 4.0.x "$asset" --yes
               fi
             done < <(gh release view 4.0.x --json assets --jq '.assets[].name')
           else
-            gh release create 4.0.x release-assets/GUI-win-x64.zip \
+            gh release create 4.0.x release-assets/GUI-*.zip \
               --target "$GITHUB_SHA" \
               --title "4.0.x" \
               --notes-file release-notes.md
