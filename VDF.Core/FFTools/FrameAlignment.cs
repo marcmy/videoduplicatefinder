@@ -164,7 +164,8 @@ namespace VDF.Core.FFTools {
 		const int MaxUsableCandidateHashDistance = 12;
 		const double MaxUsableCandidateMeanDifference = 0.14d;
 		const double NearbyNudgeMeanRegressionTolerance = 0.001d;
-		const double NearbyNudgeDetailImprovement = 0.00035d;
+		const double NearbyNudgeDetailImprovement = 0.00015d;
+		const double NearbyNudgeOppositeDetailMargin = 0.0004d;
 		const double NearbyNudgeDetailTieTolerance = 0.0001d;
 
 		internal static bool IsNearlyExact(
@@ -263,6 +264,13 @@ namespace VDF.Core.FFTools {
 					continue;
 				if (zeroDetail - detailMeanDifference <
 					NearbyNudgeDetailImprovement) {
+					continue;
+				}
+				if (detailMeanDifferences.TryGetValue(
+						-result.Offset,
+						out double oppositeDetailMeanDifference) &&
+					oppositeDetailMeanDifference - detailMeanDifference <
+						NearbyNudgeOppositeDetailMargin) {
 					continue;
 				}
 
