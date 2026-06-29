@@ -47,12 +47,8 @@ namespace VDF.Core.FFTools {
 				int hashDistance =
 					BitOperations.PopCount(referenceHash ^ candidateHash);
 
-				long absoluteDifference = 0;
-				for (int i = 0; i < reference.Length; i++)
-					absoluteDifference += Math.Abs(reference[i] - gray[i]);
-
 				double meanDifference =
-					absoluteDifference / (255d * reference.Length);
+					CalculateMeanAbsoluteDifference(reference, gray);
 
 				var result = new FrameAlignmentResult(
 					candidate.Offset,
@@ -97,6 +93,24 @@ namespace VDF.Core.FFTools {
 				return candidateDistance < currentDistance;
 
 			return candidate.Offset < current.Offset;
+		}
+
+		internal static double CalculateMeanAbsoluteDifference(
+			byte[] reference,
+			byte[] candidate) {
+			ArgumentNullException.ThrowIfNull(reference);
+			ArgumentNullException.ThrowIfNull(candidate);
+			if (reference.Length != candidate.Length) {
+				throw new ArgumentException(
+					"Candidate frame must have the same length as the reference.",
+					nameof(candidate));
+			}
+
+			long absoluteDifference = 0;
+			for (int i = 0; i < reference.Length; i++)
+				absoluteDifference += Math.Abs(reference[i] - candidate[i]);
+
+			return absoluteDifference / (255d * reference.Length);
 		}
 
 		internal static int CalculateCoarseStep(int radius) =>
@@ -149,6 +163,9 @@ namespace VDF.Core.FFTools {
 		const double NearlyExactMeanDifference = 0.018d;
 		const int MaxUsableCandidateHashDistance = 12;
 		const double MaxUsableCandidateMeanDifference = 0.14d;
+		const double NearbyNudgeMeanRegressionTolerance = 0.001d;
+		const double NearbyNudgeDetailImprovement = 0.00035d;
+		const double NearbyNudgeDetailTieTolerance = 0.0001d;
 
 		internal static bool IsNearlyExact(
 			FrameAlignmentResult result) =>
@@ -227,6 +244,65 @@ namespace VDF.Core.FFTools {
 			return best;
 		}
 
+		internal static FrameAlignmentResult? FindBestNearbyNudge(
+			FrameAlignmentResult zero,
+			IEnumerable<FrameAlignmentResult> results,
+			IReadOnlyDictionary<int, double> detailMeanDifferences) {
+			if (!detailMeanDifferences.TryGetValue(0, out double zeroDetail))
+				return null;
+
+			FrameAlignmentResult? best = null;
+			double bestDetail = double.MaxValue;
+
+			foreach (FrameAlignmentResult result in results) {
+				if (!IsPotentialNearbyNudge(zero, result))
+					continue;
+				if (!detailMeanDifferences.TryGetValue(
+					result.Offset,
+					out double detailMeanDifference))
+					continue;
+				if (zeroDetail - detailMeanDifference <
+					NearbyNudgeDetailImprovement) {
+					continue;
+				}
+
+				if (!best.HasValue ||
+					detailMeanDifference <
+						bestDetail - NearbyNudgeDetailTieTolerance ||
+					(Math.Abs(detailMeanDifference - bestDetail) <=
+						NearbyNudgeDetailTieTolerance &&
+						IsBetter(result, best.Value))) {
+					best = result;
+					bestDetail = detailMeanDifference;
+				}
+			}
+
+			return best;
+		}
+
+		internal static bool HasNearbyNudgeCandidate(
+			FrameAlignmentResult zero,
+			IEnumerable<FrameAlignmentResult> results) =>
+			results.Any(result => IsPotentialNearbyNudge(zero, result));
+
+		static bool IsPotentialNearbyNudge(
+			FrameAlignmentResult zero,
+			FrameAlignmentResult result) {
+			if (Math.Abs(result.Offset) != 1)
+				return false;
+			if (result.HashDistance > zero.HashDistance)
+				return false;
+			if (result.HashDistance > MaxUsableCandidateHashDistance ||
+				result.MeanAbsoluteDifference >
+					MaxUsableCandidateMeanDifference) {
+				return false;
+			}
+
+			return result.MeanAbsoluteDifference -
+				zero.MeanAbsoluteDifference <=
+				NearbyNudgeMeanRegressionTolerance;
+		}
+
 		internal static int SelectConsensusOffset(
 			int primaryOffset,
 			IReadOnlyList<int> offsets) {
@@ -234,6 +310,8 @@ namespace VDF.Core.FFTools {
 				return primaryOffset;
 			if (primaryOffset == 0)
 				return 0;
+			if (Math.Abs(primaryOffset) <= 1)
+				return primaryOffset;
 
 			int matchingVotes = offsets.Count(offset => offset == primaryOffset);
 			return matchingVotes >= 2 ? primaryOffset : 0;

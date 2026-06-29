@@ -1054,11 +1054,12 @@ namespace VDF.Core.FFTools {
 			return true;
 		}
 
-		static unsafe byte[] ExtractGray32FromFrame(AVFrame convertedFrame) {
-			const int N = 32;
+		static unsafe byte[] ExtractGrayFrameFromFrame(
+			AVFrame convertedFrame,
+			int sideLength) {
 			int width = convertedFrame.width;
 			int height = convertedFrame.height;
-			if (width != N || height != N) throw new Exception($"Unexpected size {width}x{height}, expected {N}.");
+			if (width != sideLength || height != sideLength) throw new Exception($"Unexpected size {width}x{height}, expected {sideLength}.");
 			if (convertedFrame.data[0] == null) throw new Exception("Converted frame has no data[0] (null).");
 			if (convertedFrame.linesize[0] < width) throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
 			int srcStride = convertedFrame.linesize[0];
@@ -1070,6 +1071,9 @@ namespace VDF.Core.FFTools {
 			}
 			return outBuf;
 		}
+
+		static unsafe byte[] ExtractGray32FromFrame(AVFrame convertedFrame) =>
+			ExtractGrayFrameFromFrame(convertedFrame, 32);
 
 		static List<GrayByteRequest> GetMissingGrayByteRequests(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds) {
 			List<GrayByteRequest> requests = new();
@@ -1096,7 +1100,7 @@ namespace VDF.Core.FFTools {
 			return framePixelFormat;
 		}
 
-		static unsafe byte[] ExtractGrayBytesFromFrame(VideoStreamDecoder vsd, AVFrame srcFrame, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, out long convertMs, out long copyMs) {
+		static unsafe byte[] ExtractGrayBytesFromFrame(VideoStreamDecoder vsd, AVFrame srcFrame, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, out long convertMs, out long copyMs, int sideLength = 32) {
 			Size sourceSize = new(srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width, srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
 			if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
 				throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
@@ -1107,7 +1111,7 @@ namespace VDF.Core.FFTools {
 
 			if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSourcePixelFormat) {
 				converter?.Dispose();
-				converter = new VideoFrameConverter(sourceSize, srcPixFmt, new Size(32, 32), AVPixelFormat.AV_PIX_FMT_GRAY8, VideoFrameConverter.ScaleQuality.FastBilinear, false);
+				converter = new VideoFrameConverter(sourceSize, srcPixFmt, new Size(sideLength, sideLength), AVPixelFormat.AV_PIX_FMT_GRAY8, VideoFrameConverter.ScaleQuality.FastBilinear, false);
 				converterSourceSize = sourceSize;
 				converterSourcePixelFormat = srcPixFmt;
 			}
@@ -1118,7 +1122,7 @@ namespace VDF.Core.FFTools {
 			convertMs = phaseSw.ElapsedMilliseconds;
 
 			phaseSw.Restart();
-			byte[] outBuf = ExtractGray32FromFrame(convertedFrame);
+			byte[] outBuf = ExtractGrayFrameFromFrame(convertedFrame, sideLength);
 			copyMs = phaseSw.ElapsedMilliseconds;
 
 			return outBuf;
@@ -1578,10 +1582,14 @@ namespace VDF.Core.FFTools {
 			return frames;
 		}
 
+		static int GetGrayScaleSideLength(int sideLength) =>
+			sideLength > 0 ? Math.Clamp(sideLength, 16, 256) : 32;
+
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging, int timeoutMilliseconds = TimeoutDuration) {
-			const int N = 32;
-			const int ExpectedBytes = N * N;
 			bool isGrayByte = settings.GrayScale == 1;
+			int graySideLength =
+				GetGrayScaleSideLength(settings.GrayScaleSize);
+			int expectedGrayBytes = graySideLength * graySideLength;
 			string hardwarePolicy = "unresolved";
 			bool bypassHardwareForFamily = isGrayByte && ShouldBypassGrayByteHardwareForFamily(settings.HardwareFamilyKey);
 			bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(
@@ -1656,7 +1664,7 @@ namespace VDF.Core.FFTools {
 						: GetDisplaySizeForSampleAspectRatio(
 							sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
 					Size destinationSize = isGrayByte
-						? new Size(N, N)
+						? new Size(graySideLength, graySideLength)
 						: settings.Fullsize == 1
 							? displaySize
 							: ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
@@ -1670,7 +1678,10 @@ namespace VDF.Core.FFTools {
 
 					phaseSw.Restart();
 					if (isGrayByte) {
-						byte[] outBuf = ExtractGray32FromFrame(convertedFrame);
+						byte[] outBuf =
+							ExtractGrayFrameFromFrame(
+								convertedFrame,
+								graySideLength);
 						copyMs = phaseSw.ElapsedMilliseconds;
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
@@ -1759,7 +1770,7 @@ namespace VDF.Core.FFTools {
 			}
 
 			if (isGrayByte) {
-				string vfChain = $"scale={N}:{N}:flags=bicubic,format=gray";
+				string vfChain = $"scale={graySideLength}:{graySideLength}:flags=bicubic,format=gray";
 				if (userVfFilter != null) vfChain = $"{userVfFilter},{vfChain}";
 				psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
 				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
@@ -1845,8 +1856,8 @@ namespace VDF.Core.FFTools {
 
 				bytes = ms.ToArray();
 				if (bytes.Length == 0) bytes = null;
-				else if (isGrayByte && bytes.Length != ExpectedBytes) {
-					errOut.AppendLine($"graybytes length != {ExpectedBytes} (got {bytes.Length})");
+				else if (isGrayByte && bytes.Length != expectedGrayBytes) {
+					errOut.AppendLine($"graybytes length != {expectedGrayBytes} (got {bytes.Length})");
 					bytes = null;
 				}
 				if (bytes != null && processAttemptedHardware)
@@ -2041,10 +2052,12 @@ namespace VDF.Core.FFTools {
 			IReadOnlyList<TimeSpan> positions,
 			bool extendedLogging = false,
 			string? hardwareCodecName = null,
-			int processTimeoutMilliseconds = TimeoutDuration) {
+			int processTimeoutMilliseconds = TimeoutDuration,
+			int graySideLength = 32) {
 			var frames = new byte[]?[positions.Count];
 			if (positions.Count == 0)
 				return frames.ToList();
+			graySideLength = GetGrayScaleSideLength(graySideLength);
 
 			bool forceCpuForRemaining = false;
 			if (ShouldUseNativeBinding) {
@@ -2054,7 +2067,8 @@ namespace VDF.Core.FFTools {
 					extendedLogging,
 					hardwareCodecName,
 					frames,
-					ref forceCpuForRemaining);
+					ref forceCpuForRemaining,
+					graySideLength: graySideLength);
 			}
 
 			for (int i = 0; i < positions.Count; i++) {
@@ -2064,6 +2078,7 @@ namespace VDF.Core.FFTools {
 					GrayScale = 1,
 					HardwareCodecName = hardwareCodecName,
 					ForceCpuDecode = forceCpuForRemaining,
+					GrayScaleSize = graySideLength,
 				}, extendedLogging, processTimeoutMilliseconds);
 			}
 
@@ -2077,7 +2092,9 @@ namespace VDF.Core.FFTools {
 			string? hardwareCodecName,
 			byte[]?[] frames,
 			ref bool forceCpuForRemaining,
-			bool forceCpuDecode = false) {
+			bool forceCpuDecode = false,
+			int graySideLength = 32) {
+			graySideLength = GetGrayScaleSideLength(graySideLength);
 			string hardwarePolicy =
 				forceCpuDecode
 					? "hardware-decode-failure-cpu-retry"
@@ -2144,7 +2161,8 @@ namespace VDF.Core.FFTools {
 							ref converterSourceSize,
 							ref converterSourcePixelFormat,
 							out long convertMs,
-							out long copyMs);
+							out long copyMs,
+							graySideLength);
 
 						frames[i] = gray;
 						anySuccess = true;
@@ -2216,7 +2234,8 @@ namespace VDF.Core.FFTools {
 						hardwareCodecName,
 						frames,
 						ref forceCpuForRemaining,
-						forceCpuDecode: true);
+						forceCpuDecode: true,
+						graySideLength: graySideLength);
 				}
 
 				Logger.Instance.Info(
@@ -2516,6 +2535,7 @@ namespace VDF.Core.FFTools {
 
 	internal struct FfmpegSettings {
 		public byte GrayScale;
+		public int GrayScaleSize;
 		public byte Fullsize;
 		public string File;
 		public TimeSpan Position;

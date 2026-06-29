@@ -298,6 +298,7 @@ namespace VDF.GUI.ViewModels {
 		const int AutoAlignSearchRadiusFrames = 30;
 		const int AutoAlignProcessTimeoutMilliseconds = 2_000;
 		const int AutoAlignRefinementRounds = 4;
+		const int AutoAlignDetailGraySize = 96;
 		static readonly TimeSpan AutoAlignTimeBudget =
 			TimeSpan.FromSeconds(6);
 
@@ -720,8 +721,16 @@ namespace VDF.GUI.ViewModels {
 				itemB,
 				baseIndex,
 				cancellationToken);
-			if (primary.Offset == 0)
-				return 0;
+			if (primary.Offset == 0) {
+				return FindNearbyVisualNudgeOffset(
+					itemA,
+					itemB,
+					baseIndex,
+					primary,
+					cancellationToken) ?? 0;
+			}
+			if (Math.Abs(primary.Offset) <= 1)
+				return primary.Offset;
 
 			IReadOnlyList<int> consensusBaseIndices =
 				BuildAutoAlignConsensusBaseIndices(
@@ -757,7 +766,15 @@ namespace VDF.GUI.ViewModels {
 				offsets,
 				primary.Offset,
 				consensusOffset);
-			return consensusOffset;
+			if (consensusOffset != 0)
+				return consensusOffset;
+
+			return FindNearbyVisualNudgeOffset(
+				itemA,
+				itemB,
+				baseIndex,
+				primary,
+				cancellationToken) ?? 0;
 		}
 
 		static IReadOnlyList<int> BuildAutoAlignConsensusBaseIndices(
@@ -777,7 +794,77 @@ namespace VDF.GUI.ViewModels {
 
 		readonly record struct AutoAlignProbe(
 			int BaseIndex,
-			int Offset);
+			int Offset,
+			FrameAlignmentResult? ZeroResult,
+			IReadOnlyList<FrameAlignmentResult> Results) {
+			public static AutoAlignProbe Empty(int baseIndex) =>
+				new(baseIndex, 0, null, Array.Empty<FrameAlignmentResult>());
+		}
+
+		int? FindNearbyVisualNudgeOffset(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			AutoAlignProbe primary,
+			CancellationToken cancellationToken) {
+			if (!primary.ZeroResult.HasValue ||
+				primary.Results.Count == 0) {
+				return null;
+			}
+			if (!FrameAlignment.HasNearbyNudgeCandidate(
+				primary.ZeroResult.Value,
+				primary.Results)) {
+				return null;
+			}
+
+			cancellationToken.ThrowIfCancellationRequested();
+
+			byte[]? detailReference = ExtractAlignmentCandidates(
+				itemA,
+				baseIndex,
+				new[] { 0 },
+				cancellationToken,
+				AutoAlignDetailGraySize)[0].GrayBytes;
+
+			if (detailReference == null)
+				return null;
+
+			IReadOnlyList<FrameAlignmentCandidate> detailCandidates =
+				ExtractAlignmentCandidates(
+					itemB,
+					baseIndex,
+					new[] { -1, 0, 1 },
+					cancellationToken,
+					AutoAlignDetailGraySize);
+
+			var detailMeanDifferences = new Dictionary<int, double>();
+			foreach (FrameAlignmentCandidate candidate in detailCandidates) {
+				byte[]? gray = candidate.GrayBytes;
+				if (gray == null || gray.Length != detailReference.Length)
+					continue;
+
+				detailMeanDifferences[candidate.Offset] =
+					FrameAlignment.CalculateMeanAbsoluteDifference(
+						detailReference,
+						gray);
+			}
+
+			FrameAlignmentResult? selected =
+				FrameAlignment.FindBestNearbyNudge(
+					primary.ZeroResult.Value,
+					primary.Results,
+					detailMeanDifferences);
+
+			LogAutoAlignNudgeDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				primary.Results,
+				detailMeanDifferences,
+				selected);
+
+			return selected?.Offset;
+		}
 
 		AutoAlignProbe FindBestAlignmentOffsetForBase(
 			LargeThumbnailDuplicateItem itemA,
@@ -797,9 +884,9 @@ namespace VDF.GUI.ViewModels {
 				cancellationToken)[0].GrayBytes;
 
 			if (reference == null)
-				return new AutoAlignProbe(baseIndex, 0);
+				return AutoAlignProbe.Empty(baseIndex);
 			if (searchStopwatch.Elapsed >= AutoAlignTimeBudget)
-				return new AutoAlignProbe(baseIndex, 0);
+				return AutoAlignProbe.Empty(baseIndex);
 
 			void AddCandidates(IReadOnlyList<int> offsets) {
 				IReadOnlyList<int> untested = offsets
@@ -834,9 +921,13 @@ namespace VDF.GUI.ViewModels {
 			IReadOnlyList<FrameAlignmentResult> zeroResults = Results();
 			FrameAlignmentResult? zeroResult = Best(zeroResults);
 			if (!zeroResult.HasValue)
-				return new AutoAlignProbe(baseIndex, 0);
+				return AutoAlignProbe.Empty(baseIndex);
 			if (FrameAlignment.IsNearlyExact(zeroResult.Value))
-				return new AutoAlignProbe(baseIndex, 0);
+				return new AutoAlignProbe(
+					baseIndex,
+					0,
+					zeroResult.Value,
+					zeroResults);
 
 			bool budgetExpired = false;
 
@@ -903,7 +994,53 @@ namespace VDF.GUI.ViewModels {
 
 			return new AutoAlignProbe(
 				baseIndex,
-				finalBest?.Offset ?? 0);
+				finalBest?.Offset ?? 0,
+				zeroResult.Value,
+				finalResults);
+		}
+
+		static void LogAutoAlignNudgeDiagnostics(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			IReadOnlyList<FrameAlignmentResult> results,
+			IReadOnlyDictionary<int, double> detailMeanDifferences,
+			FrameAlignmentResult? selected) {
+			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
+				return;
+
+			static string FormatDetail(double? detail) =>
+				detail.HasValue ? detail.Value.ToString("F4") : "n/a";
+
+			string Format(FrameAlignmentResult result) {
+				detailMeanDifferences.TryGetValue(
+					result.Offset,
+					out double detail);
+				return
+					$"{result.Offset}:h={result.HashDistance},mad=" +
+					$"{result.MeanAbsoluteDifference:F4},detail=" +
+					$"{FormatDetail(
+						detailMeanDifferences.ContainsKey(result.Offset)
+							? detail
+							: null)}";
+			}
+
+			string resultText = string.Join(
+				"; ",
+				results
+					.Where(result => Math.Abs(result.Offset) <= 1)
+					.OrderBy(result => result.Offset)
+					.Select(Format));
+			string selectedText =
+				selected.HasValue ? Format(selected.Value) : "0";
+
+			VDF.Core.Utils.Logger.Instance.Info(
+				$"Thumbnail comparer auto-align nudge " +
+				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
+				$"vs " +
+				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
+				$"base={baseIndex}: selected={selectedText}, " +
+				$"candidates=[{resultText}]");
 		}
 
 		static void LogAutoAlignConsensusDiagnostics(
@@ -972,7 +1109,8 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem item,
 			int baseIndex,
 			IReadOnlyList<int> offsets,
-			CancellationToken cancellationToken) {
+			CancellationToken cancellationToken,
+			int graySideLength = 32) {
 			var candidates =
 				new List<FrameAlignmentCandidate>(offsets.Count);
 			var missingOffsets = new List<int>();
@@ -986,6 +1124,7 @@ namespace VDF.GUI.ViewModels {
 				if (item.TryGetCachedAlignmentGrayFrame(
 					baseIndex,
 					offset,
+					graySideLength,
 					out byte[]? cachedGray)) {
 					candidates.Add(
 						new FrameAlignmentCandidate(
@@ -1013,7 +1152,8 @@ namespace VDF.GUI.ViewModels {
 					missingTimestamps,
 					SettingsFile.Instance.ExtendedFFToolsLogging,
 					item.Item.ItemInfo.Format,
-					AutoAlignProcessTimeoutMilliseconds);
+					AutoAlignProcessTimeoutMilliseconds,
+					graySideLength);
 
 				for (int i = 0; i < missingOffsets.Count; i++) {
 					byte[]? gray =
@@ -1022,6 +1162,7 @@ namespace VDF.GUI.ViewModels {
 					item.CacheAlignmentGrayFrame(
 						baseIndex,
 						offset,
+						graySideLength,
 						gray);
 
 					candidates[missingCandidateIndexes[i]] =
@@ -1176,7 +1317,7 @@ namespace VDF.GUI.ViewModels {
 		public IReadOnlyList<Bitmap> Frames => _frames;
 		readonly List<Bitmap> _frames = new();
 		readonly Dictionary<(int, int), Bitmap?> _offsetFrameCache = new();
-		readonly Dictionary<(int, int), byte[]?> _alignmentGrayCache = new();
+		readonly Dictionary<(int, int, int), byte[]?> _alignmentGrayCache = new();
 
 		public string FileName => System.IO.Path.GetFileName(Item.ItemInfo.Path);
 
@@ -1256,10 +1397,11 @@ namespace VDF.GUI.ViewModels {
 		public bool TryGetCachedAlignmentGrayFrame(
 			int thumbnailIndex,
 			int offset,
+			int sideLength,
 			out byte[]? gray) {
 			lock (_alignmentGrayCache) {
 				return _alignmentGrayCache.TryGetValue(
-					(thumbnailIndex, offset),
+					(thumbnailIndex, offset, sideLength),
 					out gray);
 			}
 		}
@@ -1267,12 +1409,13 @@ namespace VDF.GUI.ViewModels {
 		public void CacheAlignmentGrayFrame(
 			int thumbnailIndex,
 			int offset,
+			int sideLength,
 			byte[]? gray) {
 			if (gray == null)
 				return;
 
 			lock (_alignmentGrayCache) {
-				_alignmentGrayCache[(thumbnailIndex, offset)] = gray;
+				_alignmentGrayCache[(thumbnailIndex, offset, sideLength)] = gray;
 			}
 		}
 
