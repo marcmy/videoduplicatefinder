@@ -286,6 +286,73 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void NearbyNudgeAllowsOneFrameDetailImprovement() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0300d);
+		var nudge = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0302d);
+
+		FrameAlignmentResult? result = FrameAlignment.FindBestNearbyNudge(
+			zero,
+			new[] { zero, nudge },
+			new Dictionary<int, double> {
+				[0] = 0.0500d,
+				[1] = 0.0475d,
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(1, result.Value.Offset);
+	}
+
+	[Fact]
+	public void NearbyNudgeRejectsHashRegression() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 2,
+			MeanAbsoluteDifference: 0.045d);
+		var misleading = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 6,
+			MeanAbsoluteDifference: 0.028d);
+
+		FrameAlignmentResult? result = FrameAlignment.FindBestNearbyNudge(
+			zero,
+			new[] { zero, misleading },
+			new Dictionary<int, double> {
+				[0] = 0.080d,
+				[1] = 0.040d,
+			});
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void NearbyNudgeRejectsFlatDetailSignal() {
+		var zero = new FrameAlignmentResult(
+			Offset: 0,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0300d);
+		var candidate = new FrameAlignmentResult(
+			Offset: 1,
+			HashDistance: 0,
+			MeanAbsoluteDifference: 0.0299d);
+
+		FrameAlignmentResult? result = FrameAlignment.FindBestNearbyNudge(
+			zero,
+			new[] { zero, candidate },
+			new Dictionary<int, double> {
+				[0] = 0.0500d,
+				[1] = 0.0498d,
+			});
+
+		Assert.Null(result);
+	}
+
+	[Fact]
 	public void ConsensusOffsetKeepsSingleAnchorDecision() {
 		Assert.Equal(
 			3,
@@ -310,6 +377,15 @@ public class FrameAlignmentTests {
 			FrameAlignment.SelectConsensusOffset(
 				3,
 				new[] { 3, 3, 0 }));
+	}
+
+	[Fact]
+	public void ConsensusOffsetKeepsOneFrameLocalNudge() {
+		Assert.Equal(
+			1,
+			FrameAlignment.SelectConsensusOffset(
+				1,
+				new[] { 1, 0, -1 }));
 	}
 
 	[Fact]
