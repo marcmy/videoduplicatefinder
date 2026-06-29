@@ -227,6 +227,18 @@ namespace VDF.Core.FFTools {
 			return best;
 		}
 
+		internal static int SelectConsensusOffset(
+			int primaryOffset,
+			IReadOnlyList<int> offsets) {
+			if (offsets.Count <= 1)
+				return primaryOffset;
+			if (primaryOffset == 0)
+				return 0;
+
+			int matchingVotes = offsets.Count(offset => offset == primaryOffset);
+			return matchingVotes >= 2 ? primaryOffset : 0;
+		}
+
 		internal static IReadOnlyList<IReadOnlyList<int>>
 			BuildProgressiveOffsetBatches(int radius) {
 			radius = Math.Clamp(radius, 1, 300);

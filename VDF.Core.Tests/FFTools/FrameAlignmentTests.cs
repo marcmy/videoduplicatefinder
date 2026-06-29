@@ -286,6 +286,42 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void ConsensusOffsetKeepsSingleAnchorDecision() {
+		Assert.Equal(
+			3,
+			FrameAlignment.SelectConsensusOffset(
+				3,
+				new[] { 3 }));
+	}
+
+	[Fact]
+	public void ConsensusOffsetRequiresNeighborAgreement() {
+		Assert.Equal(
+			0,
+			FrameAlignment.SelectConsensusOffset(
+				3,
+				new[] { 3, 0, -3 }));
+	}
+
+	[Fact]
+	public void ConsensusOffsetAcceptsMatchingNeighborVote() {
+		Assert.Equal(
+			3,
+			FrameAlignment.SelectConsensusOffset(
+				3,
+				new[] { 3, 3, 0 }));
+	}
+
+	[Fact]
+	public void ConsensusOffsetDoesNotLetNeighborsOverridePrimaryZero() {
+		Assert.Equal(
+			0,
+			FrameAlignment.SelectConsensusOffset(
+				0,
+				new[] { 0, 3, 3 }));
+	}
+
+	[Fact]
 	public void ImprovementInOnlyOneMetric_DoesNotOverrideZero() {
 		var zero = new FrameAlignmentResult(
 			Offset: 0,

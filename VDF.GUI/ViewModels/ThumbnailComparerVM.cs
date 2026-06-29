@@ -715,25 +715,91 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
 			CancellationToken cancellationToken) {
+			AutoAlignProbe primary = FindBestAlignmentOffsetForBase(
+				itemA,
+				itemB,
+				baseIndex,
+				cancellationToken);
+			if (primary.Offset == 0)
+				return 0;
+
+			IReadOnlyList<int> consensusBaseIndices =
+				BuildAutoAlignConsensusBaseIndices(
+					baseIndex,
+					Math.Min(
+						itemA.Item.ItemInfo.ThumbnailTimestamps.Count,
+						itemB.Item.ItemInfo.ThumbnailTimestamps.Count));
+			if (consensusBaseIndices.Count <= 1)
+				return primary.Offset;
+
+			var offsets = new List<int> { primary.Offset };
+			foreach (int consensusBaseIndex in consensusBaseIndices) {
+				if (consensusBaseIndex == baseIndex)
+					continue;
+
+				AutoAlignProbe probe = FindBestAlignmentOffsetForBase(
+					itemA,
+					itemB,
+					consensusBaseIndex,
+					cancellationToken);
+				offsets.Add(probe.Offset);
+			}
+
+			int consensusOffset =
+				FrameAlignment.SelectConsensusOffset(
+					primary.Offset,
+					offsets);
+			LogAutoAlignConsensusDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				consensusBaseIndices,
+				offsets,
+				primary.Offset,
+				consensusOffset);
+			return consensusOffset;
+		}
+
+		static IReadOnlyList<int> BuildAutoAlignConsensusBaseIndices(
+			int baseIndex,
+			int baseCount) {
+			if (baseCount <= 1)
+				return new[] { baseIndex };
+
+			var indices = new List<int> { baseIndex };
+			if (baseIndex > 0)
+				indices.Add(baseIndex - 1);
+			if (baseIndex + 1 < baseCount)
+				indices.Add(baseIndex + 1);
+
+			return indices;
+		}
+
+		readonly record struct AutoAlignProbe(
+			int BaseIndex,
+			int Offset);
+
+		AutoAlignProbe FindBestAlignmentOffsetForBase(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			CancellationToken cancellationToken) {
 			var searchStopwatch = Stopwatch.StartNew();
 			var testedOffsets = new HashSet<int>();
 			var candidates = new List<FrameAlignmentCandidate>();
 
 			cancellationToken.ThrowIfCancellationRequested();
 
-			TimeSpan referenceTimestamp =
-				GetAlignmentFrameTimestamp(itemA, baseIndex, 0);
-			byte[]? reference = FfmpegEngine.ExtractGrayFrames(
-				itemA.Item.ItemInfo.Path,
-				new[] { referenceTimestamp },
-				SettingsFile.Instance.ExtendedFFToolsLogging,
-				itemA.Item.ItemInfo.Format,
-				AutoAlignProcessTimeoutMilliseconds).FirstOrDefault();
+			byte[]? reference = ExtractAlignmentCandidates(
+				itemA,
+				baseIndex,
+				new[] { 0 },
+				cancellationToken)[0].GrayBytes;
 
 			if (reference == null)
-				return null;
+				return new AutoAlignProbe(baseIndex, 0);
 			if (searchStopwatch.Elapsed >= AutoAlignTimeBudget)
-				return 0;
+				return new AutoAlignProbe(baseIndex, 0);
 
 			void AddCandidates(IReadOnlyList<int> offsets) {
 				IReadOnlyList<int> untested = offsets
@@ -768,9 +834,9 @@ namespace VDF.GUI.ViewModels {
 			IReadOnlyList<FrameAlignmentResult> zeroResults = Results();
 			FrameAlignmentResult? zeroResult = Best(zeroResults);
 			if (!zeroResult.HasValue)
-				return 0;
+				return new AutoAlignProbe(baseIndex, 0);
 			if (FrameAlignment.IsNearlyExact(zeroResult.Value))
-				return 0;
+				return new AutoAlignProbe(baseIndex, 0);
 
 			bool budgetExpired = false;
 
@@ -835,7 +901,35 @@ namespace VDF.GUI.ViewModels {
 				budgetExpired,
 				searchStopwatch.Elapsed);
 
-			return finalBest?.Offset ?? 0;
+			return new AutoAlignProbe(
+				baseIndex,
+				finalBest?.Offset ?? 0);
+		}
+
+		static void LogAutoAlignConsensusDiagnostics(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			IReadOnlyList<int> baseIndices,
+			IReadOnlyList<int> offsets,
+			int primaryOffset,
+			int consensusOffset) {
+			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
+				return;
+
+			string votes = string.Join(
+				"; ",
+				baseIndices.Zip(
+					offsets,
+					(anchor, offset) => $"{anchor}:{offset}"));
+
+			VDF.Core.Utils.Logger.Instance.Info(
+				$"Thumbnail comparer auto-align consensus " +
+				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
+				$"vs " +
+				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
+				$"base={baseIndex}: primary={primaryOffset}, " +
+				$"selected={consensusOffset}, votes=[{votes}]");
 		}
 
 		static void LogAutoAlignDiagnostics(
@@ -879,32 +973,65 @@ namespace VDF.GUI.ViewModels {
 			int baseIndex,
 			IReadOnlyList<int> offsets,
 			CancellationToken cancellationToken) {
-			var timestamps = new List<TimeSpan>(offsets.Count);
-			foreach (int offset in offsets) {
-				timestamps.Add(
+			var candidates =
+				new List<FrameAlignmentCandidate>(offsets.Count);
+			var missingOffsets = new List<int>();
+			var missingTimestamps = new List<TimeSpan>();
+			var missingCandidateIndexes = new List<int>();
+
+			for (int candidateIndex = 0;
+				candidateIndex < offsets.Count;
+				candidateIndex++) {
+				int offset = offsets[candidateIndex];
+				if (item.TryGetCachedAlignmentGrayFrame(
+					baseIndex,
+					offset,
+					out byte[]? cachedGray)) {
+					candidates.Add(
+						new FrameAlignmentCandidate(
+							offset,
+							cachedGray));
+					continue;
+				}
+
+				candidates.Add(
+					new FrameAlignmentCandidate(
+						offset,
+						null));
+				missingOffsets.Add(offset);
+				missingCandidateIndexes.Add(candidateIndex);
+				missingTimestamps.Add(
 					GetAlignmentFrameTimestamp(
 						item,
 						baseIndex,
 						offset));
 			}
 
-			List<byte[]?> frames = FfmpegEngine.ExtractGrayFrames(
-				item.Item.ItemInfo.Path,
-				timestamps,
-				SettingsFile.Instance.ExtendedFFToolsLogging,
-				item.Item.ItemInfo.Format,
-				AutoAlignProcessTimeoutMilliseconds);
+			if (missingOffsets.Count > 0) {
+				List<byte[]?> frames = FfmpegEngine.ExtractGrayFrames(
+					item.Item.ItemInfo.Path,
+					missingTimestamps,
+					SettingsFile.Instance.ExtendedFFToolsLogging,
+					item.Item.ItemInfo.Format,
+					AutoAlignProcessTimeoutMilliseconds);
+
+				for (int i = 0; i < missingOffsets.Count; i++) {
+					byte[]? gray =
+						i < frames.Count ? frames[i] : null;
+					int offset = missingOffsets[i];
+					item.CacheAlignmentGrayFrame(
+						baseIndex,
+						offset,
+						gray);
+
+					candidates[missingCandidateIndexes[i]] =
+						new FrameAlignmentCandidate(
+							offset,
+							gray);
+				}
+			}
 
 			cancellationToken.ThrowIfCancellationRequested();
-
-			var candidates =
-				new List<FrameAlignmentCandidate>(offsets.Count);
-			for (int i = 0; i < offsets.Count; i++) {
-				candidates.Add(
-					new FrameAlignmentCandidate(
-						offsets[i],
-						i < frames.Count ? frames[i] : null));
-			}
 
 			return candidates;
 		}
@@ -1049,6 +1176,7 @@ namespace VDF.GUI.ViewModels {
 		public IReadOnlyList<Bitmap> Frames => _frames;
 		readonly List<Bitmap> _frames = new();
 		readonly Dictionary<(int, int), Bitmap?> _offsetFrameCache = new();
+		readonly Dictionary<(int, int), byte[]?> _alignmentGrayCache = new();
 
 		public string FileName => System.IO.Path.GetFileName(Item.ItemInfo.Path);
 
@@ -1072,6 +1200,10 @@ namespace VDF.GUI.ViewModels {
 			try {
 				List<Bitmap> l = new(Item.ItemInfo.IsImage ? 1 : Item.ItemInfo.ThumbnailTimestamps.Count);
 				_frames.Clear();
+				lock (_offsetFrameCache)
+					_offsetFrameCache.Clear();
+				lock (_alignmentGrayCache)
+					_alignmentGrayCache.Clear();
 
 				if (Item.ItemInfo.IsImage) {
 					var bmp = new Bitmap(Item.ItemInfo.Path);
@@ -1114,7 +1246,34 @@ namespace VDF.GUI.ViewModels {
 		public Bitmap? GetCachedOffsetFrame(int thumbnailIndex, int offset) {
 			if (offset == 0) return GetFrame(thumbnailIndex);
 			var key = (thumbnailIndex, offset);
-			return _offsetFrameCache.TryGetValue(key, out var cached) ? cached : null;
+			lock (_offsetFrameCache) {
+				return _offsetFrameCache.TryGetValue(key, out var cached)
+					? cached
+					: null;
+			}
+		}
+
+		public bool TryGetCachedAlignmentGrayFrame(
+			int thumbnailIndex,
+			int offset,
+			out byte[]? gray) {
+			lock (_alignmentGrayCache) {
+				return _alignmentGrayCache.TryGetValue(
+					(thumbnailIndex, offset),
+					out gray);
+			}
+		}
+
+		public void CacheAlignmentGrayFrame(
+			int thumbnailIndex,
+			int offset,
+			byte[]? gray) {
+			if (gray == null)
+				return;
+
+			lock (_alignmentGrayCache) {
+				_alignmentGrayCache[(thumbnailIndex, offset)] = gray;
+			}
 		}
 
 		public Bitmap? ExtractFrameAtOffset(int thumbnailIndex, int offset) {
