@@ -296,11 +296,10 @@ namespace VDF.GUI.ViewModels {
 		CancellationTokenSource? _loadCts;
 		CancellationTokenSource? _autoAlignCts;
 		const int AutoAlignSearchRadiusFrames = 30;
-		const int AutoAlignProcessTimeoutMilliseconds = 2_000;
+		const int AutoAlignProcessTimeoutMilliseconds = 1_500;
 		const int AutoAlignRefinementRounds = 4;
-		const int AutoAlignDetailGraySize = 96;
 		static readonly TimeSpan AutoAlignTimeBudget =
-			TimeSpan.FromSeconds(6);
+			TimeSpan.FromSeconds(3.5);
 
 		readonly Dictionary<(string A, string B, int BaseIndex), int>
 			_autoAlignCache = new();
@@ -716,161 +715,6 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
 			CancellationToken cancellationToken) {
-			AutoAlignProbe primary = FindBestAlignmentOffsetForBase(
-				itemA,
-				itemB,
-				baseIndex,
-				cancellationToken);
-			if (primary.Offset == 0) {
-				return FindNearbyVisualNudgeOffset(
-					itemA,
-					itemB,
-					baseIndex,
-					primary,
-					cancellationToken) ?? 0;
-			}
-			if (Math.Abs(primary.Offset) <= 1)
-				return primary.Offset;
-
-			IReadOnlyList<int> consensusBaseIndices =
-				BuildAutoAlignConsensusBaseIndices(
-					baseIndex,
-					Math.Min(
-						itemA.Item.ItemInfo.ThumbnailTimestamps.Count,
-						itemB.Item.ItemInfo.ThumbnailTimestamps.Count));
-			if (consensusBaseIndices.Count <= 1)
-				return primary.Offset;
-
-			var offsets = new List<int> { primary.Offset };
-			foreach (int consensusBaseIndex in consensusBaseIndices) {
-				if (consensusBaseIndex == baseIndex)
-					continue;
-
-				AutoAlignProbe probe = FindBestAlignmentOffsetForBase(
-					itemA,
-					itemB,
-					consensusBaseIndex,
-					cancellationToken);
-				offsets.Add(probe.Offset);
-			}
-
-			int consensusOffset =
-				FrameAlignment.SelectConsensusOffset(
-					primary.Offset,
-					offsets);
-			LogAutoAlignConsensusDiagnostics(
-				itemA,
-				itemB,
-				baseIndex,
-				consensusBaseIndices,
-				offsets,
-				primary.Offset,
-				consensusOffset);
-			if (consensusOffset != 0)
-				return consensusOffset;
-
-			return FindNearbyVisualNudgeOffset(
-				itemA,
-				itemB,
-				baseIndex,
-				primary,
-				cancellationToken) ?? 0;
-		}
-
-		static IReadOnlyList<int> BuildAutoAlignConsensusBaseIndices(
-			int baseIndex,
-			int baseCount) {
-			if (baseCount <= 1)
-				return new[] { baseIndex };
-
-			var indices = new List<int> { baseIndex };
-			if (baseIndex > 0)
-				indices.Add(baseIndex - 1);
-			if (baseIndex + 1 < baseCount)
-				indices.Add(baseIndex + 1);
-
-			return indices;
-		}
-
-		readonly record struct AutoAlignProbe(
-			int BaseIndex,
-			int Offset,
-			FrameAlignmentResult? ZeroResult,
-			IReadOnlyList<FrameAlignmentResult> Results) {
-			public static AutoAlignProbe Empty(int baseIndex) =>
-				new(baseIndex, 0, null, Array.Empty<FrameAlignmentResult>());
-		}
-
-		int? FindNearbyVisualNudgeOffset(
-			LargeThumbnailDuplicateItem itemA,
-			LargeThumbnailDuplicateItem itemB,
-			int baseIndex,
-			AutoAlignProbe primary,
-			CancellationToken cancellationToken) {
-			if (!primary.ZeroResult.HasValue ||
-				primary.Results.Count == 0) {
-				return null;
-			}
-			if (!FrameAlignment.HasNearbyNudgeCandidate(
-				primary.ZeroResult.Value,
-				primary.Results)) {
-				return null;
-			}
-
-			cancellationToken.ThrowIfCancellationRequested();
-
-			byte[]? detailReference = ExtractAlignmentCandidates(
-				itemA,
-				baseIndex,
-				new[] { 0 },
-				cancellationToken,
-				AutoAlignDetailGraySize)[0].GrayBytes;
-
-			if (detailReference == null)
-				return null;
-
-			IReadOnlyList<FrameAlignmentCandidate> detailCandidates =
-				ExtractAlignmentCandidates(
-					itemB,
-					baseIndex,
-					new[] { -1, 0, 1 },
-					cancellationToken,
-					AutoAlignDetailGraySize);
-
-			var detailMeanDifferences = new Dictionary<int, double>();
-			foreach (FrameAlignmentCandidate candidate in detailCandidates) {
-				byte[]? gray = candidate.GrayBytes;
-				if (gray == null || gray.Length != detailReference.Length)
-					continue;
-
-				detailMeanDifferences[candidate.Offset] =
-					FrameAlignment.CalculateMeanAbsoluteDifference(
-						detailReference,
-						gray);
-			}
-
-			FrameAlignmentResult? selected =
-				FrameAlignment.FindBestNearbyNudge(
-					primary.ZeroResult.Value,
-					primary.Results,
-					detailMeanDifferences);
-
-			LogAutoAlignNudgeDiagnostics(
-				itemA,
-				itemB,
-				baseIndex,
-				primary.Results,
-				detailMeanDifferences,
-				selected);
-
-			return selected?.Offset;
-		}
-
-		AutoAlignProbe FindBestAlignmentOffsetForBase(
-			LargeThumbnailDuplicateItem itemA,
-			LargeThumbnailDuplicateItem itemB,
-			int baseIndex,
-			CancellationToken cancellationToken) {
 			var searchStopwatch = Stopwatch.StartNew();
 			var testedOffsets = new HashSet<int>();
 			var candidates = new List<FrameAlignmentCandidate>();
@@ -884,11 +728,18 @@ namespace VDF.GUI.ViewModels {
 				cancellationToken)[0].GrayBytes;
 
 			if (reference == null)
-				return AutoAlignProbe.Empty(baseIndex);
+				return null;
 			if (searchStopwatch.Elapsed >= AutoAlignTimeBudget)
-				return AutoAlignProbe.Empty(baseIndex);
+				return null;
+
+			bool budgetExpired = false;
 
 			void AddCandidates(IReadOnlyList<int> offsets) {
+				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+					budgetExpired = true;
+					return;
+				}
+
 				IReadOnlyList<int> untested = offsets
 					.Where(offset =>
 						Math.Abs(offset) <=
@@ -907,29 +758,27 @@ namespace VDF.GUI.ViewModels {
 						cancellationToken));
 			}
 
-			IReadOnlyList<FrameAlignmentResult> Results() =>
+			IReadOnlyList<FrameAlignmentResult> Measure() =>
 				FrameAlignment.MeasureCandidates(reference, candidates);
 
-			FrameAlignmentResult? Best(
-				IReadOnlyList<FrameAlignmentResult> results) =>
-				FrameAlignment.FindBestResult(results);
+			FrameAlignmentResult? Best() =>
+				FrameAlignment.FindBestResult(Measure());
 
-			// Zero is the baseline. Only a nearly exact zero match ends the
-			// search immediately; otherwise candidates are judged by their
-			// relative improvement over zero.
 			AddCandidates(new[] { 0 });
-			IReadOnlyList<FrameAlignmentResult> zeroResults = Results();
-			FrameAlignmentResult? zeroResult = Best(zeroResults);
-			if (!zeroResult.HasValue)
-				return AutoAlignProbe.Empty(baseIndex);
-			if (FrameAlignment.IsNearlyExact(zeroResult.Value))
-				return new AutoAlignProbe(
+			FrameAlignmentResult? zeroResult = Best();
+			if (zeroResult.HasValue &&
+				zeroResult.Value.HashDistance == 0 &&
+				zeroResult.Value.MeanAbsoluteDifference <= 0.0001d) {
+				LogAutoAlignDiagnostics(
+					itemA,
+					itemB,
 					baseIndex,
-					0,
-					zeroResult.Value,
-					zeroResults);
-
-			bool budgetExpired = false;
+					Measure(),
+					zeroResult,
+					budgetExpired,
+					searchStopwatch.Elapsed);
+				return 0;
+			}
 
 			foreach (IReadOnlyList<int> batch in
 				FrameAlignment.BuildProgressiveOffsetBatches(
@@ -955,13 +804,7 @@ namespace VDF.GUI.ViewModels {
 					break;
 				}
 
-				IReadOnlyList<FrameAlignmentResult> currentResults =
-					Results();
-				FrameAlignmentResult? best =
-					FrameAlignment.FindBestClearImprovementOverZero(
-						zeroResult.Value,
-						currentResults) ??
-					Best(currentResults);
+				FrameAlignmentResult? best = Best();
 				if (!best.HasValue)
 					break;
 
@@ -977,96 +820,19 @@ namespace VDF.GUI.ViewModels {
 				AddCandidates(refinementOffsets);
 			}
 
-			IReadOnlyList<FrameAlignmentResult> finalResults = Results();
+			IReadOnlyList<FrameAlignmentResult> finalResults = Measure();
 			FrameAlignmentResult? finalBest =
-				FrameAlignment.FindBestClearImprovementOverZero(
-					zeroResult.Value,
-					finalResults);
+				FrameAlignment.FindBestResult(finalResults);
 			LogAutoAlignDiagnostics(
 				itemA,
 				itemB,
 				baseIndex,
 				finalResults,
-				zeroResult.Value,
 				finalBest,
 				budgetExpired,
 				searchStopwatch.Elapsed);
 
-			return new AutoAlignProbe(
-				baseIndex,
-				finalBest?.Offset ?? 0,
-				zeroResult.Value,
-				finalResults);
-		}
-
-		static void LogAutoAlignNudgeDiagnostics(
-			LargeThumbnailDuplicateItem itemA,
-			LargeThumbnailDuplicateItem itemB,
-			int baseIndex,
-			IReadOnlyList<FrameAlignmentResult> results,
-			IReadOnlyDictionary<int, double> detailMeanDifferences,
-			FrameAlignmentResult? selected) {
-			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
-				return;
-
-			static string FormatDetail(double? detail) =>
-				detail.HasValue ? detail.Value.ToString("F4") : "n/a";
-
-			string Format(FrameAlignmentResult result) {
-				detailMeanDifferences.TryGetValue(
-					result.Offset,
-					out double detail);
-				return
-					$"{result.Offset}:h={result.HashDistance},mad=" +
-					$"{result.MeanAbsoluteDifference:F4},detail=" +
-					$"{FormatDetail(
-						detailMeanDifferences.ContainsKey(result.Offset)
-							? detail
-							: null)}";
-			}
-
-			string resultText = string.Join(
-				"; ",
-				results
-					.Where(result => Math.Abs(result.Offset) <= 1)
-					.OrderBy(result => result.Offset)
-					.Select(Format));
-			string selectedText =
-				selected.HasValue ? Format(selected.Value) : "0";
-
-			VDF.Core.Utils.Logger.Instance.Info(
-				$"Thumbnail comparer auto-align nudge " +
-				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
-				$"vs " +
-				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
-				$"base={baseIndex}: selected={selectedText}, " +
-				$"candidates=[{resultText}]");
-		}
-
-		static void LogAutoAlignConsensusDiagnostics(
-			LargeThumbnailDuplicateItem itemA,
-			LargeThumbnailDuplicateItem itemB,
-			int baseIndex,
-			IReadOnlyList<int> baseIndices,
-			IReadOnlyList<int> offsets,
-			int primaryOffset,
-			int consensusOffset) {
-			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
-				return;
-
-			string votes = string.Join(
-				"; ",
-				baseIndices.Zip(
-					offsets,
-					(anchor, offset) => $"{anchor}:{offset}"));
-
-			VDF.Core.Utils.Logger.Instance.Info(
-				$"Thumbnail comparer auto-align consensus " +
-				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
-				$"vs " +
-				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
-				$"base={baseIndex}: primary={primaryOffset}, " +
-				$"selected={consensusOffset}, votes=[{votes}]");
+			return finalBest?.Offset;
 		}
 
 		static void LogAutoAlignDiagnostics(
@@ -1074,7 +840,6 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
 			IReadOnlyList<FrameAlignmentResult> results,
-			FrameAlignmentResult zero,
 			FrameAlignmentResult? selected,
 			bool budgetExpired,
 			TimeSpan elapsed) {
@@ -1098,8 +863,7 @@ namespace VDF.GUI.ViewModels {
 				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
 				$"vs " +
 				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
-				$"base={baseIndex}: zero={Format(zero)}, " +
-				$"selected={selectedText}, " +
+				$"base={baseIndex}: selected={selectedText}, " +
 				$"budgetExpired={budgetExpired}, " +
 				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
 				$"candidates=[{resultText}]");
