@@ -468,7 +468,7 @@
                                         Background="{DynamicResource SystemControlHighlightBaseLowBrush}"
                                         Opacity="0.4" />
                                     <Grid Grid.Column="2">
-                                        <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                        <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                         <Border Classes="label-overlay-bg">
                                             <TextBlock Classes="label-overlay" Text="{Binding FrameLabelB}" />
                                         </Border>
@@ -476,7 +476,7 @@
                                 </Grid>
                                 <!-- Stacked (vertical swipe) -->
                                 <Grid x:Name="StackedCanvas" IsVisible="{Binding IsStacked}">
-                                    <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                    <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                     <Image
                                         HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
@@ -506,7 +506,7 @@
                                 </Grid>
                                 <!-- Swipe -->
                                 <Grid x:Name="CompareCanvas" IsVisible="{Binding IsSwipe}">
-                                    <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                    <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                     <Image
                                         HorizontalAlignment="Center"
                                         VerticalAlignment="Center"

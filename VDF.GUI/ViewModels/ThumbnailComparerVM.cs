@@ -75,16 +75,25 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		private Bitmap? _imageB;
-		Bitmap? _sourceImageB;
 		public Bitmap? ImageB {
 			get => _imageB;
 			set {
-				_sourceImageB = value;
+				this.RaiseAndSetIfChanged(ref _imageB, value);
 				RefreshDisplayedImageB();
 				this.RaisePropertyChanged(nameof(CanOrientB));
 			}
 		}
-		public Bitmap? ImageSingle => ImageA ?? ImageB;
+
+		private Bitmap? _displayImageB;
+		public Bitmap? DisplayImageB {
+			get => _displayImageB;
+			private set {
+				this.RaiseAndSetIfChanged(ref _displayImageB, value);
+				this.RaisePropertyChanged(nameof(ImageSingle));
+			}
+		}
+
+		public Bitmap? ImageSingle => ImageA ?? DisplayImageB;
 
 		public IReadOnlyList<ThumbnailOrientationOption>
 			OrientationTransformOptions { get; } = new[] {
@@ -139,7 +148,7 @@ namespace VDF.GUI.ViewModels {
 			SelectedItemA != null &&
 			SelectedItemB != null &&
 			ImageA != null &&
-			_sourceImageB != null;
+			ImageB != null;
 
 		public ReadOnlyObservableCollection<CompareMode> CompareModes { get; }
 		readonly ObservableCollection<CompareMode> compareModes = new();
@@ -413,7 +422,7 @@ namespace VDF.GUI.ViewModels {
 				compareModes.Add(mode);
 			CompareModes = new ReadOnlyObservableCollection<CompareMode>(compareModes);
 
-			this.WhenAnyValue(vm => vm.ModeSliderValue, vm => vm.SelectedCompareMode, vm => vm.ImageA, vm => vm.ImageB)
+			this.WhenAnyValue(vm => vm.ModeSliderValue, vm => vm.SelectedCompareMode, vm => vm.ImageA, vm => vm.DisplayImageB)
 				.Throttle(TimeSpan.FromMilliseconds(16))
 				.ObserveOn(RxSchedulers.MainThreadScheduler)
 				.Subscribe(_ => Recalc());
@@ -578,7 +587,7 @@ namespace VDF.GUI.ViewModels {
 			}
 			AutoOrientB(cacheNormalResult: false);
 
-			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || ImageB is null))
+			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || DisplayImageB is null))
 				ForceSingleViewWithoutPersist();
 
 			this.RaisePropertyChanged(nameof(ImageSingle));
@@ -680,10 +689,9 @@ namespace VDF.GUI.ViewModels {
 		void RefreshDisplayedImageB() {
 			Bitmap? transformed =
 				ImageUtils.TransformBitmap(
-					_sourceImageB,
+					ImageB,
 					_bOrientationTransform);
-			this.RaiseAndSetIfChanged(ref _imageB, transformed);
-			this.RaisePropertyChanged(nameof(ImageSingle));
+			DisplayImageB = transformed ?? ImageB;
 			Recalc();
 		}
 
@@ -744,7 +752,7 @@ namespace VDF.GUI.ViewModels {
 		void AutoOrientB(bool cacheNormalResult) {
 			if (!CanOrientB ||
 				ImageA == null ||
-				_sourceImageB == null) {
+				ImageB == null) {
 				return;
 			}
 
@@ -755,7 +763,7 @@ namespace VDF.GUI.ViewModels {
 			}
 
 			ImageOrientationMatch? match =
-				ImageUtils.FindBestOrientation(ImageA, _sourceImageB);
+				ImageUtils.FindBestOrientation(ImageA, ImageB);
 			if (!match.HasValue)
 				return;
 
@@ -1164,7 +1172,7 @@ namespace VDF.GUI.ViewModels {
 			return timestamp;
 		}
 		void Recalc() {
-			if ((!IsSwipe && !IsStacked) || ImageA is null || ImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
+			if ((!IsSwipe && !IsStacked) || ImageA is null || DisplayImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
 				SwipeClip = null;
 				return;
 			}
