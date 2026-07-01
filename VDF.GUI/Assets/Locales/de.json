@@ -1,5 +1,10 @@
 {
 	"App.Title": "Video Duplicate Finder - Plattformübergreifend",
+	"MainWindow.Menu.About": "Über",
+	"About.Title": "Über Video Duplicate Finder",
+	"About.License": "Freie Software unter der GNU Affero General Public License v3.",
+	"About.ProjectPage": "Projektseite",
+	"About.Copy": "Kopieren",
 	"QualityOrderDialog.Title": "Reihenfolge der Qualitätskriterien auswählen",
 	"QualityOrderDialog.BtnMoveUp": "Nach oben",
 	"QualityOrderDialog.BtnMoveDown": "Nach unten",
@@ -432,6 +437,7 @@
 	"Message.ImportScanResultsFailed": "Importieren der Scan-Ergebnisse ist fehlgeschlagen wegen {0}",
 	"Message.LoadMissingThumbnailsPrompt": "{0} Element(e) in diesen Ergebnissen haben kein Vorschaubild. Möchten Sie jetzt alle fehlenden Vorschaubilder laden?",
 	"Message.OpenFilesFailed": "Dateien konnten nicht geöffnet werden: {0}",
+	"Message.NoFileInLogLine": "In dieser Protokollzeile wurde kein vorhandener Dateipfad gefunden.",
 	"Message.ScheduledScanCompleted": "Geplanter Scan abgeschlossen.",
 	"ThumbnailComparerDialog.Thumbnail": "Thumbnail:",
 	"ThumbnailComparerDialog.Files": "Dateien",
