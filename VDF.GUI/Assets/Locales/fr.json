@@ -1,5 +1,10 @@
 {
 	"App.Title": "Video Duplicate Finder - Multiplateforme",
+	"MainWindow.Menu.About": "À propos",
+	"About.Title": "À propos de Video Duplicate Finder",
+	"About.License": "Logiciel libre sous licence GNU Affero General Public License v3.",
+	"About.ProjectPage": "Page du projet",
+	"About.Copy": "Copier",
 	"QualityOrderDialog.Title": "Sélectionner l'ordre des critères de qualité",
 	"QualityOrderDialog.BtnMoveUp": "Monter",
 	"QualityOrderDialog.BtnMoveDown": "Descendre",
@@ -432,6 +437,7 @@
 	"Message.ImportScanResultsFailed": "L'import des résultats d'analyse a échoué à cause de {0}",
 	"Message.LoadMissingThumbnailsPrompt": "{0} élément(s) dans ces résultats n'ont pas de miniature. Voulez-vous charger maintenant toutes les miniatures manquantes ?",
 	"Message.OpenFilesFailed": "Échec de l'ouverture des fichiers : {0}",
+	"Message.NoFileInLogLine": "Aucun chemin de fichier existant n'a été trouvé dans cette ligne de journal.",
 	"Message.ScheduledScanCompleted": "Analyse planifiée terminée.",
 	"ThumbnailComparerDialog.Thumbnail": "Miniature :",
 	"ThumbnailComparerDialog.Files": "Fichiers",
