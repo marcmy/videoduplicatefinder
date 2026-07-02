@@ -410,37 +410,6 @@ namespace VDF.GUI.Data {
 			get => _ThumbnailComparerMode;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerMode, value);
 		}
-		bool _ThumbnailComparerAutoAlignFrames = true;
-		[JsonPropertyName("ThumbnailComparerAutoAlignFrames")]
-		public bool ThumbnailComparerAutoAlignFrames {
-			get => _ThumbnailComparerAutoAlignFrames;
-			set => this.RaiseAndSetIfChanged(
-				ref _ThumbnailComparerAutoAlignFrames,
-				value);
-		}
-		Dictionary<string, double> _ResultsColumnWidths = new();
-		[JsonPropertyName("ResultsColumnWidths")]
-		public Dictionary<string, double> ResultsColumnWidths {
-			get => _ResultsColumnWidths;
-			set => this.RaiseAndSetIfChanged(
-				ref _ResultsColumnWidths,
-				value ?? new());
-		}
-
-		Dictionary<string, string> _ResultsColumnSortFields =
-			new(StringComparer.Ordinal) {
-				["Duration"] = "Size",
-				["Format"] = "Video Bitrate",
-				["Audio"] = "Audio Format",
-			};
-		[JsonPropertyName("ResultsColumnSortFields")]
-		public Dictionary<string, string> ResultsColumnSortFields {
-			get => _ResultsColumnSortFields;
-			set => this.RaiseAndSetIfChanged(
-				ref _ResultsColumnSortFields,
-				value ?? new());
-		}
-
 		bool _ShowThumbnailColumn = true;
 		[JsonPropertyName("ShowThumbnailColumn")]
 		public bool ShowThumbnailColumn {

@@ -385,19 +385,6 @@
 
                         <Border Width="1" Height="22" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
                         <Button Classes="offset-btn" Command="{Binding ResetStepsCommand}" Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.ResetOffsets]}" FontSize="11" />
-                        <Border Width="1" Height="22" Background="{DynamicResource SystemControlHighlightBaseLowBrush}" />
-                        <CheckBox
-                            VerticalAlignment="Center"
-                            Content="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.AutoAlign]}"
-                            IsChecked="{Binding AutoAlignFrames, Mode=TwoWay}"
-                            IsEnabled="{Binding CanAutoAlign}"
-                            ToolTip.Tip="{Binding Source={x:Static app:App.Lang}, Path=[ThumbnailComparerDialog.AutoAlignTooltip]}" />
-                        <ProgressBar
-                            Width="36"
-                            Height="4"
-                            VerticalAlignment="Center"
-                            IsIndeterminate="True"
-                            IsVisible="{Binding IsAutoAligning}" />
                     </StackPanel>
                 </Border>
 
