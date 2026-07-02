@@ -1085,7 +1085,9 @@ namespace VDF.GUI.ViewModels {
 			FrameAlignmentResult? finalBest =
 				FrameAlignment.FindBestResult(finalResults);
 			FrameAlignmentResult? finalSelected =
-				FrameAlignment.FindBestConfidentResult(finalResults);
+				FrameAlignment.FindBestConfidentResult(
+					finalResults,
+					preferredOffset: durationHintOffset);
 			LogAutoAlignDiagnostics(
 				itemA,
 				itemB,

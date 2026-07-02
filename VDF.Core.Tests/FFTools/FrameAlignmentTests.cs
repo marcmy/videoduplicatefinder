@@ -110,6 +110,36 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void FindBestConfidentResult_RejectsWeakOppositeDurationHintDirection() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(
+				new[] {
+					new FrameAlignmentResult(0, 12, 0.0875d),
+					new FrameAlignmentResult(-77, 10, 0.0568d),
+					new FrameAlignmentResult(2, 12, 0.0843d),
+				},
+				preferredOffset: 90);
+
+		Assert.NotNull(result);
+		Assert.Equal(2, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_AcceptsStrongOppositeDurationHintDirection() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(
+				new[] {
+					new FrameAlignmentResult(0, 20, 0.0900d),
+					new FrameAlignmentResult(-77, 4, 0.0300d),
+					new FrameAlignmentResult(2, 20, 0.0870d),
+				},
+				preferredOffset: 90);
+
+		Assert.NotNull(result);
+		Assert.Equal(-77, result.Value.Offset);
+	}
+
+	[Fact]
 	public void CoarseAndFineOffsets_CoverFramesBetweenCoarseSamples() {
 		const int radius = 30;
 		IReadOnlyList<int> coarse =

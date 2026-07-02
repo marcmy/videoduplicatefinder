@@ -78,7 +78,8 @@ namespace VDF.Core.FFTools {
 
 		internal static FrameAlignmentResult? FindBestConfidentResult(
 			IEnumerable<FrameAlignmentResult> results,
-			int baselineOffset = 0) {
+			int baselineOffset = 0,
+			int preferredOffset = 0) {
 			FrameAlignmentResult[] measured = results.ToArray();
 			FrameAlignmentResult? baseline = null;
 			foreach (FrameAlignmentResult result in measured) {
@@ -101,6 +102,11 @@ namespace VDF.Core.FFTools {
 				if (IsConfidentAgainstBaseline(
 					best.Value,
 					baseline.Value) &&
+					IsConfidentAgainstPreferredDirection(
+						best.Value,
+						baseline.Value,
+						baselineOffset,
+						preferredOffset) &&
 					IsConfidentAgainstAlternatives(
 						best.Value,
 						measured,
@@ -178,6 +184,34 @@ namespace VDF.Core.FFTools {
 			return
 				hashGain >= requiredHashGain &&
 				meanGain >= requiredMeanGain;
+		}
+
+		static bool IsConfidentAgainstPreferredDirection(
+			FrameAlignmentResult candidate,
+			FrameAlignmentResult baseline,
+			int baselineOffset,
+			int preferredOffset) {
+			int preferredDirection = Math.Sign(preferredOffset);
+			int candidateDirection =
+				Math.Sign(candidate.Offset - baselineOffset);
+
+			if (preferredDirection == 0 ||
+				candidateDirection == 0 ||
+				candidateDirection == preferredDirection ||
+				Math.Abs(candidate.Offset - baselineOffset) <=
+					ConfidenceNearOffsetFrames) {
+				return true;
+			}
+
+			int hashGain =
+				baseline.HashDistance - candidate.HashDistance;
+			double meanGain =
+				baseline.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			return
+				hashGain >= ConfidenceStrongHashGain &&
+				meanGain >= ConfidenceStrongMeanGain;
 		}
 
 		static bool IsConfidentAgainstAlternatives(
