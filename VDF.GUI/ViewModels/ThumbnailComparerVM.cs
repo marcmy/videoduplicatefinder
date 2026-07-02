@@ -31,13 +31,6 @@ using VDF.GUI.Utils;
 
 namespace VDF.GUI.ViewModels {
 	public enum CompareMode { Single, Swipe, SideBySide, Stacked }
-
-	public sealed record ThumbnailOrientationOption(
-		ImageOrientationTransform Transform,
-		string DisplayName) {
-		public override string ToString() => DisplayName;
-	}
-
 	public sealed class ThumbnailComparerVM : ReactiveObject {
 		public ObservableCollection<LargeThumbnailDuplicateItem> Items { get; }
 
@@ -66,89 +59,11 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		private Bitmap? _imageA;
-		public Bitmap? ImageA {
-			get => _imageA;
-			set {
-				this.RaiseAndSetIfChanged(ref _imageA, value);
-				this.RaisePropertyChanged(nameof(CanOrientB));
-			}
-		}
+		public Bitmap? ImageA { get => _imageA; set => this.RaiseAndSetIfChanged(ref _imageA, value); }
 
 		private Bitmap? _imageB;
-		public Bitmap? ImageB {
-			get => _imageB;
-			set {
-				this.RaiseAndSetIfChanged(ref _imageB, value);
-				RefreshDisplayedImageB();
-				this.RaisePropertyChanged(nameof(CanOrientB));
-			}
-		}
-
-		private Bitmap? _displayImageB;
-		public Bitmap? DisplayImageB {
-			get => _displayImageB;
-			private set {
-				this.RaiseAndSetIfChanged(ref _displayImageB, value);
-				this.RaisePropertyChanged(nameof(ImageSingle));
-			}
-		}
-
-		public Bitmap? ImageSingle => ImageA ?? DisplayImageB;
-
-		public IReadOnlyList<ThumbnailOrientationOption>
-			OrientationTransformOptions { get; } = new[] {
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Normal,
-					"Normal"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.MirrorHorizontal,
-					"Mirror H"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.FlipVertical,
-					"Flip V"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Rotate180,
-					"Rotate 180"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Rotate90,
-					"Rotate 90"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Rotate90MirrorHorizontal,
-					"Rotate 90 + mirror"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Rotate270,
-					"Rotate 270"),
-				new ThumbnailOrientationOption(
-					ImageOrientationTransform.Rotate270MirrorHorizontal,
-					"Rotate 270 + mirror"),
-			};
-
-		ThumbnailOrientationOption _selectedBOrientationOption = null!;
-		public ThumbnailOrientationOption SelectedBOrientationOption {
-			get => _selectedBOrientationOption;
-			set {
-				if (value == null ||
-					_selectedBOrientationOption == value) {
-					return;
-				}
-
-				this.RaiseAndSetIfChanged(
-					ref _selectedBOrientationOption,
-					value);
-				SetBOrientationTransform(
-					value.Transform,
-					cacheForCurrentPair: true,
-					updateSelectedOption: false);
-			}
-		}
-
-		ImageOrientationTransform _bOrientationTransform =
-			ImageOrientationTransform.Normal;
-		public bool CanOrientB =>
-			SelectedItemA != null &&
-			SelectedItemB != null &&
-			ImageA != null &&
-			ImageB != null;
+		public Bitmap? ImageB { get => _imageB; set => this.RaiseAndSetIfChanged(ref _imageB, value); }
+		public Bitmap? ImageSingle => ImageA ?? ImageB;
 
 		public ReadOnlyObservableCollection<CompareMode> CompareModes { get; }
 		readonly ObservableCollection<CompareMode> compareModes = new();
@@ -342,8 +257,6 @@ namespace VDF.GUI.ViewModels {
 		public ReactiveCommand<Unit, Unit> StepBMinusCommand { get; }
 		public ReactiveCommand<Unit, Unit> StepBPlusCommand { get; }
 		public ReactiveCommand<Unit, Unit> ResetStepsCommand { get; }
-		public ReactiveCommand<Unit, Unit> AutoOrientBCommand { get; }
-		public ReactiveCommand<Unit, Unit> ResetBOrientationCommand { get; }
 
 		public double DisplayWidth { get => _dispW; private set => this.RaiseAndSetIfChanged(ref _dispW, value); }
 		public double DisplayHeight { get => _dispH; private set => this.RaiseAndSetIfChanged(ref _dispH, value); }
@@ -387,13 +300,9 @@ namespace VDF.GUI.ViewModels {
 		const int AutoAlignRefinementRounds = 4;
 		static readonly TimeSpan AutoAlignTimeBudget =
 			TimeSpan.FromSeconds(3.5);
-		const double AutoOrientationNormalImprovement = 0.025d;
-		const double AutoOrientationSecondBestMargin = 0.004d;
 
 		readonly Dictionary<(string A, string B, int BaseIndex), int>
 			_autoAlignCache = new();
-		readonly Dictionary<(string A, string B), ImageOrientationTransform>
-			_orientationCache = new();
 
 		readonly Func<Guid, bool, (Guid GroupId, List<LargeThumbnailDuplicateItem> Items)?>? _groupNavigator;
 		Guid? _currentGroupId;
@@ -413,7 +322,6 @@ namespace VDF.GUI.ViewModels {
 			Items = new(duplicateItemVMs);
 			_currentGroupId = currentGroupId;
 			_groupNavigator = groupNavigator;
-			_selectedBOrientationOption = OrientationTransformOptions[0];
 
 			var modes = new ObservableCollection<CompareMode> {
 				CompareMode.Single, CompareMode.Swipe, CompareMode.SideBySide, CompareMode.Stacked
@@ -422,7 +330,7 @@ namespace VDF.GUI.ViewModels {
 				compareModes.Add(mode);
 			CompareModes = new ReadOnlyObservableCollection<CompareMode>(compareModes);
 
-			this.WhenAnyValue(vm => vm.ModeSliderValue, vm => vm.SelectedCompareMode, vm => vm.ImageA, vm => vm.DisplayImageB)
+			this.WhenAnyValue(vm => vm.ModeSliderValue, vm => vm.SelectedCompareMode, vm => vm.ImageA, vm => vm.ImageB)
 				.Throttle(TimeSpan.FromMilliseconds(16))
 				.ObserveOn(RxSchedulers.MainThreadScheduler)
 				.Subscribe(_ => Recalc());
@@ -455,12 +363,6 @@ namespace VDF.GUI.ViewModels {
 				StepA = 0;
 				StepB = 0;
 			});
-			AutoOrientBCommand = ReactiveCommand.Create(() =>
-				AutoOrientB(cacheNormalResult: true));
-			ResetBOrientationCommand = ReactiveCommand.Create(() =>
-				SetBOrientationTransform(
-					ImageOrientationTransform.Normal,
-					cacheForCurrentPair: true));
 
 			if (_groupNavigator != null && _currentGroupId.HasValue) {
 				PreviousGroupCommand = ReactiveCommand.CreateFromTask(() => SwitchGroupAsync(forward: false));
@@ -499,9 +401,6 @@ namespace VDF.GUI.ViewModels {
 			_currentGroupId = result.Value.GroupId;
 			ImageA = null;
 			ImageB = null;
-			SetBOrientationTransform(
-				ImageOrientationTransform.Normal,
-				cacheForCurrentPair: false);
 			this.RaisePropertyChanged(nameof(ImageSingle));
 
 			await LoadThumbnailsAsync();
@@ -523,7 +422,6 @@ namespace VDF.GUI.ViewModels {
 			finally {
 				_suppressSelectionUpdates = false;
 			}
-			LoadCachedOrientationForCurrentPair();
 			UpdateShowFrameControls();
 			UpdateImages();
 			RequestAutoAlign();
@@ -531,7 +429,6 @@ namespace VDF.GUI.ViewModels {
 
 		void OnSelectionChanged() {
 			if (_suppressSelectionUpdates) return;
-			LoadCachedOrientationForCurrentPair();
 			UpdateShowFrameControls();
 			UpdateImages();
 			RequestAutoAlign();
@@ -585,9 +482,8 @@ namespace VDF.GUI.ViewModels {
 				ImageA = SelectedItemA?.Thumbnail;
 				ImageB = SelectedItemB?.Thumbnail;
 			}
-			AutoOrientB(cacheNormalResult: false);
 
-			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || DisplayImageB is null))
+			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || ImageB is null))
 				ForceSingleViewWithoutPersist();
 
 			this.RaisePropertyChanged(nameof(ImageSingle));
@@ -624,7 +520,6 @@ namespace VDF.GUI.ViewModels {
 			// Show cached/base frames immediately.
 			ImageA = GetItemFrameSync(itemA, baseIdx, isVideoA ? stepA : 0);
 			ImageB = GetItemFrameSync(itemB, baseIdx, isVideoB ? stepB : 0);
-			AutoOrientB(cacheNormalResult: false);
 			this.RaisePropertyChanged(nameof(ImageSingle));
 
 			bool needExtractA = isVideoA && stepA != 0 && itemA!.GetCachedOffsetFrame(baseIdx, stepA) == null;
@@ -664,7 +559,6 @@ namespace VDF.GUI.ViewModels {
 							ImageA = bmpA;
 						if (needExtractB && bmpB != null)
 							ImageB = bmpB;
-						AutoOrientB(cacheNormalResult: false);
 
 						this.RaisePropertyChanged(nameof(ImageSingle));
 						_frameExtractCts = null;
@@ -684,110 +578,6 @@ namespace VDF.GUI.ViewModels {
 			});
 
 			UpdateFrameLabels();
-		}
-
-		void RefreshDisplayedImageB() {
-			Bitmap? transformed =
-				ImageUtils.TransformBitmap(
-					ImageB,
-					_bOrientationTransform);
-			DisplayImageB = transformed ?? ImageB;
-			Recalc();
-		}
-
-		void LoadCachedOrientationForCurrentPair() {
-			if (TryGetOrientationCacheKey(out var key) &&
-				_orientationCache.TryGetValue(key, out var transform)) {
-				SetBOrientationTransform(
-					transform,
-					cacheForCurrentPair: false);
-				return;
-			}
-
-			SetBOrientationTransform(
-				ImageOrientationTransform.Normal,
-				cacheForCurrentPair: false);
-		}
-
-		void SetBOrientationTransform(
-			ImageOrientationTransform transform,
-			bool cacheForCurrentPair,
-			bool updateSelectedOption = true) {
-			if (cacheForCurrentPair &&
-				TryGetOrientationCacheKey(out var key)) {
-				_orientationCache[key] = transform;
-			}
-
-			if (_bOrientationTransform != transform) {
-				_bOrientationTransform = transform;
-				RefreshDisplayedImageB();
-			}
-
-			if (updateSelectedOption) {
-				ThumbnailOrientationOption selected =
-					OrientationTransformOptions.First(option =>
-						option.Transform == transform);
-				if (_selectedBOrientationOption != selected) {
-					this.RaiseAndSetIfChanged(
-						ref _selectedBOrientationOption,
-						selected,
-						nameof(SelectedBOrientationOption));
-				}
-			}
-		}
-
-		bool TryGetOrientationCacheKey(
-			out (string A, string B) key) {
-			if (SelectedItemA != null && SelectedItemB != null) {
-				key = (
-					SelectedItemA.Item.ItemInfo.Path,
-					SelectedItemB.Item.ItemInfo.Path);
-				return true;
-			}
-
-			key = default;
-			return false;
-		}
-
-		void AutoOrientB(bool cacheNormalResult) {
-			if (!CanOrientB ||
-				ImageA == null ||
-				ImageB == null) {
-				return;
-			}
-
-			if (TryGetOrientationCacheKey(out var key) &&
-				_orientationCache.ContainsKey(key) &&
-				!cacheNormalResult) {
-				return;
-			}
-
-			ImageOrientationMatch? match =
-				ImageUtils.FindBestOrientation(ImageA, ImageB);
-			if (!match.HasValue)
-				return;
-
-			ImageOrientationTransform transform =
-				IsConfidentAutoOrientation(match.Value)
-					? match.Value.Transform
-					: ImageOrientationTransform.Normal;
-			SetBOrientationTransform(
-				transform,
-				cacheForCurrentPair:
-					transform != ImageOrientationTransform.Normal ||
-					cacheNormalResult);
-		}
-
-		static bool IsConfidentAutoOrientation(
-			ImageOrientationMatch match) {
-			if (match.Transform == ImageOrientationTransform.Normal)
-				return false;
-
-			return
-				match.NormalScore - match.Score >=
-					AutoOrientationNormalImprovement &&
-				match.SecondBestScore - match.Score >=
-					AutoOrientationSecondBestMargin;
 		}
 
 		string FormatFrameLabel(LargeThumbnailDuplicateItem item, int baseIdx, int step) {
@@ -1172,7 +962,7 @@ namespace VDF.GUI.ViewModels {
 			return timestamp;
 		}
 		void Recalc() {
-			if ((!IsSwipe && !IsStacked) || ImageA is null || DisplayImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
+			if ((!IsSwipe && !IsStacked) || ImageA is null || ImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
 				SwipeClip = null;
 				return;
 			}
