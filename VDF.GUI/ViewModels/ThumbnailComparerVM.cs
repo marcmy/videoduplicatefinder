@@ -1021,6 +1021,7 @@ namespace VDF.GUI.ViewModels {
 					durationHintOffset,
 					Measure(),
 					zeroResult,
+					zeroResult,
 					budgetExpired,
 					searchStopwatch.Elapsed);
 				return 0;
@@ -1083,6 +1084,8 @@ namespace VDF.GUI.ViewModels {
 			IReadOnlyList<FrameAlignmentResult> finalResults = Measure();
 			FrameAlignmentResult? finalBest =
 				FrameAlignment.FindBestResult(finalResults);
+			FrameAlignmentResult? finalSelected =
+				FrameAlignment.FindBestConfidentResult(finalResults);
 			LogAutoAlignDiagnostics(
 				itemA,
 				itemB,
@@ -1091,11 +1094,12 @@ namespace VDF.GUI.ViewModels {
 				searchRadius,
 				durationHintOffset,
 				finalResults,
+				finalSelected,
 				finalBest,
 				budgetExpired,
 				searchStopwatch.Elapsed);
 
-			return finalBest?.Offset;
+			return finalSelected?.Offset;
 		}
 
 		static void LogAutoAlignDiagnostics(
@@ -1107,6 +1111,7 @@ namespace VDF.GUI.ViewModels {
 			int durationHintOffset,
 			IReadOnlyList<FrameAlignmentResult> results,
 			FrameAlignmentResult? selected,
+			FrameAlignmentResult? best,
 			bool budgetExpired,
 			TimeSpan elapsed) {
 			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
@@ -1123,6 +1128,8 @@ namespace VDF.GUI.ViewModels {
 					.Select(Format));
 			string selectedText =
 				selected.HasValue ? Format(selected.Value) : "0";
+			string bestText =
+				best.HasValue ? Format(best.Value) : "0";
 
 			VDF.Core.Utils.Logger.Instance.Info(
 				$"Thumbnail comparer auto-align " +
@@ -1133,6 +1140,7 @@ namespace VDF.GUI.ViewModels {
 				$"durationHint={durationHintOffset}, " +
 				$"radius={searchRadius}, " +
 				$"selected={selectedText}, " +
+				$"best={bestText}, " +
 				$"budgetExpired={budgetExpired}, " +
 				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
 				$"candidates=[{resultText}]");

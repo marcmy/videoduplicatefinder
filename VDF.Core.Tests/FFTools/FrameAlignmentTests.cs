@@ -48,6 +48,68 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void FindBestConfidentResult_KeepsBaselineOnTinyFarImprovement() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(new[] {
+				new FrameAlignmentResult(0, 10, 0.0500d),
+				new FrameAlignmentResult(80, 9, 0.0498d),
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(0, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_AcceptsClearFarImprovement() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(new[] {
+				new FrameAlignmentResult(0, 20, 0.0800d),
+				new FrameAlignmentResult(80, 12, 0.0500d),
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(80, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_AcceptsNearSmallImprovement() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(new[] {
+				new FrameAlignmentResult(0, 5, 0.0300d),
+				new FrameAlignmentResult(1, 5, 0.0293d),
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(1, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_SkipsWeakBestForConfidentNearOffset() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(new[] {
+				new FrameAlignmentResult(0, 10, 0.0500d),
+				new FrameAlignmentResult(80, 9, 0.0498d),
+				new FrameAlignmentResult(1, 10, 0.0493d),
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(1, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_RejectsAmbiguousFarAlternative() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(new[] {
+				new FrameAlignmentResult(0, 20, 0.0800d),
+				new FrameAlignmentResult(80, 12, 0.0500d),
+				new FrameAlignmentResult(-70, 12, 0.0505d),
+			});
+
+		Assert.NotNull(result);
+		Assert.Equal(0, result.Value.Offset);
+	}
+
+	[Fact]
 	public void CoarseAndFineOffsets_CoverFramesBetweenCoarseSamples() {
 		const int radius = 30;
 		IReadOnlyList<int> coarse =

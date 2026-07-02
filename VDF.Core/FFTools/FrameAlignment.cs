@@ -16,6 +16,10 @@ namespace VDF.Core.FFTools {
 
 	internal static class FrameAlignment {
 		const double MeanDifferenceTieTolerance = 0.0005d;
+		const int ConfidenceNearOffsetFrames = 2;
+		const int ConfidenceLocalBasinFrames = 8;
+		const int ConfidenceStrongHashGain = 8;
+		const double ConfidenceStrongMeanGain = 0.015d;
 
 		internal static FrameAlignmentResult? FindBest(
 			byte[] reference,
@@ -72,6 +76,44 @@ namespace VDF.Core.FFTools {
 			return best;
 		}
 
+		internal static FrameAlignmentResult? FindBestConfidentResult(
+			IEnumerable<FrameAlignmentResult> results,
+			int baselineOffset = 0) {
+			FrameAlignmentResult[] measured = results.ToArray();
+			FrameAlignmentResult? baseline = null;
+			foreach (FrameAlignmentResult result in measured) {
+				if (result.Offset == baselineOffset) {
+					baseline = result;
+					break;
+				}
+			}
+
+			var remaining = measured.ToList();
+			while (remaining.Count > 0) {
+				FrameAlignmentResult? best = FindBestResult(remaining);
+				if (!best.HasValue)
+					break;
+				if (best.Value.Offset == baselineOffset)
+					return best;
+				if (!baseline.HasValue)
+					return best;
+
+				if (IsConfidentAgainstBaseline(
+					best.Value,
+					baseline.Value) &&
+					IsConfidentAgainstAlternatives(
+						best.Value,
+						measured,
+						baselineOffset)) {
+					return best;
+				}
+
+				remaining.Remove(best.Value);
+			}
+
+			return baseline;
+		}
+
 		static bool IsBetter(
 			FrameAlignmentResult candidate,
 			FrameAlignmentResult current) {
@@ -93,6 +135,79 @@ namespace VDF.Core.FFTools {
 				return candidateDistance < currentDistance;
 
 			return candidate.Offset < current.Offset;
+		}
+
+		static bool IsConfidentAgainstBaseline(
+			FrameAlignmentResult candidate,
+			FrameAlignmentResult baseline) {
+			int offsetDistance =
+				Math.Abs(candidate.Offset - baseline.Offset);
+			int hashGain =
+				baseline.HashDistance - candidate.HashDistance;
+			double meanGain =
+				baseline.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			if (offsetDistance <= ConfidenceNearOffsetFrames) {
+				return
+					(hashGain > 0 &&
+						meanGain >= -MeanDifferenceTieTolerance) ||
+					(hashGain >= 0 &&
+						meanGain > MeanDifferenceTieTolerance);
+			}
+
+			if (hashGain >= ConfidenceStrongHashGain &&
+				meanGain >= -MeanDifferenceTieTolerance) {
+				return true;
+			}
+
+			if (meanGain >= ConfidenceStrongMeanGain &&
+				hashGain >= -1) {
+				return true;
+			}
+
+			int requiredHashGain =
+				offsetDistance <= 16 ? 1 :
+				offsetDistance <= 60 ? 2 :
+				3;
+			double requiredMeanGain =
+				offsetDistance <= 16 ? 0.002d :
+				offsetDistance <= 60 ? 0.004d :
+				0.006d;
+
+			return
+				hashGain >= requiredHashGain &&
+				meanGain >= requiredMeanGain;
+		}
+
+		static bool IsConfidentAgainstAlternatives(
+			FrameAlignmentResult candidate,
+			IEnumerable<FrameAlignmentResult> results,
+			int baselineOffset) {
+			if (Math.Abs(candidate.Offset - baselineOffset) <=
+				ConfidenceNearOffsetFrames) {
+				return true;
+			}
+
+			FrameAlignmentResult? competitor = FindBestResult(
+				results.Where(result =>
+					result.Offset != baselineOffset &&
+					Math.Abs(result.Offset - candidate.Offset) >
+						ConfidenceLocalBasinFrames));
+
+			if (!competitor.HasValue)
+				return true;
+
+			int hashMargin =
+				competitor.Value.HashDistance -
+				candidate.HashDistance;
+			double meanMargin =
+				competitor.Value.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			return
+				hashMargin >= 2 ||
+				(hashMargin >= 0 && meanMargin >= 0.002d);
 		}
 
 		internal static double CalculateMeanAbsoluteDifference(
