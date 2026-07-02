@@ -229,7 +229,7 @@
                 Grid.Row="1"
                 Grid.Column="2"
                 Margin="8"
-                RowDefinitions="Auto,Auto,Auto,*">
+                RowDefinitions="Auto,Auto,Auto,Auto,*">
 
                 <!-- Message bar -->
                 <Border
@@ -314,9 +314,37 @@
                     </DockPanel>
                 </Border>
 
-                <!-- Row 2: Frame controls (visible for videos in ALL modes) -->
+                <!-- Row 2: B orientation controls -->
                 <Border
                     Grid.Row="2"
+                    Margin="0,4,8,0"
+                    Padding="10,6"
+                    Classes="section"
+                    IsVisible="{Binding CanOrientB}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border Classes="badge-b">
+                            <TextBlock Classes="badge-text" Text="B" />
+                        </Border>
+                        <TextBlock VerticalAlignment="Center" FontSize="12" Text="Orientation:" />
+                        <ComboBox
+                            Width="150"
+                            ItemsSource="{Binding OrientationTransformOptions}"
+                            SelectedItem="{Binding SelectedBOrientationOption}" />
+                        <Button
+                            Classes="tool-btn"
+                            Command="{Binding AutoOrientBCommand}"
+                            Content="Auto"
+                            ToolTip.Tip="Try rotating or flipping B to match A." />
+                        <Button
+                            Classes="tool-btn"
+                            Command="{Binding ResetBOrientationCommand}"
+                            Content="Reset" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Row 3: Frame controls (visible for videos in ALL modes) -->
+                <Border
+                    Grid.Row="3"
                     Margin="0,4,8,0"
                     Padding="10,6"
                     Classes="section"
@@ -403,7 +431,7 @@
 
                 <!-- Viewer -->
                 <Border
-                    Grid.Row="3"
+                    Grid.Row="4"
                     Margin="0,6,8,0"
                     Background="{actipro:ThemeResource Container1BackgroundBrush}"
                     BorderBrush="{actipro:ThemeResource Container1BorderBrush}"
@@ -440,7 +468,7 @@
                                         Background="{DynamicResource SystemControlHighlightBaseLowBrush}"
                                         Opacity="0.4" />
                                     <Grid Grid.Column="2">
-                                        <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                        <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                         <Border Classes="label-overlay-bg">
                                             <TextBlock Classes="label-overlay" Text="{Binding FrameLabelB}" />
                                         </Border>
@@ -448,7 +476,7 @@
                                 </Grid>
                                 <!-- Stacked (vertical swipe) -->
                                 <Grid x:Name="StackedCanvas" IsVisible="{Binding IsStacked}">
-                                    <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                    <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                     <Image
                                         HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
@@ -478,7 +506,7 @@
                                 </Grid>
                                 <!-- Swipe -->
                                 <Grid x:Name="CompareCanvas" IsVisible="{Binding IsSwipe}">
-                                    <Image Source="{Binding ImageB}" Stretch="Uniform" />
+                                    <Image Source="{Binding DisplayImageB}" Stretch="Uniform" />
                                     <Image
                                         HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
