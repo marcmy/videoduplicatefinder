@@ -77,6 +77,18 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void ProgressiveOffsets_ExtendedRadiusKeepsMidRangeAnchors() {
+		IReadOnlyList<IReadOnlyList<int>> batches =
+			FrameAlignment.BuildProgressiveOffsetBatches(90);
+
+		Assert.Contains(batches, batch =>
+			batch.SequenceEqual(new[] { -30, 30 }));
+		Assert.Contains(batches, batch =>
+			batch.SequenceEqual(new[] { -60, 60 }));
+		Assert.Equal(new[] { -90, 90 }, batches[^1]);
+	}
+
+	[Fact]
 	public void RefinementOffsets_BisectNearestTestedNeighbors() {
 		var tested = new HashSet<int> {
 			-30, -16, -8, 0, 8, 16, 30

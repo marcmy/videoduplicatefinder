@@ -151,7 +151,7 @@ namespace VDF.Core.FFTools {
 		internal static IReadOnlyList<IReadOnlyList<int>>
 			BuildProgressiveOffsetBatches(int radius) {
 			radius = Math.Clamp(radius, 1, 300);
-			int[] preferredSteps = { 1, 2, 4, 8, 16, radius };
+			int[] preferredSteps = { 1, 2, 4, 8, 16, 30, 60, radius };
 			var seen = new HashSet<int>();
 			var batches = new List<IReadOnlyList<int>>();
 

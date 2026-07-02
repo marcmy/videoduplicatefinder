@@ -383,11 +383,11 @@ namespace VDF.GUI.ViewModels {
 		CancellationTokenSource? _frameExtractCts;
 		CancellationTokenSource? _loadCts;
 		CancellationTokenSource? _autoAlignCts;
-		const int AutoAlignSearchRadiusFrames = 30;
+		const int AutoAlignSearchRadiusFrames = 90;
 		const int AutoAlignProcessTimeoutMilliseconds = 1_500;
 		const int AutoAlignRefinementRounds = 4;
 		static readonly TimeSpan AutoAlignTimeBudget =
-			TimeSpan.FromSeconds(3.5);
+			TimeSpan.FromSeconds(5);
 		const double AutoOrientationNormalImprovement = 0.025d;
 		const double AutoOrientationSecondBestMargin = 0.004d;
 
