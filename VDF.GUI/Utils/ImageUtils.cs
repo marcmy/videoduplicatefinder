@@ -184,6 +184,51 @@ namespace VDF.GUI.Utils {
 			}
 		}
 
+		public static byte[]? TransformGraySquare(
+			byte[]? source,
+			int sideLength,
+			ImageOrientationTransform transform) {
+			if (source == null)
+				return null;
+			if (transform == ImageOrientationTransform.Normal)
+				return source;
+			if (sideLength <= 0 ||
+				source.Length != sideLength * sideLength) {
+				return source;
+			}
+
+			int max = sideLength - 1;
+			var transformed = new byte[source.Length];
+
+			for (int y = 0; y < sideLength; y++) {
+				for (int x = 0; x < sideLength; x++) {
+					int sourceIndex = transform switch {
+						ImageOrientationTransform.MirrorHorizontal =>
+							(y * sideLength) + (max - x),
+						ImageOrientationTransform.FlipVertical =>
+							((max - y) * sideLength) + x,
+						ImageOrientationTransform.Rotate180 =>
+							((max - y) * sideLength) + (max - x),
+						ImageOrientationTransform.Rotate90 =>
+							((max - x) * sideLength) + y,
+						ImageOrientationTransform.Rotate90MirrorHorizontal =>
+							(x * sideLength) + y,
+						ImageOrientationTransform.Rotate270 =>
+							(x * sideLength) + (max - y),
+						ImageOrientationTransform.Rotate270MirrorHorizontal =>
+							((max - x) * sideLength) + (max - y),
+						_ =>
+							(y * sideLength) + x,
+					};
+
+					transformed[(y * sideLength) + x] =
+						source[sourceIndex];
+				}
+			}
+
+			return transformed;
+		}
+
 		public static ImageOrientationMatch? FindBestOrientation(
 			Bitmap reference,
 			Bitmap candidate,

@@ -138,7 +138,8 @@ namespace VDF.GUI.ViewModels {
 				SetBOrientationTransform(
 					value.Transform,
 					cacheForCurrentPair: true,
-					updateSelectedOption: false);
+					updateSelectedOption: false,
+					requestAutoAlign: true);
 			}
 		}
 
@@ -390,7 +391,8 @@ namespace VDF.GUI.ViewModels {
 		const double AutoOrientationNormalImprovement = 0.025d;
 		const double AutoOrientationSecondBestMargin = 0.004d;
 
-		readonly Dictionary<(string A, string B, int BaseIndex), int>
+		readonly Dictionary<(string A, string B, int BaseIndex,
+			ImageOrientationTransform BOrientation), int>
 			_autoAlignCache = new();
 		readonly Dictionary<(string A, string B), ImageOrientationTransform>
 			_orientationCache = new();
@@ -456,11 +458,14 @@ namespace VDF.GUI.ViewModels {
 				StepB = 0;
 			});
 			AutoOrientBCommand = ReactiveCommand.Create(() =>
-				AutoOrientB(cacheNormalResult: true));
+				AutoOrientB(
+					cacheNormalResult: true,
+					requestAutoAlign: true));
 			ResetBOrientationCommand = ReactiveCommand.Create(() =>
 				SetBOrientationTransform(
 					ImageOrientationTransform.Normal,
-					cacheForCurrentPair: true));
+					cacheForCurrentPair: true,
+					requestAutoAlign: true));
 
 			if (_groupNavigator != null && _currentGroupId.HasValue) {
 				PreviousGroupCommand = ReactiveCommand.CreateFromTask(() => SwitchGroupAsync(forward: false));
@@ -712,7 +717,8 @@ namespace VDF.GUI.ViewModels {
 		void SetBOrientationTransform(
 			ImageOrientationTransform transform,
 			bool cacheForCurrentPair,
-			bool updateSelectedOption = true) {
+			bool updateSelectedOption = true,
+			bool requestAutoAlign = false) {
 			if (cacheForCurrentPair &&
 				TryGetOrientationCacheKey(out var key)) {
 				_orientationCache[key] = transform;
@@ -721,6 +727,8 @@ namespace VDF.GUI.ViewModels {
 			if (_bOrientationTransform != transform) {
 				_bOrientationTransform = transform;
 				RefreshDisplayedImageB();
+				if (requestAutoAlign)
+					RequestAutoAlign();
 			}
 
 			if (updateSelectedOption) {
@@ -749,7 +757,9 @@ namespace VDF.GUI.ViewModels {
 			return false;
 		}
 
-		void AutoOrientB(bool cacheNormalResult) {
+		void AutoOrientB(
+			bool cacheNormalResult,
+			bool requestAutoAlign = false) {
 			if (!CanOrientB ||
 				ImageA == null ||
 				ImageB == null) {
@@ -775,7 +785,8 @@ namespace VDF.GUI.ViewModels {
 				transform,
 				cacheForCurrentPair:
 					transform != ImageOrientationTransform.Normal ||
-					cacheNormalResult);
+					cacheNormalResult,
+				requestAutoAlign: requestAutoAlign);
 		}
 
 		static bool IsConfidentAutoOrientation(
@@ -846,13 +857,16 @@ namespace VDF.GUI.ViewModels {
 				return;
 			}
 
+			StepA = 0;
+			StepB = 0;
+
+			ImageOrientationTransform bOrientation =
+				_bOrientationTransform;
 			var cacheKey = (
 				itemA.Item.ItemInfo.Path,
 				itemB.Item.ItemInfo.Path,
-				baseIndex);
-
-			StepA = 0;
-			StepB = 0;
+				baseIndex,
+				bOrientation);
 
 			if (_autoAlignCache.TryGetValue(
 				cacheKey,
@@ -869,6 +883,7 @@ namespace VDF.GUI.ViewModels {
 				itemA,
 				itemB,
 				baseIndex,
+				bOrientation,
 				cacheKey,
 				cts);
 		}
@@ -877,7 +892,9 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemA,
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
-			(string A, string B, int BaseIndex) cacheKey,
+			ImageOrientationTransform bOrientation,
+			(string A, string B, int BaseIndex,
+				ImageOrientationTransform BOrientation) cacheKey,
 			CancellationTokenSource cts) {
 			int? offset = null;
 
@@ -887,6 +904,7 @@ namespace VDF.GUI.ViewModels {
 						itemA,
 						itemB,
 						baseIndex,
+						bOrientation,
 						cts.Token),
 					cts.Token);
 			}
@@ -910,6 +928,7 @@ namespace VDF.GUI.ViewModels {
 					!offset.HasValue ||
 					!ReferenceEquals(SelectedItemA, itemA) ||
 					!ReferenceEquals(SelectedItemB, itemB) ||
+					_bOrientationTransform != bOrientation ||
 					BaseThumbnailIndex != baseIndex) {
 					return;
 				}
@@ -924,6 +943,7 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemA,
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
+			ImageOrientationTransform bOrientation,
 			CancellationToken cancellationToken) {
 			var searchStopwatch = Stopwatch.StartNew();
 			var testedOffsets = new HashSet<int>();
@@ -965,7 +985,8 @@ namespace VDF.GUI.ViewModels {
 						itemB,
 						baseIndex,
 						untested,
-						cancellationToken));
+						cancellationToken,
+						bOrientation));
 			}
 
 			IReadOnlyList<FrameAlignmentResult> Measure() =>
@@ -983,6 +1004,7 @@ namespace VDF.GUI.ViewModels {
 					itemA,
 					itemB,
 					baseIndex,
+					bOrientation,
 					Measure(),
 					zeroResult,
 					budgetExpired,
@@ -1037,6 +1059,7 @@ namespace VDF.GUI.ViewModels {
 				itemA,
 				itemB,
 				baseIndex,
+				bOrientation,
 				finalResults,
 				finalBest,
 				budgetExpired,
@@ -1049,6 +1072,7 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemA,
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
+			ImageOrientationTransform bOrientation,
 			IReadOnlyList<FrameAlignmentResult> results,
 			FrameAlignmentResult? selected,
 			bool budgetExpired,
@@ -1073,7 +1097,8 @@ namespace VDF.GUI.ViewModels {
 				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
 				$"vs " +
 				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
-				$"base={baseIndex}: selected={selectedText}, " +
+				$"base={baseIndex}, bOrientation={bOrientation}: " +
+				$"selected={selectedText}, " +
 				$"budgetExpired={budgetExpired}, " +
 				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
 				$"candidates=[{resultText}]");
@@ -1084,6 +1109,8 @@ namespace VDF.GUI.ViewModels {
 			int baseIndex,
 			IReadOnlyList<int> offsets,
 			CancellationToken cancellationToken,
+			ImageOrientationTransform orientation =
+				ImageOrientationTransform.Normal,
 			int graySideLength = 32) {
 			var candidates =
 				new List<FrameAlignmentCandidate>(offsets.Count);
@@ -1103,7 +1130,10 @@ namespace VDF.GUI.ViewModels {
 					candidates.Add(
 						new FrameAlignmentCandidate(
 							offset,
-							cachedGray));
+							ImageUtils.TransformGraySquare(
+								cachedGray,
+								graySideLength,
+								orientation)));
 					continue;
 				}
 
@@ -1142,7 +1172,10 @@ namespace VDF.GUI.ViewModels {
 					candidates[missingCandidateIndexes[i]] =
 						new FrameAlignmentCandidate(
 							offset,
-							gray);
+							ImageUtils.TransformGraySquare(
+								gray,
+								graySideLength,
+								orientation));
 				}
 			}
 
