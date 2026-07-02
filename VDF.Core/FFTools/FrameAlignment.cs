@@ -165,6 +165,46 @@ namespace VDF.Core.FFTools {
 			return batches;
 		}
 
+		internal static IReadOnlyList<IReadOnlyList<int>>
+			BuildDurationHintOffsetBatches(
+				int hintOffset,
+				int radius) {
+			radius = Math.Clamp(radius, 1, 300);
+			hintOffset = Math.Clamp(hintOffset, -radius, radius);
+
+			if (hintOffset == 0)
+				return Array.Empty<IReadOnlyList<int>>();
+
+			var seen = new HashSet<int> { 0 };
+			var batches = new List<IReadOnlyList<int>>();
+
+			void AddBatch(IEnumerable<int> offsets) {
+				int[] batch = offsets
+					.Where(offset =>
+						Math.Abs(offset) <= radius &&
+						seen.Add(offset))
+					.ToArray();
+
+				if (batch.Length > 0)
+					batches.Add(batch);
+			}
+
+			int oppositeHintOffset = -hintOffset;
+			AddBatch(new[] { hintOffset, oppositeHintOffset });
+
+			int[] spreads = { 1, 2, 4, 8, 16 };
+			foreach (int spread in spreads) {
+				AddBatch(new[] {
+					hintOffset - spread,
+					hintOffset + spread,
+					oppositeHintOffset - spread,
+					oppositeHintOffset + spread,
+				});
+			}
+
+			return batches;
+		}
+
 		internal static IReadOnlyList<int> BuildRefinementOffsets(
 			int center,
 			ISet<int> testedOffsets,

@@ -383,7 +383,9 @@ namespace VDF.GUI.ViewModels {
 		CancellationTokenSource? _frameExtractCts;
 		CancellationTokenSource? _loadCts;
 		CancellationTokenSource? _autoAlignCts;
-		const int AutoAlignSearchRadiusFrames = 90;
+		const int AutoAlignDefaultSearchRadiusFrames = 90;
+		const int AutoAlignMaximumSearchRadiusFrames = 300;
+		const int AutoAlignDurationHintPaddingFrames = 16;
 		const int AutoAlignProcessTimeoutMilliseconds = 1_500;
 		const int AutoAlignRefinementRounds = 4;
 		static readonly TimeSpan AutoAlignTimeBudget =
@@ -948,6 +950,16 @@ namespace VDF.GUI.ViewModels {
 			var searchStopwatch = Stopwatch.StartNew();
 			var testedOffsets = new HashSet<int>();
 			var candidates = new List<FrameAlignmentCandidate>();
+			int durationHintOffset = CalculateDurationHintOffset(
+				itemA,
+				itemB);
+			int searchRadius = Math.Clamp(
+				Math.Max(
+					AutoAlignDefaultSearchRadiusFrames,
+					Math.Abs(durationHintOffset) +
+						AutoAlignDurationHintPaddingFrames),
+				AutoAlignDefaultSearchRadiusFrames,
+				AutoAlignMaximumSearchRadiusFrames);
 
 			cancellationToken.ThrowIfCancellationRequested();
 
@@ -973,7 +985,7 @@ namespace VDF.GUI.ViewModels {
 				IReadOnlyList<int> untested = offsets
 					.Where(offset =>
 						Math.Abs(offset) <=
-							AutoAlignSearchRadiusFrames &&
+							searchRadius &&
 						testedOffsets.Add(offset))
 					.ToArray();
 
@@ -1005,6 +1017,8 @@ namespace VDF.GUI.ViewModels {
 					itemB,
 					baseIndex,
 					bOrientation,
+					searchRadius,
+					durationHintOffset,
 					Measure(),
 					zeroResult,
 					budgetExpired,
@@ -1013,8 +1027,22 @@ namespace VDF.GUI.ViewModels {
 			}
 
 			foreach (IReadOnlyList<int> batch in
+				FrameAlignment.BuildDurationHintOffsetBatches(
+					durationHintOffset,
+					searchRadius)) {
+				cancellationToken.ThrowIfCancellationRequested();
+
+				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+					budgetExpired = true;
+					break;
+				}
+
+				AddCandidates(batch);
+			}
+
+			foreach (IReadOnlyList<int> batch in
 				FrameAlignment.BuildProgressiveOffsetBatches(
-					AutoAlignSearchRadiusFrames)) {
+					searchRadius)) {
 				cancellationToken.ThrowIfCancellationRequested();
 
 				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
@@ -1044,7 +1072,7 @@ namespace VDF.GUI.ViewModels {
 					FrameAlignment.BuildRefinementOffsets(
 						best.Value.Offset,
 						testedOffsets,
-						AutoAlignSearchRadiusFrames);
+						searchRadius);
 
 				if (refinementOffsets.Count == 0)
 					break;
@@ -1060,6 +1088,8 @@ namespace VDF.GUI.ViewModels {
 				itemB,
 				baseIndex,
 				bOrientation,
+				searchRadius,
+				durationHintOffset,
 				finalResults,
 				finalBest,
 				budgetExpired,
@@ -1073,6 +1103,8 @@ namespace VDF.GUI.ViewModels {
 			LargeThumbnailDuplicateItem itemB,
 			int baseIndex,
 			ImageOrientationTransform bOrientation,
+			int searchRadius,
+			int durationHintOffset,
 			IReadOnlyList<FrameAlignmentResult> results,
 			FrameAlignmentResult? selected,
 			bool budgetExpired,
@@ -1098,6 +1130,8 @@ namespace VDF.GUI.ViewModels {
 				$"vs " +
 				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
 				$"base={baseIndex}, bOrientation={bOrientation}: " +
+				$"durationHint={durationHintOffset}, " +
+				$"radius={searchRadius}, " +
 				$"selected={selectedText}, " +
 				$"budgetExpired={budgetExpired}, " +
 				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
@@ -1204,6 +1238,33 @@ namespace VDF.GUI.ViewModels {
 
 			return timestamp;
 		}
+
+		static int CalculateDurationHintOffset(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB) {
+			TimeSpan durationA = itemA.Item.ItemInfo.Duration;
+			TimeSpan durationB = itemB.Item.ItemInfo.Duration;
+			if (durationA <= TimeSpan.Zero ||
+				durationB <= TimeSpan.Zero) {
+				return 0;
+			}
+
+			double fps =
+				itemB.Item.ItemInfo.Fps > 0
+					? itemB.Item.ItemInfo.Fps
+					: itemA.Item.ItemInfo.Fps > 0
+						? itemA.Item.ItemInfo.Fps
+						: 30d;
+			double differenceSeconds =
+				durationB.TotalSeconds - durationA.TotalSeconds;
+			int offset = (int)Math.Round(differenceSeconds * fps);
+
+			return Math.Clamp(
+				offset,
+				-AutoAlignMaximumSearchRadiusFrames,
+				AutoAlignMaximumSearchRadiusFrames);
+		}
+
 		void Recalc() {
 			if ((!IsSwipe && !IsStacked) || ImageA is null || DisplayImageB is null || ViewportWidth <= 0 || ViewportHeight <= 0) {
 				SwipeClip = null;

@@ -89,6 +89,25 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void DurationHintOffsets_ProbeHintAndOppositeSign() {
+		IReadOnlyList<IReadOnlyList<int>> batches =
+			FrameAlignment.BuildDurationHintOffsetBatches(75, 90);
+
+		Assert.Equal(new[] { 75, -75 }, batches[0]);
+		Assert.Contains(batches, batch =>
+			batch.SequenceEqual(new[] { 59, 91, -91, -59 }
+				.Where(offset => Math.Abs(offset) <= 90)));
+	}
+
+	[Fact]
+	public void DurationHintOffsets_ClampToRadius() {
+		IReadOnlyList<IReadOnlyList<int>> batches =
+			FrameAlignment.BuildDurationHintOffsetBatches(140, 90);
+
+		Assert.Equal(new[] { 90, -90 }, batches[0]);
+	}
+
+	[Fact]
 	public void RefinementOffsets_BisectNearestTestedNeighbors() {
 		var tested = new HashSet<int> {
 			-30, -16, -8, 0, 8, 16, 30
