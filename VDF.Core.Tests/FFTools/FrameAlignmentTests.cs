@@ -125,6 +125,57 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void FindBestConfidentResult_UsesPreferredBasinOverNearZeroFallback() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(
+				new[] {
+					new FrameAlignmentResult(0, 12, 0.0875d),
+					new FrameAlignmentResult(-77, 10, 0.0568d),
+					new FrameAlignmentResult(2, 12, 0.0843d),
+					new FrameAlignmentResult(60, 20, 0.0814d),
+					new FrameAlignmentResult(74, 14, 0.0889d),
+				},
+				preferredOffset: 80);
+
+		Assert.NotNull(result);
+		Assert.Equal(60, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_KeepsConfidentSelectionInsidePreferredBasin() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(
+				new[] {
+					new FrameAlignmentResult(0, 14, 0.0850d),
+					new FrameAlignmentResult(56, 4, 0.0376d),
+					new FrameAlignmentResult(58, 4, 0.0372d),
+					new FrameAlignmentResult(60, 4, 0.0375d),
+				},
+				preferredOffset: 70);
+
+		Assert.NotNull(result);
+		Assert.Equal(56, result.Value.Offset);
+	}
+
+	[Fact]
+	public void FindBestConfidentResult_UsesPreferredWindowForLateTimeline() {
+		FrameAlignmentResult? result =
+			FrameAlignment.FindBestConfidentResult(
+				new[] {
+					new FrameAlignmentResult(0, 0, 0.0422d),
+					new FrameAlignmentResult(1, 0, 0.0410d),
+					new FrameAlignmentResult(8, 0, 0.0364d),
+					new FrameAlignmentResult(12, 0, 0.0349d),
+					new FrameAlignmentResult(14, 0, 0.0337d),
+					new FrameAlignmentResult(16, 0, 0.0334d),
+				},
+				preferredOffset: 10);
+
+		Assert.NotNull(result);
+		Assert.Equal(8, result.Value.Offset);
+	}
+
+	[Fact]
 	public void FindBestConfidentResult_AcceptsStrongOppositeDurationHintDirection() {
 		FrameAlignmentResult? result =
 			FrameAlignment.FindBestConfidentResult(

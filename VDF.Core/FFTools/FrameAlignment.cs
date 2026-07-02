@@ -20,6 +20,8 @@ namespace VDF.Core.FFTools {
 		const int ConfidenceLocalBasinFrames = 8;
 		const int ConfidenceStrongHashGain = 8;
 		const double ConfidenceStrongMeanGain = 0.015d;
+		const double PreferredMeanGain = 0.003d;
+		const double PreferredMeanTieTolerance = 0.004d;
 
 		internal static FrameAlignmentResult? FindBest(
 			byte[] reference,
@@ -111,10 +113,24 @@ namespace VDF.Core.FFTools {
 						best.Value,
 						measured,
 						baselineOffset)) {
-					return best;
+					return ChoosePreferredResultWhenNeeded(
+						best.Value,
+						baseline.Value,
+						measured,
+						baselineOffset,
+						preferredOffset);
 				}
 
 				remaining.Remove(best.Value);
+			}
+
+			if (baseline.HasValue) {
+				return ChoosePreferredResultWhenNeeded(
+					baseline.Value,
+					baseline.Value,
+					measured,
+					baselineOffset,
+					preferredOffset);
 			}
 
 			return baseline;
@@ -212,6 +228,173 @@ namespace VDF.Core.FFTools {
 			return
 				hashGain >= ConfidenceStrongHashGain &&
 				meanGain >= ConfidenceStrongMeanGain;
+		}
+
+		static FrameAlignmentResult ChoosePreferredResultWhenNeeded(
+			FrameAlignmentResult selected,
+			FrameAlignmentResult baseline,
+			IEnumerable<FrameAlignmentResult> results,
+			int baselineOffset,
+			int preferredOffset) {
+			FrameAlignmentResult? preferred =
+				FindBestPreferredDirectionResult(
+					results,
+					baseline,
+					baselineOffset,
+					preferredOffset);
+
+			if (!preferred.HasValue)
+				return selected;
+			if (!ShouldPreferDirectionResult(
+				selected,
+				baselineOffset,
+				preferredOffset))
+				return selected;
+
+			return preferred.Value;
+		}
+
+		static FrameAlignmentResult? FindBestPreferredDirectionResult(
+			IEnumerable<FrameAlignmentResult> results,
+			FrameAlignmentResult baseline,
+			int baselineOffset,
+			int preferredOffset) {
+			int preferredDirection = Math.Sign(preferredOffset);
+			if (preferredDirection == 0)
+				return null;
+
+			FrameAlignmentResult? best = null;
+
+			foreach (FrameAlignmentResult result in results) {
+				if (!IsPreferredDirectionCandidate(
+					result,
+					baseline,
+					baselineOffset,
+					preferredOffset)) {
+					continue;
+				}
+
+				if (!best.HasValue ||
+					IsBetterPreferredDirectionCandidate(
+						result,
+						best.Value,
+						baselineOffset,
+						preferredOffset)) {
+					best = result;
+				}
+			}
+
+			return best;
+		}
+
+		static bool IsPreferredDirectionCandidate(
+			FrameAlignmentResult candidate,
+			FrameAlignmentResult baseline,
+			int baselineOffset,
+			int preferredOffset) {
+			int candidateOffset =
+				candidate.Offset - baselineOffset;
+			int preferredDirection = Math.Sign(preferredOffset);
+
+			if (Math.Sign(candidateOffset) != preferredDirection ||
+				Math.Abs(candidateOffset) <=
+					ConfidenceNearOffsetFrames ||
+				!IsInsidePreferredWindow(
+					candidate.Offset,
+					baselineOffset,
+					preferredOffset)) {
+				return false;
+			}
+
+			int hashGain =
+				baseline.HashDistance - candidate.HashDistance;
+			double meanGain =
+				baseline.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+
+			return
+				(hashGain >= 0 &&
+					meanGain >= -MeanDifferenceTieTolerance) ||
+				meanGain >= PreferredMeanGain;
+		}
+
+		static bool ShouldPreferDirectionResult(
+			FrameAlignmentResult selected,
+			int baselineOffset,
+			int preferredOffset) {
+			if (preferredOffset == 0)
+				return false;
+
+			int selectedOffset =
+				selected.Offset - baselineOffset;
+			int preferredDirection = Math.Sign(preferredOffset);
+
+			return
+				selected.Offset == baselineOffset ||
+				Math.Abs(selectedOffset) <=
+					ConfidenceNearOffsetFrames ||
+				Math.Sign(selectedOffset) != preferredDirection ||
+				!IsInsidePreferredWindow(
+					selected.Offset,
+					baselineOffset,
+					preferredOffset);
+		}
+
+		static bool IsInsidePreferredWindow(
+			int offset,
+			int baselineOffset,
+			int preferredOffset) {
+			double window =
+				Math.Clamp(Math.Abs(preferredOffset) * 0.25d, 4d, 20d);
+			int relativeOffset = offset - baselineOffset;
+
+			return
+				Math.Abs(relativeOffset - preferredOffset) <= window;
+		}
+
+		static bool IsBetterPreferredDirectionCandidate(
+			FrameAlignmentResult candidate,
+			FrameAlignmentResult current,
+			int baselineOffset,
+			int preferredOffset) {
+			int hashDelta =
+				candidate.HashDistance - current.HashDistance;
+			if (Math.Abs(hashDelta) >= 2)
+				return hashDelta < 0;
+
+			double meanImprovement =
+				current.MeanAbsoluteDifference -
+				candidate.MeanAbsoluteDifference;
+			if (meanImprovement > PreferredMeanTieTolerance)
+				return true;
+			if (meanImprovement < -PreferredMeanTieTolerance)
+				return false;
+
+			double candidatePreferredDistance =
+				Math.Abs(
+					(candidate.Offset - baselineOffset) -
+					preferredOffset);
+			double currentPreferredDistance =
+				Math.Abs(
+					(current.Offset - baselineOffset) -
+					preferredOffset);
+			if (candidatePreferredDistance !=
+				currentPreferredDistance) {
+				return candidatePreferredDistance <
+					currentPreferredDistance;
+			}
+
+			int candidateBaselineDistance =
+				Math.Abs(candidate.Offset - baselineOffset);
+			int currentBaselineDistance =
+				Math.Abs(current.Offset - baselineOffset);
+			if (candidateBaselineDistance !=
+				currentBaselineDistance) {
+				return candidateBaselineDistance <
+					currentBaselineDistance;
+			}
+
+			return candidate.Offset < current.Offset;
 		}
 
 		static bool IsConfidentAgainstAlternatives(

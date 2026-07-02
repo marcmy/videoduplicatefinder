@@ -952,7 +952,8 @@ namespace VDF.GUI.ViewModels {
 			var candidates = new List<FrameAlignmentCandidate>();
 			int durationHintOffset = CalculateDurationHintOffset(
 				itemA,
-				itemB);
+				itemB,
+				baseIndex);
 			int searchRadius = Math.Clamp(
 				Math.Max(
 					AutoAlignDefaultSearchRadiusFrames,
@@ -1251,7 +1252,8 @@ namespace VDF.GUI.ViewModels {
 
 		static int CalculateDurationHintOffset(
 			LargeThumbnailDuplicateItem itemA,
-			LargeThumbnailDuplicateItem itemB) {
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex) {
 			TimeSpan durationA = itemA.Item.ItemInfo.Duration;
 			TimeSpan durationB = itemB.Item.ItemInfo.Duration;
 			if (durationA <= TimeSpan.Zero ||
@@ -1267,12 +1269,57 @@ namespace VDF.GUI.ViewModels {
 						: 30d;
 			double differenceSeconds =
 				durationB.TotalSeconds - durationA.TotalSeconds;
-			int offset = (int)Math.Round(differenceSeconds * fps);
+			double timelineProgress = CalculateTimelineProgress(
+				itemA,
+				itemB,
+				baseIndex);
+			double remainingTimeline = 1d - timelineProgress;
+			int offset = (int)Math.Round(
+				differenceSeconds * remainingTimeline * fps);
 
 			return Math.Clamp(
 				offset,
 				-AutoAlignMaximumSearchRadiusFrames,
 				AutoAlignMaximumSearchRadiusFrames);
+		}
+
+		static double CalculateTimelineProgress(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex) {
+			var timestampsA = itemA.Item.ItemInfo.ThumbnailTimestamps;
+			var timestampsB = itemB.Item.ItemInfo.ThumbnailTimestamps;
+			int count = Math.Min(timestampsA.Count, timestampsB.Count);
+
+			if (baseIndex >= 0 && count > 1 && baseIndex < count) {
+				return Math.Clamp(baseIndex / (double)(count - 1), 0d, 1d);
+			}
+
+			static double TimestampProgress(
+				TimeSpan timestamp,
+				TimeSpan duration) =>
+				duration > TimeSpan.Zero
+					? Math.Clamp(
+						timestamp.TotalSeconds /
+							duration.TotalSeconds,
+						0d,
+						1d)
+					: 0d;
+
+			double progressA =
+				baseIndex >= 0 && baseIndex < timestampsA.Count
+					? TimestampProgress(
+						timestampsA[baseIndex],
+						itemA.Item.ItemInfo.Duration)
+					: 0d;
+			double progressB =
+				baseIndex >= 0 && baseIndex < timestampsB.Count
+					? TimestampProgress(
+						timestampsB[baseIndex],
+						itemB.Item.ItemInfo.Duration)
+					: 0d;
+
+			return Math.Clamp((progressA + progressB) / 2d, 0d, 1d);
 		}
 
 		void Recalc() {
