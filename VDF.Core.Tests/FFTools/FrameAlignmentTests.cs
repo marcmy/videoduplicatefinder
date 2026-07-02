@@ -191,6 +191,61 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
+	public void FindBestSmoothPath_RejectsInconsistentLocalOutlier() {
+		IReadOnlyList<FrameAlignmentResult?> path =
+			FrameAlignment.FindBestSmoothPath(
+				new[] {
+					new[] {
+						new FrameAlignmentResult(0, 16, 0.1164d),
+						new FrameAlignmentResult(75, 2, 0.0361d),
+					},
+					new[] {
+						new FrameAlignmentResult(0, 12, 0.0875d),
+						new FrameAlignmentResult(-77, 10, 0.0568d),
+						new FrameAlignmentResult(60, 20, 0.0814d),
+						new FrameAlignmentResult(74, 14, 0.0889d),
+					},
+					new[] {
+						new FrameAlignmentResult(0, 14, 0.0850d),
+						new FrameAlignmentResult(56, 4, 0.0376d),
+					},
+				},
+				new[] { 90, 80, 70 });
+
+		Assert.Equal(75, path[0]?.Offset);
+		Assert.True(path[1]?.Offset > 0);
+		Assert.NotEqual(-77, path[1]?.Offset);
+		Assert.Equal(56, path[2]?.Offset);
+	}
+
+	[Fact]
+	public void FindBestSmoothPath_AllowsLocalCorrectionNearTrend() {
+		IReadOnlyList<FrameAlignmentResult?> path =
+			FrameAlignment.FindBestSmoothPath(
+				new[] {
+					new[] {
+						new FrameAlignmentResult(0, 14, 0.0600d),
+						new FrameAlignmentResult(20, 4, 0.0300d),
+					},
+					new[] {
+						new FrameAlignmentResult(0, 12, 0.0550d),
+						new FrameAlignmentResult(10, 10, 0.0450d),
+						new FrameAlignmentResult(17, 4, 0.0280d),
+					},
+					new[] {
+						new FrameAlignmentResult(0, 10, 0.0400d),
+						new FrameAlignmentResult(7, 4, 0.0260d),
+						new FrameAlignmentResult(10, 5, 0.0290d),
+					},
+				},
+				new[] { 20, 10, 0 });
+
+		Assert.Equal(20, path[0]?.Offset);
+		Assert.Equal(17, path[1]?.Offset);
+		Assert.Equal(7, path[2]?.Offset);
+	}
+
+	[Fact]
 	public void CoarseAndFineOffsets_CoverFramesBetweenCoarseSamples() {
 		const int radius = 30;
 		IReadOnlyList<int> coarse =

@@ -388,16 +388,32 @@ namespace VDF.GUI.ViewModels {
 		const int AutoAlignDurationHintPaddingFrames = 16;
 		const int AutoAlignProcessTimeoutMilliseconds = 1_500;
 		const int AutoAlignRefinementRounds = 4;
+		const int AutoAlignMinimumGlobalEvidenceFrames = 3;
 		static readonly TimeSpan AutoAlignTimeBudget =
 			TimeSpan.FromSeconds(5);
+		static readonly TimeSpan AutoAlignGlobalTimeBudget =
+			TimeSpan.FromSeconds(8);
 		const double AutoOrientationNormalImprovement = 0.025d;
 		const double AutoOrientationSecondBestMargin = 0.004d;
 
 		readonly Dictionary<(string A, string B, int BaseIndex,
 			ImageOrientationTransform BOrientation), int>
 			_autoAlignCache = new();
+		readonly Dictionary<(string A, string B,
+			ImageOrientationTransform BOrientation), IReadOnlyDictionary<int, int>>
+			_autoAlignPathCache = new();
 		readonly Dictionary<(string A, string B), ImageOrientationTransform>
 			_orientationCache = new();
+
+		readonly record struct AutoAlignMeasurement(
+			int BaseIndex,
+			int SearchRadius,
+			int DurationHintOffset,
+			IReadOnlyList<FrameAlignmentResult> Results,
+			FrameAlignmentResult? Selected,
+			FrameAlignmentResult? Best,
+			bool BudgetExpired,
+			TimeSpan Elapsed);
 
 		readonly Func<Guid, bool, (Guid GroupId, List<LargeThumbnailDuplicateItem> Items)?>? _groupNavigator;
 		Guid? _currentGroupId;
@@ -869,11 +885,23 @@ namespace VDF.GUI.ViewModels {
 				itemB.Item.ItemInfo.Path,
 				baseIndex,
 				bOrientation);
+			var pathCacheKey = (
+				itemA.Item.ItemInfo.Path,
+				itemB.Item.ItemInfo.Path,
+				bOrientation);
 
 			if (_autoAlignCache.TryGetValue(
 				cacheKey,
 				out int cachedOffset)) {
 				StepB = cachedOffset;
+				return;
+			}
+			if (_autoAlignPathCache.TryGetValue(
+				pathCacheKey,
+				out IReadOnlyDictionary<int, int>? cachedPath) &&
+				cachedPath.TryGetValue(baseIndex, out int cachedPathOffset)) {
+				_autoAlignCache[cacheKey] = cachedPathOffset;
+				StepB = cachedPathOffset;
 				return;
 			}
 
@@ -887,6 +915,7 @@ namespace VDF.GUI.ViewModels {
 				baseIndex,
 				bOrientation,
 				cacheKey,
+				pathCacheKey,
 				cts);
 		}
 
@@ -897,12 +926,14 @@ namespace VDF.GUI.ViewModels {
 			ImageOrientationTransform bOrientation,
 			(string A, string B, int BaseIndex,
 				ImageOrientationTransform BOrientation) cacheKey,
+			(string A, string B,
+				ImageOrientationTransform BOrientation) pathCacheKey,
 			CancellationTokenSource cts) {
-			int? offset = null;
+			IReadOnlyDictionary<int, int>? offsets = null;
 
 			try {
-				offset = await Task.Run(
-					() => FindBestAlignmentOffset(
+				offsets = await Task.Run(
+					() => FindBestAlignmentOffsets(
 						itemA,
 						itemB,
 						baseIndex,
@@ -927,7 +958,8 @@ namespace VDF.GUI.ViewModels {
 				IsAutoAligning = false;
 
 				if (cts.IsCancellationRequested ||
-					!offset.HasValue ||
+					offsets == null ||
+					!offsets.TryGetValue(baseIndex, out int offset) ||
 					!ReferenceEquals(SelectedItemA, itemA) ||
 					!ReferenceEquals(SelectedItemB, itemB) ||
 					_bOrientationTransform != bOrientation ||
@@ -935,10 +967,157 @@ namespace VDF.GUI.ViewModels {
 					return;
 				}
 
-				_autoAlignCache[cacheKey] = offset.Value;
+				_autoAlignPathCache[pathCacheKey] = offsets;
+				foreach ((int pathBaseIndex, int pathOffset) in offsets) {
+					_autoAlignCache[(
+						cacheKey.A,
+						cacheKey.B,
+						pathBaseIndex,
+						cacheKey.BOrientation)] = pathOffset;
+				}
+				_autoAlignCache[cacheKey] = offset;
 				StepA = 0;
-				StepB = offset.Value;
+				StepB = offset;
 			});
+		}
+
+		IReadOnlyDictionary<int, int>? FindBestAlignmentOffsets(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			ImageOrientationTransform bOrientation,
+			CancellationToken cancellationToken) {
+			IReadOnlyDictionary<int, int>? globalOffsets =
+				FindBestGlobalAlignmentOffsets(
+					itemA,
+					itemB,
+					baseIndex,
+					bOrientation,
+					cancellationToken);
+			if (globalOffsets != null &&
+				globalOffsets.ContainsKey(baseIndex)) {
+				return globalOffsets;
+			}
+
+			int? localOffset = FindBestAlignmentOffset(
+				itemA,
+				itemB,
+				baseIndex,
+				bOrientation,
+				cancellationToken);
+			if (!localOffset.HasValue)
+				return null;
+
+			return new Dictionary<int, int> {
+				[baseIndex] = localOffset.Value,
+			};
+		}
+
+		IReadOnlyDictionary<int, int>? FindBestGlobalAlignmentOffsets(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			ImageOrientationTransform bOrientation,
+			CancellationToken cancellationToken) {
+			int thumbnailCount = Math.Min(
+				itemA.Item.ItemInfo.ThumbnailTimestamps.Count,
+				itemB.Item.ItemInfo.ThumbnailTimestamps.Count);
+			if (thumbnailCount < AutoAlignMinimumGlobalEvidenceFrames)
+				return null;
+
+			var searchStopwatch = Stopwatch.StartNew();
+			var measurements =
+				new Dictionary<int, AutoAlignMeasurement>();
+			IEnumerable<int> orderedBaseIndexes =
+				Enumerable.Range(0, thumbnailCount)
+					.OrderBy(index => index == baseIndex ? 0 : 1)
+					.ThenBy(index => Math.Abs(index - baseIndex))
+					.ThenBy(index => index);
+
+			foreach (int candidateBaseIndex in orderedBaseIndexes) {
+				cancellationToken.ThrowIfCancellationRequested();
+				if (searchStopwatch.Elapsed >= AutoAlignGlobalTimeBudget)
+					break;
+
+				AutoAlignMeasurement? measurement =
+					MeasureAlignmentCandidates(
+						itemA,
+						itemB,
+						candidateBaseIndex,
+						bOrientation,
+						searchStopwatch,
+						AutoAlignGlobalTimeBudget,
+						cancellationToken);
+				if (measurement.HasValue)
+					measurements[candidateBaseIndex] =
+						measurement.Value;
+			}
+
+			if (!measurements.ContainsKey(baseIndex) ||
+				measurements.Count < AutoAlignMinimumGlobalEvidenceFrames) {
+				return null;
+			}
+
+			var resultsByBase =
+				new List<IReadOnlyList<FrameAlignmentResult>>(
+					thumbnailCount);
+			var preferredOffsets = new List<int>(thumbnailCount);
+			for (int i = 0; i < thumbnailCount; i++) {
+				if (measurements.TryGetValue(
+					i,
+					out AutoAlignMeasurement measurement)) {
+					resultsByBase.Add(measurement.Results);
+					preferredOffsets.Add(
+						measurement.DurationHintOffset);
+				}
+				else {
+					resultsByBase.Add(
+						Array.Empty<FrameAlignmentResult>());
+					preferredOffsets.Add(
+						CalculateDurationHintOffset(
+							itemA,
+							itemB,
+							i));
+				}
+			}
+
+			IReadOnlyList<FrameAlignmentResult?> path =
+				FrameAlignment.FindBestSmoothPath(
+					resultsByBase,
+					preferredOffsets);
+			if (!path[baseIndex].HasValue)
+				return null;
+
+			var offsets = new SortedDictionary<int, int>();
+			for (int i = 0; i < path.Count; i++) {
+				if (path[i].HasValue)
+					offsets[i] = path[i]!.Value.Offset;
+			}
+
+			AutoAlignMeasurement requestedMeasurement =
+				measurements[baseIndex];
+			LogAutoAlignDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				bOrientation,
+				requestedMeasurement.SearchRadius,
+				requestedMeasurement.DurationHintOffset,
+				requestedMeasurement.Results,
+				path[baseIndex],
+				requestedMeasurement.Best,
+				requestedMeasurement.BudgetExpired,
+				requestedMeasurement.Elapsed);
+			LogAutoAlignPathDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				bOrientation,
+				measurements,
+				path,
+				searchStopwatch.Elapsed);
+
+			return offsets;
 		}
 
 		int? FindBestAlignmentOffset(
@@ -948,6 +1127,42 @@ namespace VDF.GUI.ViewModels {
 			ImageOrientationTransform bOrientation,
 			CancellationToken cancellationToken) {
 			var searchStopwatch = Stopwatch.StartNew();
+			AutoAlignMeasurement? measurement =
+				MeasureAlignmentCandidates(
+					itemA,
+					itemB,
+					baseIndex,
+					bOrientation,
+					searchStopwatch,
+					AutoAlignTimeBudget,
+					cancellationToken);
+			if (!measurement.HasValue)
+				return null;
+
+			LogAutoAlignDiagnostics(
+				itemA,
+				itemB,
+				baseIndex,
+				bOrientation,
+				measurement.Value.SearchRadius,
+				measurement.Value.DurationHintOffset,
+				measurement.Value.Results,
+				measurement.Value.Selected,
+				measurement.Value.Best,
+				measurement.Value.BudgetExpired,
+				measurement.Value.Elapsed);
+
+			return measurement.Value.Selected?.Offset;
+		}
+
+		AutoAlignMeasurement? MeasureAlignmentCandidates(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			ImageOrientationTransform bOrientation,
+			Stopwatch searchStopwatch,
+			TimeSpan timeBudget,
+			CancellationToken cancellationToken) {
 			var testedOffsets = new HashSet<int>();
 			var candidates = new List<FrameAlignmentCandidate>();
 			int durationHintOffset = CalculateDurationHintOffset(
@@ -972,13 +1187,13 @@ namespace VDF.GUI.ViewModels {
 
 			if (reference == null)
 				return null;
-			if (searchStopwatch.Elapsed >= AutoAlignTimeBudget)
+			if (searchStopwatch.Elapsed >= timeBudget)
 				return null;
 
 			bool budgetExpired = false;
 
 			void AddCandidates(IReadOnlyList<int> offsets) {
-				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+				if (searchStopwatch.Elapsed >= timeBudget) {
 					budgetExpired = true;
 					return;
 				}
@@ -1013,11 +1228,8 @@ namespace VDF.GUI.ViewModels {
 			if (zeroResult.HasValue &&
 				zeroResult.Value.HashDistance == 0 &&
 				zeroResult.Value.MeanAbsoluteDifference <= 0.0001d) {
-				LogAutoAlignDiagnostics(
-					itemA,
-					itemB,
+				return new AutoAlignMeasurement(
 					baseIndex,
-					bOrientation,
 					searchRadius,
 					durationHintOffset,
 					Measure(),
@@ -1025,7 +1237,6 @@ namespace VDF.GUI.ViewModels {
 					zeroResult,
 					budgetExpired,
 					searchStopwatch.Elapsed);
-				return 0;
 			}
 
 			foreach (IReadOnlyList<int> batch in
@@ -1034,7 +1245,7 @@ namespace VDF.GUI.ViewModels {
 					searchRadius)) {
 				cancellationToken.ThrowIfCancellationRequested();
 
-				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+				if (searchStopwatch.Elapsed >= timeBudget) {
 					budgetExpired = true;
 					break;
 				}
@@ -1047,7 +1258,7 @@ namespace VDF.GUI.ViewModels {
 					searchRadius)) {
 				cancellationToken.ThrowIfCancellationRequested();
 
-				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+				if (searchStopwatch.Elapsed >= timeBudget) {
 					budgetExpired = true;
 					break;
 				}
@@ -1061,7 +1272,7 @@ namespace VDF.GUI.ViewModels {
 				round++) {
 				cancellationToken.ThrowIfCancellationRequested();
 
-				if (searchStopwatch.Elapsed >= AutoAlignTimeBudget) {
+				if (searchStopwatch.Elapsed >= timeBudget) {
 					budgetExpired = true;
 					break;
 				}
@@ -1089,11 +1300,8 @@ namespace VDF.GUI.ViewModels {
 				FrameAlignment.FindBestConfidentResult(
 					finalResults,
 					preferredOffset: durationHintOffset);
-			LogAutoAlignDiagnostics(
-				itemA,
-				itemB,
+			return new AutoAlignMeasurement(
 				baseIndex,
-				bOrientation,
 				searchRadius,
 				durationHintOffset,
 				finalResults,
@@ -1101,8 +1309,6 @@ namespace VDF.GUI.ViewModels {
 				finalBest,
 				budgetExpired,
 				searchStopwatch.Elapsed);
-
-			return finalSelected?.Offset;
 		}
 
 		static void LogAutoAlignDiagnostics(
@@ -1147,6 +1353,52 @@ namespace VDF.GUI.ViewModels {
 				$"budgetExpired={budgetExpired}, " +
 				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
 				$"candidates=[{resultText}]");
+		}
+
+		static void LogAutoAlignPathDiagnostics(
+			LargeThumbnailDuplicateItem itemA,
+			LargeThumbnailDuplicateItem itemB,
+			int baseIndex,
+			ImageOrientationTransform bOrientation,
+			IReadOnlyDictionary<int, AutoAlignMeasurement> measurements,
+			IReadOnlyList<FrameAlignmentResult?> path,
+			TimeSpan elapsed) {
+			if (!SettingsFile.Instance.ExtendedFFToolsLogging)
+				return;
+
+			static string Format(FrameAlignmentResult? result) =>
+				result.HasValue
+					? $"{result.Value.Offset}:h={result.Value.HashDistance},mad=" +
+						$"{result.Value.MeanAbsoluteDifference:F4}"
+					: "none";
+
+			string pathText = string.Join(
+				"; ",
+				Enumerable.Range(0, path.Count)
+					.Where(index => path[index].HasValue)
+					.Select(index => $"{index}:{Format(path[index])}"));
+			string localText = string.Join(
+				"; ",
+				measurements
+					.OrderBy(pair => pair.Key)
+					.Select(pair =>
+						$"{pair.Key}:hint={pair.Value.DurationHintOffset}," +
+						$"local={Format(pair.Value.Selected)}," +
+						$"best={Format(pair.Value.Best)}"));
+			string selectedText =
+				baseIndex >= 0 && baseIndex < path.Count
+					? Format(path[baseIndex])
+					: "none";
+
+			VDF.Core.Utils.Logger.Instance.Info(
+				$"Thumbnail comparer auto-align global " +
+				$"'{System.IO.Path.GetFileName(itemA.Item.ItemInfo.Path)}' " +
+				$"vs " +
+				$"'{System.IO.Path.GetFileName(itemB.Item.ItemInfo.Path)}' " +
+				$"base={baseIndex}, bOrientation={bOrientation}: " +
+				$"selected={selectedText}, " +
+				$"elapsed={elapsed.TotalMilliseconds:F0}ms, " +
+				$"path=[{pathText}], locals=[{localText}]");
 		}
 
 		List<FrameAlignmentCandidate> ExtractAlignmentCandidates(

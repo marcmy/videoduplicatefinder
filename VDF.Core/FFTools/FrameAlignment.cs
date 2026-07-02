@@ -22,6 +22,11 @@ namespace VDF.Core.FFTools {
 		const double ConfidenceStrongMeanGain = 0.015d;
 		const double PreferredMeanGain = 0.003d;
 		const double PreferredMeanTieTolerance = 0.004d;
+		const double SmoothPathHashPenalty = 0.55d;
+		const double SmoothPathMeanPenalty = 120d;
+		const double SmoothPathPreferredFramePenalty = 0.015d;
+		const double SmoothPathWeakNonZeroPenalty = 0.75d;
+		const double SmoothPathTransitionFramePenalty = 0.22d;
 
 		internal static FrameAlignmentResult? FindBest(
 			byte[] reference,
@@ -134,6 +139,198 @@ namespace VDF.Core.FFTools {
 			}
 
 			return baseline;
+		}
+
+		internal static IReadOnlyList<FrameAlignmentResult?> FindBestSmoothPath(
+			IReadOnlyList<IReadOnlyList<FrameAlignmentResult>> resultsByIndex,
+			IReadOnlyList<int> preferredOffsets) {
+			ArgumentNullException.ThrowIfNull(resultsByIndex);
+			ArgumentNullException.ThrowIfNull(preferredOffsets);
+			if (resultsByIndex.Count != preferredOffsets.Count) {
+				throw new ArgumentException(
+					"Preferred offsets must match the number of result groups.",
+					nameof(preferredOffsets));
+			}
+
+			var selections = new FrameAlignmentResult?[resultsByIndex.Count];
+			if (resultsByIndex.Count == 0)
+				return selections;
+
+			List<FrameAlignmentResult>[] candidatesByIndex =
+				resultsByIndex
+					.Select(BuildSmoothPathCandidates)
+					.ToArray();
+			int[] activeIndexes = Enumerable.Range(0, resultsByIndex.Count)
+				.Where(index => candidatesByIndex[index].Count > 0)
+				.ToArray();
+
+			if (activeIndexes.Length == 0)
+				return selections;
+
+			var costs = new double[activeIndexes.Length][];
+			var parents = new int[activeIndexes.Length][];
+
+			for (int activeIndex = 0;
+				activeIndex < activeIndexes.Length;
+				activeIndex++) {
+				int sourceIndex = activeIndexes[activeIndex];
+				List<FrameAlignmentResult> candidates =
+					candidatesByIndex[sourceIndex];
+				costs[activeIndex] = new double[candidates.Count];
+				parents[activeIndex] = new int[candidates.Count];
+
+				for (int candidateIndex = 0;
+					candidateIndex < candidates.Count;
+					candidateIndex++) {
+					FrameAlignmentResult candidate =
+						candidates[candidateIndex];
+					double localCost = CalculateSmoothPathLocalCost(
+						candidate,
+						resultsByIndex[sourceIndex],
+						preferredOffsets[sourceIndex]);
+
+					if (activeIndex == 0) {
+						costs[activeIndex][candidateIndex] = localCost;
+						parents[activeIndex][candidateIndex] = -1;
+						continue;
+					}
+
+					int previousSourceIndex = activeIndexes[activeIndex - 1];
+					List<FrameAlignmentResult> previousCandidates =
+						candidatesByIndex[previousSourceIndex];
+					double bestCost = double.PositiveInfinity;
+					int bestParent = -1;
+
+					for (int previousCandidateIndex = 0;
+						previousCandidateIndex < previousCandidates.Count;
+						previousCandidateIndex++) {
+						FrameAlignmentResult previousCandidate =
+							previousCandidates[previousCandidateIndex];
+						double transitionCost =
+							CalculateSmoothPathTransitionCost(
+								previousCandidate,
+								candidate,
+								preferredOffsets[previousSourceIndex],
+								preferredOffsets[sourceIndex]);
+						double totalCost =
+							costs[activeIndex - 1][previousCandidateIndex] +
+							localCost +
+							transitionCost;
+
+						if (totalCost < bestCost) {
+							bestCost = totalCost;
+							bestParent = previousCandidateIndex;
+						}
+					}
+
+					costs[activeIndex][candidateIndex] = bestCost;
+					parents[activeIndex][candidateIndex] = bestParent;
+				}
+			}
+
+			int selectedCandidateIndex = 0;
+			for (int candidateIndex = 1;
+				candidateIndex < costs[^1].Length;
+				candidateIndex++) {
+				if (costs[^1][candidateIndex] <
+					costs[^1][selectedCandidateIndex]) {
+					selectedCandidateIndex = candidateIndex;
+				}
+			}
+
+			for (int activeIndex = activeIndexes.Length - 1;
+				activeIndex >= 0;
+				activeIndex--) {
+				int sourceIndex = activeIndexes[activeIndex];
+				selections[sourceIndex] =
+					candidatesByIndex[sourceIndex][selectedCandidateIndex];
+				selectedCandidateIndex =
+					parents[activeIndex][selectedCandidateIndex];
+				if (selectedCandidateIndex < 0)
+					break;
+			}
+
+			return selections;
+		}
+
+		static List<FrameAlignmentResult> BuildSmoothPathCandidates(
+			IReadOnlyList<FrameAlignmentResult> results) {
+			var candidates = new List<FrameAlignmentResult>();
+			foreach (var group in results.GroupBy(result => result.Offset)) {
+				FrameAlignmentResult? best = FindBestResult(group);
+				if (best.HasValue)
+					candidates.Add(best.Value);
+			}
+
+			return candidates;
+		}
+
+		static double CalculateSmoothPathLocalCost(
+			FrameAlignmentResult candidate,
+			IReadOnlyList<FrameAlignmentResult> results,
+			int preferredOffset) {
+			FrameAlignmentResult best = FindBestResult(results)!.Value;
+			FrameAlignmentResult? baseline = null;
+			foreach (FrameAlignmentResult result in results) {
+				if (result.Offset == 0) {
+					baseline = result;
+					break;
+				}
+			}
+
+			double cost =
+				Math.Max(0, candidate.HashDistance - best.HashDistance) *
+					SmoothPathHashPenalty +
+				Math.Max(
+					0d,
+					candidate.MeanAbsoluteDifference -
+						best.MeanAbsoluteDifference) *
+					SmoothPathMeanPenalty;
+
+			if (preferredOffset != 0) {
+				cost +=
+					Math.Abs(candidate.Offset - preferredOffset) *
+					SmoothPathPreferredFramePenalty;
+
+				if (candidate.Offset != 0 &&
+					Math.Sign(candidate.Offset) != Math.Sign(preferredOffset)) {
+					cost += 2d;
+				}
+			}
+			else {
+				cost += Math.Abs(candidate.Offset) * 0.01d;
+			}
+
+			if (baseline.HasValue &&
+				candidate.Offset != 0 &&
+				!IsConfidentAgainstBaseline(candidate, baseline.Value)) {
+				cost += SmoothPathWeakNonZeroPenalty;
+			}
+
+			return cost;
+		}
+
+		static double CalculateSmoothPathTransitionCost(
+			FrameAlignmentResult previous,
+			FrameAlignmentResult current,
+			int previousPreferredOffset,
+			int currentPreferredOffset) {
+			int expectedDelta =
+				currentPreferredOffset - previousPreferredOffset;
+			int actualDelta = current.Offset - previous.Offset;
+			double residual = Math.Abs(actualDelta - expectedDelta);
+			double slack = Math.Abs(expectedDelta) <= 2 ? 2d : 4d;
+			double cost =
+				Math.Max(0d, residual - slack) *
+				SmoothPathTransitionFramePenalty;
+
+			if (Math.Abs(previous.Offset) > ConfidenceNearOffsetFrames &&
+				Math.Abs(current.Offset) > ConfidenceNearOffsetFrames &&
+				Math.Sign(previous.Offset) != Math.Sign(current.Offset)) {
+				cost += 4d;
+			}
+
+			return cost;
 		}
 
 		static bool IsBetter(
