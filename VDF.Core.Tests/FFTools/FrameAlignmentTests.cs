@@ -14,6 +14,15 @@ public class FrameAlignmentTests {
 		return result;
 	}
 
+	static FrameAlignmentResult[] Results(
+		params (int Offset, int Hash, double Mean)[] values) =>
+			values
+				.Select(value => new FrameAlignmentResult(
+					value.Offset,
+					value.Hash,
+					value.Mean))
+				.ToArray();
+
 	[Fact]
 	public void FindBest_PicksMostSimilarCandidate() {
 		byte[] reference = Gradient();
@@ -48,201 +57,156 @@ public class FrameAlignmentTests {
 	}
 
 	[Fact]
-	public void FindBestConfidentResult_KeepsBaselineOnTinyFarImprovement() {
+	public void FindBestConfidentResult_PreservesBoundedBestMatch() {
 		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(new[] {
-				new FrameAlignmentResult(0, 10, 0.0500d),
-				new FrameAlignmentResult(80, 9, 0.0498d),
-			});
-
-		Assert.NotNull(result);
-		Assert.Equal(0, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_AcceptsClearFarImprovement() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(new[] {
-				new FrameAlignmentResult(0, 20, 0.0800d),
-				new FrameAlignmentResult(80, 12, 0.0500d),
-			});
+			FrameAlignment.FindBestConfidentResult(
+				Results(
+					(0, 10, 0.0500d),
+					(80, 9, 0.0498d)));
 
 		Assert.NotNull(result);
 		Assert.Equal(80, result.Value.Offset);
 	}
 
 	[Fact]
-	public void FindBestConfidentResult_AcceptsNearSmallImprovement() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(new[] {
-				new FrameAlignmentResult(0, 5, 0.0300d),
-				new FrameAlignmentResult(1, 5, 0.0293d),
-			});
-
-		Assert.NotNull(result);
-		Assert.Equal(1, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_SkipsWeakBestForConfidentNearOffset() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(new[] {
-				new FrameAlignmentResult(0, 10, 0.0500d),
-				new FrameAlignmentResult(80, 9, 0.0498d),
-				new FrameAlignmentResult(1, 10, 0.0493d),
-			});
-
-		Assert.NotNull(result);
-		Assert.Equal(1, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_RejectsAmbiguousFarAlternative() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(new[] {
-				new FrameAlignmentResult(0, 20, 0.0800d),
-				new FrameAlignmentResult(80, 12, 0.0500d),
-				new FrameAlignmentResult(-70, 12, 0.0505d),
-			});
-
-		Assert.NotNull(result);
-		Assert.Equal(0, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_RejectsWeakOppositeDurationHintDirection() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(
-				new[] {
-					new FrameAlignmentResult(0, 12, 0.0875d),
-					new FrameAlignmentResult(-77, 10, 0.0568d),
-					new FrameAlignmentResult(2, 12, 0.0843d),
-				},
-				preferredOffset: 90);
-
-		Assert.NotNull(result);
-		Assert.Equal(2, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_UsesPreferredBasinOverNearZeroFallback() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(
-				new[] {
-					new FrameAlignmentResult(0, 12, 0.0875d),
-					new FrameAlignmentResult(-77, 10, 0.0568d),
-					new FrameAlignmentResult(2, 12, 0.0843d),
-					new FrameAlignmentResult(60, 20, 0.0814d),
-					new FrameAlignmentResult(74, 14, 0.0889d),
-				},
-				preferredOffset: 80);
-
-		Assert.NotNull(result);
-		Assert.Equal(60, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_KeepsConfidentSelectionInsidePreferredBasin() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(
-				new[] {
-					new FrameAlignmentResult(0, 14, 0.0850d),
-					new FrameAlignmentResult(56, 4, 0.0376d),
-					new FrameAlignmentResult(58, 4, 0.0372d),
-					new FrameAlignmentResult(60, 4, 0.0375d),
-				},
-				preferredOffset: 70);
-
-		Assert.NotNull(result);
-		Assert.Equal(56, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_UsesPreferredWindowForLateTimeline() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(
-				new[] {
-					new FrameAlignmentResult(0, 0, 0.0422d),
-					new FrameAlignmentResult(1, 0, 0.0410d),
-					new FrameAlignmentResult(8, 0, 0.0364d),
-					new FrameAlignmentResult(12, 0, 0.0349d),
-					new FrameAlignmentResult(14, 0, 0.0337d),
-					new FrameAlignmentResult(16, 0, 0.0334d),
-				},
-				preferredOffset: 10);
-
-		Assert.NotNull(result);
-		Assert.Equal(8, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestConfidentResult_AcceptsStrongOppositeDurationHintDirection() {
-		FrameAlignmentResult? result =
-			FrameAlignment.FindBestConfidentResult(
-				new[] {
-					new FrameAlignmentResult(0, 20, 0.0900d),
-					new FrameAlignmentResult(-77, 4, 0.0300d),
-					new FrameAlignmentResult(2, 20, 0.0870d),
-				},
-				preferredOffset: 90);
-
-		Assert.NotNull(result);
-		Assert.Equal(-77, result.Value.Offset);
-	}
-
-	[Fact]
-	public void FindBestSmoothPath_RejectsInconsistentLocalOutlier() {
+	public void FindBestSmoothPath_FitsPositiveTaperAndRejectsNegativeOutlier() {
 		IReadOnlyList<FrameAlignmentResult?> path =
 			FrameAlignment.FindBestSmoothPath(
 				new[] {
-					new[] {
-						new FrameAlignmentResult(0, 16, 0.1164d),
-						new FrameAlignmentResult(75, 2, 0.0361d),
-					},
-					new[] {
-						new FrameAlignmentResult(0, 12, 0.0875d),
-						new FrameAlignmentResult(-77, 10, 0.0568d),
-						new FrameAlignmentResult(60, 20, 0.0814d),
-						new FrameAlignmentResult(74, 14, 0.0889d),
-					},
-					new[] {
-						new FrameAlignmentResult(0, 14, 0.0850d),
-						new FrameAlignmentResult(56, 4, 0.0376d),
-					},
+					Results(
+						(0, 16, 0.1164d),
+						(75, 2, 0.0361d),
+						(-75, 8, 0.0600d)),
+					Results(
+						(0, 12, 0.0875d),
+						(65, 16, 0.0710d),
+						(-77, 8, 0.0350d)),
+					Results(
+						(0, 14, 0.0850d),
+						(56, 4, 0.0376d),
+						(-60, 20, 0.0900d)),
+					Results(
+						(0, 12, 0.0800d),
+						(45, 4, 0.0350d),
+						(-45, 18, 0.0800d)),
+					Results(
+						(0, 10, 0.0700d),
+						(35, 2, 0.0300d),
+						(-35, 16, 0.0750d)),
+				},
+				new[] { 90, 80, 70, 60, 50 });
+
+		Assert.Equal(new[] { 75, 65, 56, 45, 35 },
+			path.Select(result => result!.Value.Offset));
+	}
+
+	[Fact]
+	public void FindBestSmoothPath_FitsConstantLargeOffset() {
+		IReadOnlyList<FrameAlignmentResult?> path =
+			FrameAlignment.FindBestSmoothPath(
+				Enumerable.Range(0, 5)
+					.Select(_ => (IReadOnlyList<FrameAlignmentResult>)Results(
+						(0, 14, 0.0900d),
+						(70, 2, 0.0300d),
+						(-70, 16, 0.1000d)))
+					.ToArray(),
+				new[] { 0, 0, 0, 0, 0 });
+
+		Assert.All(path, result => Assert.Equal(70, result?.Offset));
+	}
+
+	[Fact]
+	public void FindBestSmoothPath_RejectsUncorroboratedLargeJump() {
+		IReadOnlyList<FrameAlignmentResult?> path =
+			FrameAlignment.FindBestSmoothPath(
+				new[] {
+					Results((0, 2, 0.020d), (80, 14, 0.090d)),
+					Results((0, 2, 0.021d), (80, 14, 0.089d)),
+					Results((0, 12, 0.080d), (80, 0, 0.020d)),
+					Results((0, 2, 0.019d), (80, 16, 0.100d)),
+					Results((0, 2, 0.020d), (80, 14, 0.095d)),
+				},
+				new[] { 80, 80, 80, 80, 80 });
+
+		Assert.All(path, result => Assert.Equal(0, result?.Offset));
+	}
+
+	[Fact]
+	public void FindBestSmoothPath_KeepsZeroForFlatAmbiguousEvidence() {
+		IReadOnlyList<FrameAlignmentResult?> path =
+			FrameAlignment.FindBestSmoothPath(
+				new[] {
+					Results(
+						(-30, 0, 0.0301d),
+						(-1, 0, 0.0300d),
+						(0, 0, 0.0300d),
+						(1, 0, 0.0300d),
+						(30, 0, 0.0301d)),
+					Results(
+						(-30, 0, 0.0272d),
+						(-1, 0, 0.0265d),
+						(0, 0, 0.0265d),
+						(1, 0, 0.0265d),
+						(30, 0, 0.0272d)),
+					Results(
+						(-30, 0, 0.0300d),
+						(-1, 0, 0.0300d),
+						(0, 0, 0.0300d),
+						(1, 0, 0.0300d),
+						(30, 0, 0.0300d)),
 				},
 				new[] { 90, 80, 70 });
 
-		Assert.Equal(75, path[0]?.Offset);
-		Assert.True(path[1]?.Offset > 0);
-		Assert.NotEqual(-77, path[1]?.Offset);
-		Assert.Equal(56, path[2]?.Offset);
+		Assert.All(path, result => Assert.Equal(0, result?.Offset));
 	}
 
 	[Fact]
-	public void FindBestSmoothPath_AllowsLocalCorrectionNearTrend() {
+	public void FindBestSmoothPath_AllowsSmallLocalNudgesAroundModel() {
 		IReadOnlyList<FrameAlignmentResult?> path =
 			FrameAlignment.FindBestSmoothPath(
 				new[] {
-					new[] {
-						new FrameAlignmentResult(0, 14, 0.0600d),
-						new FrameAlignmentResult(20, 4, 0.0300d),
-					},
-					new[] {
-						new FrameAlignmentResult(0, 12, 0.0550d),
-						new FrameAlignmentResult(10, 10, 0.0450d),
-						new FrameAlignmentResult(17, 4, 0.0280d),
-					},
-					new[] {
-						new FrameAlignmentResult(0, 10, 0.0400d),
-						new FrameAlignmentResult(7, 4, 0.0260d),
-						new FrameAlignmentResult(10, 5, 0.0290d),
-					},
+					Results(
+						(-1, 4, 0.0400d),
+						(0, 2, 0.0300d),
+						(1, 0, 0.0200d)),
+					Results(
+						(-1, 0, 0.0200d),
+						(0, 2, 0.0300d),
+						(1, 4, 0.0400d)),
+					Results(
+						(-1, 4, 0.0400d),
+						(0, 0, 0.0200d),
+						(1, 4, 0.0400d)),
 				},
-				new[] { 20, 10, 0 });
+				new[] { 0, 0, 0 });
 
-		Assert.Equal(20, path[0]?.Offset);
-		Assert.Equal(17, path[1]?.Offset);
-		Assert.Equal(7, path[2]?.Offset);
+		Assert.Equal(new[] { 1, -1, 0 },
+			path.Select(result => result!.Value.Offset));
+	}
+
+	[Fact]
+	public void GradientDifference_IgnoresUniformBrightnessShift() {
+		var reference = new byte[32 * 32];
+		var brighter = new byte[32 * 32];
+		for (int y = 0; y < 32; y++) {
+			for (int x = 0; x < 32; x++) {
+				int index = (y * 32) + x;
+				reference[index] = (byte)(50 + x + y);
+				brighter[index] = (byte)(70 + x + y);
+			}
+		}
+
+		Assert.True(
+			FrameAlignment.CalculateMeanAbsoluteDifference(
+				reference,
+				brighter) > 0.07d);
+		Assert.Equal(
+			0d,
+			FrameAlignment.CalculateGradientDifference(
+				reference,
+				brighter,
+				32),
+			10);
 	}
 
 	[Fact]
@@ -263,22 +227,13 @@ public class FrameAlignmentTests {
 		Assert.Contains(15, fine);
 		Assert.True(coarse.Count < radius * 2 + 1);
 	}
-	[Fact]
-	public void ProgressiveOffsets_StartNearAndReachRadius() {
-		IReadOnlyList<IReadOnlyList<int>> batches =
-			FrameAlignment.BuildProgressiveOffsetBatches(30);
-
-		Assert.Equal(new[] { -1, 1 }, batches[0]);
-		Assert.Equal(new[] { -2, 2 }, batches[1]);
-		Assert.Equal(new[] { -30, 30 }, batches[^1]);
-		Assert.Equal(6, batches.Count);
-	}
 
 	[Fact]
-	public void ProgressiveOffsets_ExtendedRadiusKeepsMidRangeAnchors() {
+	public void ProgressiveOffsets_StartNearAndKeepMidRangeAnchors() {
 		IReadOnlyList<IReadOnlyList<int>> batches =
 			FrameAlignment.BuildProgressiveOffsetBatches(90);
 
+		Assert.Equal(new[] { -1, 1 }, batches[0]);
 		Assert.Contains(batches, batch =>
 			batch.SequenceEqual(new[] { -30, 30 }));
 		Assert.Contains(batches, batch =>
