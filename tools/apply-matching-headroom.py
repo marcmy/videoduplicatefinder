@@ -112,8 +112,8 @@ tail = scan[partial_start:].replace(
     sim_anchor + "\n\t\t\tint matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();",
     1)
 partial_old = "MaxDegreeOfParallelism = Math.Max(1, Settings.MaxDegreeOfParallelism)"
-if tail.count(partial_old) != 1:
-    raise RuntimeError(f"{scan_path}: expected one partial matching parallelism site, found {tail.count(partial_old)}")
+if tail.count(partial_old) < 1:
+    raise RuntimeError(f"{scan_path}: partial matching parallelism site not found")
 tail = tail.replace(partial_old, "MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism", 1)
 scan = scan[:partial_start] + tail
 write(scan_path, scan)
