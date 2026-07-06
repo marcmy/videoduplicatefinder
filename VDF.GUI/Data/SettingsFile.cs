@@ -266,6 +266,18 @@ namespace VDF.GUI.Data {
 			get => _IncludeNonExistingFiles;
 			set => this.RaiseAndSetIfChanged(ref _IncludeNonExistingFiles, value);
 		}
+		bool _RememberDeletedContent;
+		[JsonPropertyName("RememberDeletedContent")]
+		public bool RememberDeletedContent {
+			get => _RememberDeletedContent;
+			set => this.RaiseAndSetIfChanged(ref _RememberDeletedContent, value);
+		}
+		bool _AutoCheckDeletedContentMatches;
+		[JsonPropertyName("AutoCheckDeletedContentMatches")]
+		public bool AutoCheckDeletedContentMatches {
+			get => _AutoCheckDeletedContentMatches;
+			set => this.RaiseAndSetIfChanged(ref _AutoCheckDeletedContentMatches, value);
+		}
 		bool _ScanAgainstEntireDatabase;
 		[JsonPropertyName("ScanAgainstEntireDatabase")]
 		public bool ScanAgainstEntireDatabase {

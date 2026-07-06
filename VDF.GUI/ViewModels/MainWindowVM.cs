@@ -179,6 +179,11 @@ namespace VDF.GUI.ViewModels {
 			get => _ScanProgressMaxValue;
 			set => this.RaiseAndSetIfChanged(ref _ScanProgressMaxValue, value);
 		}
+		string _ScanProgressCount = string.Empty;
+		public string ScanProgressCount {
+			get => _ScanProgressCount;
+			set => this.RaiseAndSetIfChanged(ref _ScanProgressCount, value);
+		}
 		int _TotalDuplicates;
 		public int TotalDuplicates {
 			get => _TotalDuplicates;
@@ -582,6 +587,7 @@ namespace VDF.GUI.ViewModels {
 				ScanProgressText = e.CurrentFile + stageSuffix;
 				RemainingTime = e.Remaining.Format();
 				ScanProgressValue = e.CurrentPosition;
+				ScanProgressCount = $"{e.CurrentPosition:N0} / {e.MaxPosition:N0}";
 				TimeElapsed = e.Elapsed.Format();
 				ScanProgressMaxValue = e.MaxPosition;
 			});
@@ -638,6 +644,9 @@ namespace VDF.GUI.ViewModels {
 					}
 				}
 
+				if (SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)
+					AutoCheckTombstoneMatches();
+
 				if (completedScheduledScan && SettingsFile.Instance.NotifyOnScheduledScanComplete) {
 					_ = MessageBoxService.Show(App.Lang["Message.ScheduledScanCompleted"]);
 				}
@@ -648,6 +657,29 @@ namespace VDF.GUI.ViewModels {
 						string.Format(App.Lang["Notification.ScanComplete.Message"], TotalDuplicateGroups));
 				}
 			});
+
+		// Groups that contain a tombstone (a fingerprint of content the user already deleted) mean
+		// any LIVE member is a re-download of rejected content — pre-check it for deletion so the
+		// user only has to review and confirm. Offline members (unplugged drive) are shown but
+		// never targeted, and actual deletion always still requires the delete button.
+		void AutoCheckTombstoneMatches() {
+			var tombstoneGroups = Duplicates
+				.Where(d => d.IsTombstone)
+				.Select(d => d.ItemInfo.GroupId)
+				.ToHashSet();
+			if (tombstoneGroups.Count == 0)
+				return;
+			int autoChecked = 0;
+			foreach (var d in Duplicates)
+				if (!d.IsTombstone && !d.IsOffline &&
+					tombstoneGroups.Contains(d.ItemInfo.GroupId) &&
+					File.Exists(d.ItemInfo.Path)) {
+					d.Checked = true;
+					autoChecked++;
+				}
+			if (autoChecked > 0)
+				Logger.Instance.Info($"Auto-checked {autoChecked} re-download(s) matching previously deleted content.");
+		}
 
 		void BuildDuplicatesView() {
 			view = new DataGridCollectionView(Duplicates);
@@ -710,6 +742,23 @@ namespace VDF.GUI.ViewModels {
 			IsBusy = true;
 			IsBusyOverlayText = App.Lang["Busy.CleaningDatabase"];
 			Scanner.CleanupDatabase();
+		});
+
+		// Removes "ghost" entries: file gone from a MOUNTED drive + no comparable fingerprint data
+		// (tombstones — missing files WITH fingerprints — are untouched; offline drives too).
+		// Count-first so the confirm dialog shows exactly what would be removed.
+		public ReactiveCommand<Unit, Unit> PruneGhostEntriesCommand => ReactiveCommand.CreateFromTask(async () => {
+			int count = await Task.Run(ScanEngine.CountGhostEntries);
+			if (count == 0) {
+				await MessageBoxService.Show(App.Lang["Message.NoGhostEntries"]);
+				return;
+			}
+			MessageBoxButtons? dlgResult = await MessageBoxService.Show(
+				string.Format(App.Lang["Message.PruneGhostEntriesConfirm"], count),
+				MessageBoxButtons.Yes | MessageBoxButtons.No);
+			if (dlgResult != MessageBoxButtons.Yes) return;
+			int removed = await Task.Run(ScanEngine.PruneGhostEntries);
+			await MessageBoxService.Show(string.Format(App.Lang["Message.PruneGhostEntriesDone"], removed));
 		});
 
 		public ReactiveCommand<Unit, Unit> ClearDatabaseCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -1548,6 +1597,7 @@ Non-Windows setup:
 			SettingsFile.Instance.LanguageCode = App.Lang.CurrentLanguage;
 			Scanner.Settings.LanguageCode = SettingsFile.Instance.LanguageCode;
 			Scanner.Settings.IncludeNonExistingFiles = SettingsFile.Instance.IncludeNonExistingFiles;
+			Scanner.Settings.RememberDeletedContent = SettingsFile.Instance.RememberDeletedContent;
 			Scanner.Settings.FilterByFilePathContains = SettingsFile.Instance.FilterByFilePathContains;
 			Scanner.Settings.FilePathContainsTexts = SettingsFile.Instance.FilePathContainsTexts.ToList();
 			Scanner.Settings.FilterByFilePathNotContains = SettingsFile.Instance.FilterByFilePathNotContains;
@@ -1755,6 +1805,11 @@ Non-Windows setup:
 				   );
 
 			var actuallyDeleted = new HashSet<DuplicateItemVM>(toDelete.Count, ReferenceEqualityComparer<DuplicateItemVM>.Instance);
+			// With RememberDeletedContent on, a disk-delete that removes an ENTIRE group (no
+			// unchecked survivor) is a content rejection, not a duplicate cleanup: exactly one
+			// entry stays in the database as the tombstone so a re-download of this content is
+			// caught. This set records the groups that already kept theirs.
+			var tombstonedGroups = new HashSet<Guid>();
 			long freedBytes = 0;
 			int total = toDelete.Count;
 			IsBusy = true;
@@ -1854,8 +1909,16 @@ Non-Windows setup:
 
 							if (blackList)
 								ScanEngine.BlackListFileEntry(dub.ItemInfo.Path);
-							else
-								ScanEngine.RemoveFromDatabase(fe);
+							else {
+								// Only a disk-delete rejects content; remove-from-list/link modes leave
+								// the file (or a survivor) in place, so their entries are dropped as before.
+								bool keepAsTombstone = fromDisk &&
+									SettingsFile.Instance.RememberDeletedContent &&
+									(!keepByGroup.TryGetValue(dub.ItemInfo.GroupId, out var survivor) || survivor == null) &&
+									tombstonedGroups.Add(dub.ItemInfo.GroupId);
+								if (!keepAsTombstone)
+									ScanEngine.RemoveFromDatabase(fe);
+							}
 
 							actuallyDeleted.Add(dub);
 						}

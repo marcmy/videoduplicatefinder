@@ -115,7 +115,39 @@ namespace VDF.Core.Utils {
 			st.Stop();
 			Logger.Instance.Info($"Previously scanned files imported. {Database.Count:N0} files in {st.Elapsed}");
 			MigrateImageHashesIfNeeded();
+			HealPoisonedFingerprintsIfNeeded();
 			return true;
+		}
+
+		// Stopping a scan on builds before the Stop-cancellation fix (fa902d3) could leave entries
+		// "poisoned": AudioFingerprintError set plus an empty fingerprint although the file itself is
+		// fine, permanently blocking every retry gate. That state is byte-identical to a genuine
+		// extraction failure, so the two cannot be told apart per entry — instead every flagged entry
+		// gets exactly ONE automatic retry: the flag is cleared once per database (tracked by a sidecar
+		// marker), the next scan re-extracts, and genuinely broken files simply fail and re-flag once.
+		static string FingerprintHealMarkerPath => FileUtils.SafePathCombine(DatabaseFolder, "ScannedFiles.fpheal1");
+		static bool pendingFingerprintHealMarker;
+
+		static void HealPoisonedFingerprintsIfNeeded() {
+			if (File.Exists(FingerprintHealMarkerPath))
+				return;
+			int healed = 0;
+			foreach (FileEntry entry in DbWrapper.Entries) {
+				if (!entry.Flags.Has(EntryFlags.AudioFingerprintError))
+					continue;
+				entry.Flags.Set(EntryFlags.AudioFingerprintError, false);
+				// The poisoned signature is an empty-but-not-null fingerprint; reset it to
+				// "not yet extracted" unless another flag legitimately explains the emptiness.
+				if (entry.AudioFingerprint is { Length: 0 } &&
+					!entry.Flags.Any(EntryFlags.NoAudioTrack | EntryFlags.SilentAudioTrack))
+					entry.AudioFingerprint = null;
+				healed++;
+			}
+			// The marker is written by SaveDatabase once the cleared flags are persisted; writing it
+			// here would strand the on-disk database unhealed if the app exits without saving.
+			pendingFingerprintHealMarker = true;
+			if (healed > 0)
+				Logger.Instance.Info($"Audio fingerprint repair: cleared the error flag on {healed:N0} entries (possibly poisoned by stopping a scan in an older version) — they will be retried on the next scan.");
 		}
 
 		/// <summary>
@@ -147,11 +179,38 @@ namespace VDF.Core.Utils {
 			DbWrapper.Version = 1;
 			SaveDatabase();
 		}
-		internal static void CleanupDatabase() {
+		internal static void CleanupDatabase(bool preserveDeletedContentMemory = false) {
 			int oldCount = Database.Count;
 			var st = Stopwatch.StartNew();
 
-			Database.RemoveWhere(a => !File.Exists(a.Path) || a.Flags.Any(EntryFlags.MetadataError | EntryFlags.ThumbnailError));
+			if (!preserveDeletedContentMemory) {
+				Database.RemoveWhere(a => !File.Exists(a.Path) || a.Flags.Any(EntryFlags.MetadataError | EntryFlags.ThumbnailError));
+			}
+			else {
+				// Remember-deleted-content mode: a missing file on a mounted drive whose entry
+				// still carries comparable data is a tombstone — the memory that recognizes
+				// re-downloads — and a missing file on an unmounted drive is merely offline.
+				// Neither is removed. What still goes: error-flagged entries (excluded from
+				// comparison anyway, so they hold no re-download memory) and entries gone from
+				// a mounted drive with no comparable data at all (can never match, never heal).
+				var driveReady = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+				Database.RemoveWhere(a => {
+					if (a.Flags.Any(EntryFlags.MetadataError | EntryFlags.ThumbnailError))
+						return true;
+					if (File.Exists(a.Path))
+						return false;
+					bool hasComparableData = a.AudioFingerprint != null;
+					if (!hasComparableData && a.grayBytes != null)
+						foreach (var v in a.grayBytes.Values)
+							if (v != null) { hasComparableData = true; break; }
+					if (hasComparableData)
+						return false;                                   // tombstone (or offline) — keep
+					string root = Path.GetPathRoot(a.Path) ?? string.Empty;
+					if (!driveReady.TryGetValue(root, out bool ready))
+						driveReady[root] = ready = ScanEngine.IsDriveReady(a.Path);
+					return ready;                                       // ghost on a mounted drive — remove
+				});
+			}
 
 			st.Stop();
 			Logger.Instance.Info(
@@ -165,6 +224,14 @@ namespace VDF.Core.Utils {
 				SerializeDatabaseStreaming(stream, DbWrapper);
 			//Reason: https://github.com/0x90d/videoduplicatefinder/issues/247
 			File.Move(TempDatabasePath, CurrentDatabasePath, true);
+
+			if (pendingFingerprintHealMarker) {
+				try {
+					File.WriteAllText(FingerprintHealMarkerPath, "Fingerprint error flags were reset once after the Stop-poisoning fix. Delete this file to run the reset again on next load.");
+					pendingFingerprintHealMarker = false;
+				}
+				catch (Exception) { }
+			}
 		}
 
 		/// <summary>
