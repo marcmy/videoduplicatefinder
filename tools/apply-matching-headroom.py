@@ -1,3 +1,4 @@
+# Temporary validation helper. The generated source files replace this before merge.
 from pathlib import Path
 import re
 
