@@ -1,0 +1,6 @@
+setup=success
+apply=failure
+core=skipped
+ffmpeg=skipped
+integration=skipped
+publish=skipped
