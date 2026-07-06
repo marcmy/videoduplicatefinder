@@ -182,6 +182,12 @@ namespace VDF.GUI.Data {
 			get => _MaxDegreeOfParallelism;
 			set => this.RaiseAndSetIfChanged(ref _MaxDegreeOfParallelism, value);
 		}
+		int _MatchingMaxDegreeOfParallelism;
+		[JsonPropertyName("MatchingMaxDegreeOfParallelism")]
+		public int MatchingMaxDegreeOfParallelism {
+			get => _MatchingMaxDegreeOfParallelism;
+			set => this.RaiseAndSetIfChanged(ref _MatchingMaxDegreeOfParallelism, value);
+		}
 		Core.FFTools.FFHardwareAccelerationMode _HardwareAccelerationMode = Core.FFTools.FFHardwareAccelerationMode.auto;
 		[JsonPropertyName("HardwareAccelerationMode")]
 		public Core.FFTools.FFHardwareAccelerationMode HardwareAccelerationMode {
