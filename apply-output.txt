@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "D:\a\videoduplicatefinder\videoduplicatefinder\tools\apply-matching-headroom.py", line 116, in <module>
+    raise RuntimeError(f"{scan_path}: expected one partial matching parallelism site, found {tail.count(partial_old)}")
+RuntimeError: VDF.Core/ScanEngine.cs: expected one partial matching parallelism site, found 2
