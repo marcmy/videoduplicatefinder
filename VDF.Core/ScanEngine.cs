@@ -52,7 +52,24 @@ namespace VDF.Core {
 		CancellationTokenSource cancelationTokenSource = new();
 		readonly List<float> positionList = new();
 
-		bool isScanning;
+		bool _isScanning;
+		// The main process yields CPU to foreground apps while a scan runs, restored the
+		// instant scanning ends — hooked on the setter so EVERY exit path (done/abort/stop
+		// via CancelAllTasks) restores. BelowNormal only cedes under contention, so an
+		// unattended scan still runs at full speed. Best-effort.
+		bool isScanning {
+			get => _isScanning;
+			set {
+				if (_isScanning == value) return;
+				_isScanning = value;
+				try {
+					using var p = Process.GetCurrentProcess();
+					p.PriorityClass = value ? ProcessPriorityClass.BelowNormal
+											: ProcessPriorityClass.Normal;
+				}
+				catch { /* priority is a nicety; never let it break a scan */ }
+			}
+		}
 		int scanProgressMaxValue;
 		readonly Stopwatch SearchTimer = new();
 		public Stopwatch ElapsedTimer = new();
@@ -85,6 +102,16 @@ namespace VDF.Core {
 			excludedReasonCounts.Clear();
 			excludedReasonLoggedCounts.Clear();
 		}
+		// ParallelOptions.MaxDegreeOfParallelism rejects 0 but accepts -1 (unlimited).
+		// Only 0 needs correcting — clamping with Math.Max(1, ...) turned the -1 default
+		// into single-threaded execution.
+		int ParallelDegree => Settings.MaxDegreeOfParallelism == 0 ? -1 : Settings.MaxDegreeOfParallelism;
+
+		// Status-bar label for the current phase. Empty during per-file analysis (which reports
+		// its own sub-stages via ReportStage); set by the compare phases so the UI shows
+		// "comparing …" instead of leaving the last analyzed file path on screen, which looked
+		// like a frozen analysis.
+		string currentStageLabel = string.Empty;
 		void LogExcludedFile(FileEntry entry, string reason) {
 			if (!Settings.LogExcludedFiles)
 				return;
@@ -134,7 +161,7 @@ namespace VDF.Core {
 								Elapsed = ElapsedTimer.Elapsed,
 								Remaining = timeRemaining,
 								MaxPosition = scanProgressMaxValue,
-								CurrentStage = string.Empty,
+								CurrentStage = currentStageLabel,
 							});
 			TryDatabaseCheckpoint();
 		}
@@ -182,6 +209,23 @@ namespace VDF.Core {
 			}
 		}
 
+		// Explicit flush for a safe suspend point (Pause): persist completed work so the user can
+		// close the app while paused and resume later via the fingerprint cache. Shares
+		// checkpointLock so it never races a periodic checkpoint or the final save over the temp
+		// database file. Best-effort; files finishing during the pause land in the next save.
+		void FlushDatabase() {
+			lock (checkpointLock) {
+				lastCheckpointTime = DateTime.UtcNow;
+				try {
+					DatabaseUtils.SaveDatabase();
+					Logger.Instance.Info("Paused: database flushed — safe to close the app (a later rescan resumes from the cache).");
+				}
+				catch (Exception ex) {
+					Logger.Instance.Info($"Pause flush failed (the scan continues): {ex}");
+				}
+			}
+		}
+
 		public static bool FFmpegExists => !string.IsNullOrEmpty(FfmpegEngine.FFmpegPath);
 		public static bool FFprobeExists => !string.IsNullOrEmpty(FFProbeEngine.FFprobePath);
 		public static bool NativeFFmpegExists => FFTools.FFmpegNative.FFmpegHelper.DoFFmpegLibraryFilesExist;
@@ -210,7 +254,11 @@ namespace VDF.Core {
 				// Save before signaling completion: consumers (e.g. the CLI) may treat the
 				// event as "done" and exit the process, which previously killed this thread
 				// mid-write and left a torn ScannedFiles_new.db behind.
-				DatabaseUtils.SaveDatabase();
+				// Under checkpointLock: a pause-flush runs on a background task and could
+				// otherwise still be writing the temp database file when a quick Stop lets
+				// the scan reach this save (#803-style race).
+				lock (checkpointLock)
+					DatabaseUtils.SaveDatabase();
 				BuildingHashesDone?.Invoke(this, new EventArgs());
 				if (!cancelationTokenSource.IsCancellationRequested) {
 					if (searchAndCompare)
@@ -245,8 +293,9 @@ namespace VDF.Core {
 				LogGroupStatistics();
 				Logger.Instance.Info(T("Log.HighlightingBestResults"));
 				HighlightBestMatches();
-				// Save before signaling completion — see the matching comment in StartSearch.
-				DatabaseUtils.SaveDatabase();
+				// Save before signaling completion — see the matching comments in StartSearch.
+				lock (checkpointLock)
+					DatabaseUtils.SaveDatabase();
 				isScanning = false;
 				ScanDone?.Invoke(this, new EventArgs());
 				Logger.Instance.Info(T("Log.ScanDone"));
@@ -346,6 +395,20 @@ namespace VDF.Core {
 
 			int oldFileCount = DatabaseUtils.Database.Count;
 
+			// Index existing analysed entries by size so a path-miss below can be checked for being a
+			// MOVE (same content fingerprint, old path now gone) and relinked — reusing its analysis
+			// instead of re-decoding. Only OsHash-bearing entries are relink targets; keyed by size so
+			// we compute the new file's oshash only when a same-size analysed entry exists (zero reads
+			// on a fresh scan, where the DB is empty).
+			var relinkBySize = new Dictionary<long, List<FileEntry>>();
+			foreach (var e in DatabaseUtils.Database)
+				if (e.OsHash != null) {
+					if (!relinkBySize.TryGetValue(e.FileSize, out var lst))
+						relinkBySize[e.FileSize] = lst = new List<FileEntry>();
+					lst.Add(e);
+				}
+			int relinkedCount = 0;
+
 			foreach (string path in Settings.IncludeList) {
 				if (cancellationToken.IsCancellationRequested)
 					return;
@@ -369,24 +432,98 @@ namespace VDF.Core {
 						Logger.Instance.Info($"Skipped file '{file}' because of {e}");
 						continue;
 					}
-					if (!DatabaseUtils.Database.TryGetValue(fEntry, out var dbEntry))
-						DatabaseUtils.Database.Add(fEntry);
-					else if (fEntry.DateCreated != dbEntry.DateCreated ||
-							fEntry.DateModified != dbEntry.DateModified ||
-							fEntry.FileSize != dbEntry.FileSize) {
-						// -> Modified or different file
-						DatabaseUtils.Database.Remove(dbEntry);
-						DatabaseUtils.Database.Add(fEntry);
+					if (!DatabaseUtils.Database.TryGetValue(fEntry, out var dbEntry)) {
+						// Path not in the DB: either a genuinely new file or one moved/renamed from a
+						// path that's now gone. Relink the latter so its analysis survives the move.
+						if (TryRelinkMovedFile(fEntry, relinkBySize))
+							relinkedCount++;
+						else
+							DatabaseUtils.Database.Add(fEntry);
 					}
+					else
+						RefreshExistingEntry(fEntry, dbEntry);
 				}
 			}
 
 			Logger.Instance.Info($"Files in database: {DatabaseUtils.Database.Count:N0} ({DatabaseUtils.Database.Count - oldFileCount:N0} files added)");
+			if (relinkedCount > 0)
+				Logger.Instance.Info($"Detected {relinkedCount:N0} moved/renamed file(s) — reused existing analysis (no re-decode)");
 		});
+
+		// A path that is already in the database: decide whether its cached analysis survives this
+		// rescan. Size changed -> content changed -> re-analyze. Same size but timestamps moved is
+		// usually a touch/copy/restore or a container-only rewrite with identical bytes, and
+		// re-decoding those wastes hours on big libraries — keep the cached analysis when the content
+		// fingerprint PROVES the bytes unchanged. Anything unverifiable (either hash missing, file
+		// unreadable, or a pre-OsHash entry not yet backfilled) re-analyzes exactly as before.
+		internal static void RefreshExistingEntry(FileEntry fEntry, FileEntry dbEntry) {
+			if (fEntry.FileSize != dbEntry.FileSize) {
+				DatabaseUtils.Database.Remove(dbEntry);
+				DatabaseUtils.Database.Add(fEntry);
+			}
+			else if (fEntry.DateCreated != dbEntry.DateCreated ||
+					fEntry.DateModified != dbEntry.DateModified) {
+				string? osHash = OsHashUtils.TryCompute(fEntry.Path);
+				if (osHash != null && osHash == dbEntry.OsHash) {
+					// Same bytes, just re-dated: keep the analysis and refresh the timestamps
+					// so the next scan doesn't re-verify.
+					dbEntry.DateCreated = fEntry.DateCreated;
+					dbEntry.DateModified = fEntry.DateModified;
+				}
+				else {
+					DatabaseUtils.Database.Remove(dbEntry);
+					DatabaseUtils.Database.Add(fEntry);
+				}
+			}
+		}
+
+		// Returns true if fEntry is a moved/renamed version of an existing analysed entry — same size
+		// and content fingerprint (oshash), and that entry's recorded path no longer exists — in which
+		// case the existing entry is re-keyed to the new path, preserving grayBytes/mediaInfo/PHashes so
+		// GatherInfos skips re-decoding it. Ambiguous matches (0 or >1 missing candidates with the same
+		// oshash) fall through to "new file" so we never reuse the wrong data.
+		internal bool TryRelinkMovedFile(FileEntry fEntry, Dictionary<long, List<FileEntry>> relinkBySize) {
+			if (!relinkBySize.TryGetValue(fEntry.FileSize, out var sameSize))
+				return false;
+			// A move source is an entry whose recorded path is now gone. (A still-present path means it's
+			// a copy, not a move — leave it and treat the new path as a new file.)
+			List<FileEntry>? missing = null;
+			foreach (var c in sameSize)
+				if (!File.Exists(c.Path))
+					(missing ??= new List<FileEntry>()).Add(c);
+			if (missing == null)
+				return false;
+
+			string? oshash = OsHashUtils.TryCompute(fEntry.Path);
+			if (oshash == null)
+				return false;
+
+			FileEntry? match = null;
+			foreach (var c in missing)
+				if (c.OsHash == oshash) {
+					if (match != null)
+						return false;   // more than one candidate with this fingerprint -> ambiguous, treat as new
+					match = c;
+				}
+			if (match == null)
+				return false;
+
+			// Re-key the surviving entry to the new path. Its analysis rides along untouched; only the
+			// path/date/size are refreshed so a later rescan at the new path won't flag it as modified.
+			string oldPath = match.Path;
+			DatabaseUtils.Database.Remove(match);
+			match.Path = fEntry.Path;
+			match.DateCreated = fEntry.DateCreated;
+			match.DateModified = fEntry.DateModified;
+			match.FileSize = fEntry.FileSize;
+			DatabaseUtils.Database.Add(match);
+			Logger.Instance.Info($"Moved file relinked (analysis reused): '{oldPath}' -> '{match.Path}'");
+			return true;
+		}
 
 		// Check if entry should be excluded from the scan for any reason
 		// Returns true if the entry is invalid (should be excluded)
-		bool InvalidEntry(FileEntry entry, out bool reportProgress, out string? reason) {
+		internal bool InvalidEntry(FileEntry entry, out bool reportProgress, out string? reason) {
 			reportProgress = true;
 			reason = null;
 
@@ -399,31 +536,14 @@ namespace VDF.Core {
 				return true;
 			}
 
-			if (!Settings.ScanAgainstEntireDatabase) {
-				/* Skip non-included file before checking if it exists
-				 * This greatly improves performance if the file is on
-				 * a disconnected network/mobile drive
-				 */
-				if (Settings.IncludeSubDirectories == false) {
-					if (!Settings.IncludeList.Contains(entry.Folder)) {
-						reportProgress = false;
-						reason = "path is not in the included directories list";
-						return true;
-					}
-				}
-				else if (!Settings.IncludeList.Any(f => {
-					if (!entry.Folder.StartsWith(f))
-						return false;
-					if (entry.Folder.Length == f.Length)
-						return true;
-					//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
-					string relativePath = Path.GetRelativePath(f, entry.Folder);
-					return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
-				})) {
-					reportProgress = false;
-					reason = "path is not in the included directories list";
-					return true;
-				}
+			/* Skip non-included file before checking if it exists
+			 * This greatly improves performance if the file is on
+			 * a disconnected network/mobile drive
+			 */
+			if (!Settings.ScanAgainstEntireDatabase && !IsInIncludeScope(entry)) {
+				reportProgress = false;
+				reason = "path is not in the included directories list";
+				return true;
 			}
 
 			if (entry.Flags.Has(EntryFlags.ManuallyExcluded)) {
@@ -434,7 +554,7 @@ namespace VDF.Core {
 				reason = "file is marked as too dark";
 				return true;
 			}
-			if (!Settings.IncludeNonExistingFiles && !File.Exists(entry.Path))
+			if (!Settings.IncludeMissingFiles && !File.Exists(entry.Path))
 			{
 				reason = "file does not exist";
 				return true;
@@ -536,6 +656,27 @@ namespace VDF.Core {
 		public static Task<bool> LoadDatabase() => Task.Run(DatabaseUtils.LoadDatabase);
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
 		public static void RemoveFromDatabase(FileEntry dbEntry) => DatabaseUtils.Database.Remove(dbEntry);
+
+		// A DB entry can outlive its file. We tell an intentional deletion from a temporarily
+		// offline drive by the file's ROOT: drive mounted but file gone = the user deleted it
+		// (a "tombstone" whose fingerprint is kept when RememberDeletedContent is on, so a
+		// re-download is recognized); drive itself absent (USB unplugged, letter reassigned) =
+		// merely offline, must NOT count as deleted. UNC/unrooted paths can't be probed ->
+		// conservative: offline, never a tombstone.
+		public static bool IsDriveReady(string path) {
+			try {
+				string? root = Path.GetPathRoot(path);
+				if (string.IsNullOrEmpty(root))
+					return false;
+				return new DriveInfo(root).IsReady;
+			}
+			catch {
+				return false;
+			}
+		}
+		public static bool PathIsTombstone(string path) => !File.Exists(path) && IsDriveReady(path);
+		public static bool PathIsOffline(string path) => !File.Exists(path) && !IsDriveReady(path);
+
 		public static void UpdateFilePathInDatabase(string newPath, FileEntry dbEntry) => DatabaseUtils.UpdateFilePath(newPath, dbEntry);
 #pragma warning disable CS8601 // Possible null reference assignment
 		public static bool GetFromDatabase(string path, out FileEntry? dbEntry) {
@@ -573,8 +714,25 @@ namespace VDF.Core {
 			return System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(blacklistEntry, folderPath);
 		}
 
+		// True if the entry's folder is covered by the current include list (honours IncludeSubDirectories).
+		// Shared by the scan scope filters and the OsHash backfill so out-of-scope drives are never read.
+		bool IsInIncludeScope(FileEntry entry) {
+			if (!Settings.IncludeSubDirectories)
+				return Settings.IncludeList.Contains(entry.Folder);
+			return Settings.IncludeList.Any(f => {
+				if (!entry.Folder.StartsWith(f))
+					return false;
+				if (entry.Folder.Length == f.Length)
+					return true;
+				//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
+				string relativePath = Path.GetRelativePath(f, entry.Folder);
+				return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
+			});
+		}
+
 		async Task GatherInfos() {
 			try {
+				currentStageLabel = string.Empty; // per-file analysis reports its own sub-stages
 				InitProgress(DatabaseUtils.Database.Count);
 				await Parallel.ForEachAsync(DatabaseUtils.Database, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, token) => {
 					pauseTokenSource.WaitWhilePaused(token);
@@ -597,25 +755,9 @@ namespace VDF.Core {
 							skipReason = "previous thumbnail sampling failed and retry is disabled";
 						}
 
-						if (!skipEntry && !Settings.ScanAgainstEntireDatabase) {
-							if (Settings.IncludeSubDirectories == false) {
-								if (!Settings.IncludeList.Contains(entry.Folder)) {
-									skipEntry = true;
-									skipReason = "path is not in the included directories list";
-								}
-							}
-							else if (!Settings.IncludeList.Any(f => {
-								if (!entry.Folder.StartsWith(f))
-									return false;
-								if (entry.Folder.Length == f.Length)
-									return true;
-								//Reason: https://github.com/0x90d/videoduplicatefinder/issues/249
-								string relativePath = Path.GetRelativePath(f, entry.Folder);
-								return !relativePath.StartsWith('.') && !Path.IsPathRooted(relativePath);
-							})) {
-								skipEntry = true;
-								skipReason = "path is not in the included directories list";
-							}
+						if (!skipEntry && !Settings.ScanAgainstEntireDatabase && !IsInIncludeScope(entry)) {
+							skipEntry = true;
+							skipReason = "path is not in the included directories list";
 						}
 
 						if (skipEntry) {
@@ -627,7 +769,17 @@ namespace VDF.Core {
 								IncrementProgress(entry.Path);
 							return ValueTask.CompletedTask;
 						}
-						if (Settings.IncludeNonExistingFiles && entry.grayBytes?.Count > 0) {
+
+						// Cache a cheap content fingerprint so a future scan can detect this file was
+						// MOVED (same OsHash, old path gone) and relink it without re-decoding. Runs once
+						// per entry — computed here for new files and backfilled for pre-OsHash entries,
+						// then persisted. Best-effort: a missing/locked file leaves it null.
+						// Only fingerprint files inside the include list, so "scan against entire database"
+						// (which compares every historical entry) never spins up out-of-scope drives for a read.
+						if (entry.OsHash == null && IsInIncludeScope(entry))
+							entry.OsHash = OsHashUtils.TryCompute(entry.Path);
+
+						if (Settings.IncludeMissingFiles && entry.grayBytes?.Count > 0) {
 							bool hasAllInformation = entry.IsImage;
 							if (!hasAllInformation) {
 								hasAllInformation = true;
@@ -665,6 +817,17 @@ namespace VDF.Core {
 								IncrementProgress(entry.Path);
 								return ValueTask.CompletedTask;
 							}
+						}
+
+						// Tombstone/offline safety: the file is gone (deleted, or its drive is
+						// unmounted). A fully-cached entry was already kept above; one with
+						// incomplete cached data cannot be (re)analysed without the file, so
+						// exclude it from this scan instead of spawning ffprobe/ffmpeg on a
+						// missing path (which only errors).
+						if (!File.Exists(entry.Path)) {
+							entry.invalid = true;
+							IncrementProgress(entry.Path);
+							return ValueTask.CompletedTask;
 						}
 
 						if (entry.mediaInfo == null && !entry.IsImage) {
@@ -746,8 +909,15 @@ namespace VDF.Core {
 		}
 
 	
-	static void ExtractAudioFingerprint(FileEntry entry, CancellationToken ct = default, Action<double>? onProgress = null) {
+	internal static void ExtractAudioFingerprint(FileEntry entry, CancellationToken ct = default, Action<double>? onProgress = null) {
 		uint[]? fp = FFTools.ChromaprintEngine.ExtractFingerprint(entry.Path, false, ct, onProgress);
+		if (fp == null && ct.IsCancellationRequested) {
+			// Stop/cancel mid-file is not a file error. Flagging here poisoned the entry
+			// permanently: both the AudioFingerprintError flag and the non-null empty
+			// fingerprint block every retry gate, so the file would never be fingerprinted
+			// again. Leave the entry untouched and let the next scan retry it.
+			return;
+		}
 		if (fp == null) {
 			// null = extraction failed (error or no audio stream)
 			entry.Flags.Set(EntryFlags.AudioFingerprintError);
@@ -1002,9 +1172,9 @@ namespace VDF.Core {
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
 
+			currentStageLabel = T("Scan.Stage.ComparingDuplicates");
 			int matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();
 			Logger.Instance.Info($"Duplicate matching concurrency: {matchingMaxDegreeOfParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s); configured matching={Settings.MatchingMaxDegreeOfParallelism}, media extraction={Settings.MaxDegreeOfParallelism}");
-
 			InitProgress(ScanList.Count);
 
 			// Duration buckets are keyed by whole seconds to keep percent-based tolerance intact.
@@ -1373,6 +1543,8 @@ namespace VDF.Core {
 
 			float simThreshold = (float)Settings.PartialClipSimilarityThreshold;
 			int matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();
+			currentStageLabel = T("Scan.Stage.PartialCompare");
+			InitProgress(videos.Count - 1);
 
 			// --- Parallel phase: compute all matches without mutating shared state ---
 			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
@@ -1385,6 +1557,7 @@ namespace VDF.Core {
 				},
 				i => {
 					FileEntry source = videos[i];
+					IncrementProgress(Path.GetFileName(source.Path));
 					double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
 					if (sourceSec < 1.0) return;
 
@@ -1429,7 +1602,7 @@ namespace VDF.Core {
 				try {
 					Parallel.ForEach(assignments, new ParallelOptions {
 						CancellationToken = cancelationTokenSource.Token,
-						MaxDegreeOfParallelism = Math.Max(1, Settings.MaxDegreeOfParallelism)
+						MaxDegreeOfParallelism = ParallelDegree
 					}, a => {
 						bool pass = VerifyPartialClipVisually(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec, out float visualSim);
 						if (pass) {
@@ -1859,11 +2032,50 @@ namespace VDF.Core {
 
 		public async void CleanupDatabase() {
 			await Task.Run(() => {
-				DatabaseUtils.CleanupDatabase();
+				DatabaseUtils.CleanupDatabase(preserveDeletedContentMemory: Settings.RememberDeletedContent);
 			});
 			DatabaseCleaned?.Invoke(this, new EventArgs());
 		}
 		public static void ClearDatabase() => DatabaseUtils.ClearDatabase();
+
+		// A "ghost" is an entry whose file is gone from a currently-MOUNTED drive and that carries
+		// no comparable data at all — no usable frame hash and no audio fingerprint. Unlike a
+		// tombstone (missing file WITH fingerprints, kept when RememberDeletedContent is on so a
+		// re-download is recognized), a ghost can never match anything and can never heal (the
+		// file is gone), so it is pure dead weight iterated by every scan. Offline drives are
+		// excluded, same discipline as PathIsTombstone: their files may still exist.
+		static bool IsGhostEntry(FileEntry e, Dictionary<string, bool> driveReadyCache) {
+			if (e.AudioFingerprint != null) return false;
+			if (e.grayBytes != null)
+				foreach (var v in e.grayBytes.Values)
+					if (v != null) return false;   // at least one usable frame hash -> keep as tombstone
+			if (File.Exists(e.Path)) return false;
+			string root = Path.GetPathRoot(e.Path) ?? string.Empty;
+			if (!driveReadyCache.TryGetValue(root, out bool ready))
+				driveReadyCache[root] = ready = IsDriveReady(e.Path);
+			return ready;
+		}
+		/// <summary>Counts what <see cref="PruneGhostEntries"/> would remove (read-only preview).</summary>
+		public static int CountGhostEntries() {
+			var readyCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+			int n = 0;
+			foreach (var e in DatabaseUtils.Database)
+				if (IsGhostEntry(e, readyCache)) n++;
+			return n;
+		}
+		/// <summary>Removes ghost entries and saves the database. Do not call during a scan.</summary>
+		public static int PruneGhostEntries() {
+			var readyCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+			var ghosts = new List<FileEntry>();
+			foreach (var e in DatabaseUtils.Database)
+				if (IsGhostEntry(e, readyCache)) ghosts.Add(e);
+			foreach (var g in ghosts)
+				DatabaseUtils.Database.Remove(g);
+			if (ghosts.Count > 0)
+				DatabaseUtils.SaveDatabase();
+			Logger.Instance.Info($"Pruned {ghosts.Count:N0} ghost entries (file missing on a mounted drive, no comparable fingerprint data).");
+			return ghosts.Count;
+		}
 		public static bool ExportDataBaseToJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ExportDatabaseToJson(jsonFile, options);
 		public static bool ImportDataBaseFromJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ImportDatabaseFromJson(jsonFile, options);
 
@@ -1963,15 +2175,25 @@ namespace VDF.Core {
 			try {
 				await Parallel.ForEachAsync(dupList, new ParallelOptions { MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, cancellationToken) => {
 					List<byte[]>? list = null;
-					bool needsThumbnails = !Settings.IncludeNonExistingFiles || File.Exists(entry.Path);
+					bool needsThumbnails = !Settings.IncludeMissingFiles || File.Exists(entry.Path);
 					List<TimeSpan>? timeStamps = null;
 					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
 					if (!needsThumbnails) {
+						// Missing on disk (a deleted or offline entry included via IncludeMissingFiles):
+						// nothing can be extracted. Items without any thumbnails get the shared
+						// placeholder; items that already have some (width-upgrade retries) keep them.
+						// Never fall through — SetThumbnails with null timestamps stored a null list
+						// that consumers dereference (and tripped the Debug.Assert below).
 						Interlocked.Increment(ref skippedMissing);
 						LogFileLedger("Explicit thumbnail", entry.Path, "skipped missing");
+						if (entry.ImageList is not { Count: > 0 } && NoThumbnailImage != null) {
+							entry.ThumbnailWidth = 0;
+							entry.SetThumbnails(new List<byte[]> { NoThumbnailImage }, new List<TimeSpan> { TimeSpan.Zero });
+						}
+						return ValueTask.CompletedTask;
 					}
-					else if (entry.IsImage) {
+					if (entry.IsImage) {
 						timeStamps = new(0);
 						list = new List<byte[]>(1);
 						var b = ExtractThumbnailJpeg(entry.Path, TimeSpan.Zero, maxDim);
@@ -2052,7 +2274,7 @@ namespace VDF.Core {
 			try {
 				await Parallel.ForEachAsync(dupList, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, cancellationToken) => {
 					List<byte[]>? list = null;
-					bool needsThumbnails = !Settings.IncludeNonExistingFiles || File.Exists(entry.Path);
+					bool needsThumbnails = !Settings.IncludeMissingFiles || File.Exists(entry.Path);
 					List<TimeSpan>? timeStamps = null;
 
 					int current = Interlocked.Increment(ref done);
@@ -2065,10 +2287,20 @@ namespace VDF.Core {
 					int maxDim = Settings.ThumbnailMaxWidth > 0 ? Settings.ThumbnailMaxWidth : 100;
 
 					if (!needsThumbnails) {
+						// Missing on disk (a deleted or offline entry included via IncludeMissingFiles):
+						// nothing can be extracted. Items without any thumbnails get the shared
+						// placeholder; items that already have some (width-upgrade retries) keep them.
+						// Never fall through — SetThumbnails with null timestamps stored a null list
+						// that consumers dereference (and tripped the Debug.Assert below).
 						Interlocked.Increment(ref skippedMissing);
 						LogFileLedger("Thumbnail", entry.Path, "skipped missing");
+						if (entry.ImageList is not { Count: > 0 } && NoThumbnailImage != null) {
+							entry.ThumbnailWidth = 0;
+							entry.SetThumbnails(new List<byte[]> { NoThumbnailImage }, new List<TimeSpan> { TimeSpan.Zero });
+						}
+						return ValueTask.CompletedTask;
 					}
-					else if (entry.IsImage) {
+					if (entry.IsImage) {
 						//For images it doesn't make sense to load the actual image more than once
 						timeStamps = new(0);
 						list = new List<byte[]>(1);
@@ -2263,7 +2495,11 @@ namespace VDF.Core {
 			ElapsedTimer.Stop();
 			SearchTimer.Stop();
 			pauseTokenSource.IsPaused = true;
-
+			// Safe suspend point: flush completed work off the caller's (UI) thread so closing
+			// the app while paused loses nothing. Files that were mid-processing when the pause
+			// hit finish first (workers park at WaitWhilePaused between files) and land in the
+			// next checkpoint or the final save.
+			Task.Run(FlushDatabase);
 		}
 
 		public void Resume() {
@@ -2275,11 +2511,14 @@ namespace VDF.Core {
 		}
 
 		public void Stop() {
-			if (pauseTokenSource.IsPaused)
-				Resume();
 			Logger.Instance.Info("Scan stopped by user");
 			if (isScanning)
 				cancelationTokenSource.Cancel();
+			// Cancel before resuming: workers parked in WaitWhilePaused observe the
+			// cancelled token and throw instead of waking up and fully processing one
+			// more file each (with a dead token that would poison its results).
+			if (pauseTokenSource.IsPaused)
+				Resume();
 			else
 				// No scan task is alive to observe the cancellation, so nothing would ever
 				// raise ScanAborted. A frontend that still believes a scan is running (its

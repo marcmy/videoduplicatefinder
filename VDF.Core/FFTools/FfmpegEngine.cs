@@ -1815,6 +1815,7 @@ namespace VDF.Core.FFTools {
 			try {
 				process.EnableRaisingEvents = true;
 				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
 				process.ErrorDataReceived += new DataReceivedEventHandler((sender, e) => {
 					errOut.AppendLine(e.Data);
 				});
@@ -2308,6 +2309,7 @@ namespace VDF.Core.FFTools {
 			using var process = new Process { StartInfo = psi };
 			try {
 				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
 				using var ms = new MemoryStream();
 				// Write input and read output concurrently to avoid pipe-buffer deadlocks.
 				var readTask = process.StandardOutput.BaseStream.CopyToAsync(ms);
