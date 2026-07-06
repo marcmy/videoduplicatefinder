@@ -61,6 +61,8 @@ namespace VDF.Core {
 		/// <summary>Maximum width in pixels for display thumbnails (0 = original resolution).</summary>
 		public int ThumbnailMaxWidth = 100;
 		public int MaxDegreeOfParallelism = 1;
+		/// <summary>Maximum workers for duplicate matching. Non-positive values use an automatic CPU-headroom cap.</summary>
+		public int MatchingMaxDegreeOfParallelism;
 
 		public string CustomFFArguments = string.Empty;
 		public string CustomDatabaseFolder = string.Empty;
