@@ -1,0 +1,75 @@
+name: Validate matching CPU headroom
+
+on:
+  push:
+    branches:
+      - perf/matching-cpu-headroom
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matching-cpu-headroom
+  cancel-in-progress: false
+
+jobs:
+  patch-test-publish:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Apply targeted patch
+        shell: pwsh
+        run: |
+          python tools/apply-matching-headroom.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --stat
+
+      - name: Run core unit tests
+        shell: pwsh
+        run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Run FFmpeg integration tests
+        shell: pwsh
+        run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+
+      - name: Publish Windows Native AOT GUI
+        shell: pwsh
+        run: |
+          dotnet publish VDF.GUI/VDF.GUI.csproj `
+            -c Release `
+            -v q `
+            -p:PublishAot=true `
+            -r win-x64 `
+            -o outputGUI
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path -LiteralPath outputGUI/VDF.GUI.exe -PathType Leaf)) {
+            throw "Native AOT publish did not produce VDF.GUI.exe"
+          }
+
+      - name: Export validated source files
+        uses: actions/upload-artifact@v7
+        with:
+          name: matching-cpu-headroom-source
+          path: |
+            VDF.Core/Settings.cs
+            VDF.Core/ScanEngine.cs
+            VDF.Core/ScanEngine.MatchingConcurrency.cs
+            VDF.Core.Tests/MatchingConcurrencyTests.cs
+            VDF.GUI/Data/SettingsFile.cs
+            VDF.GUI/ViewModels/MainWindowVM.cs
+          if-no-files-found: error
+          retention-days: 1
