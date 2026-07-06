@@ -31,10 +31,14 @@ jobs:
         name: Apply targeted patch
         shell: pwsh
         run: |
-          python tools/apply-matching-headroom.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git diff --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $output = & python tools/apply-matching-headroom.py 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath apply-output.txt
+          if ($exitCode -ne 0) { exit $exitCode }
+          $diffOutput = & git diff --check 2>&1
+          $diffExitCode = $LASTEXITCODE
+          $diffOutput | Tee-Object -FilePath apply-output.txt -Append
+          if ($diffExitCode -ne 0) { exit $diffExitCode }
           git diff --stat
 
       - id: core
@@ -91,5 +95,5 @@ jobs:
         if: failure()
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "ci: matching validation failed"
-          file_pattern: validation-status.txt
+          commit_message: "ci: matching validation failed with details"
+          file_pattern: validation-status.txt apply-output.txt
