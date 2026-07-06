@@ -1,6 +1,5 @@
 # Temporary validation helper. The generated source files replace this before merge.
 from pathlib import Path
-import re
 
 
 def read(path: str) -> str:
@@ -43,17 +42,11 @@ replace_once(
     "\t\t\tset => this.RaiseAndSetIfChanged(ref _MatchingMaxDegreeOfParallelism, value);\n"
     "\t\t}\n")
 
-vm_path = "VDF.GUI/ViewModels/MainWindowVM.cs"
-vm = read(vm_path)
-pattern = r"(?m)^(\s*)MaxDegreeOfParallelism\s*=\s*SettingsFile\.Instance\.MaxDegreeOfParallelism,\s*$"
-matches = list(re.finditer(pattern, vm))
-if len(matches) != 1:
-    raise RuntimeError(f"{vm_path}: expected one core-settings MaxDegree mapping, found {len(matches)}")
-match = matches[0]
-indent = match.group(1)
-replacement = match.group(0) + "\n" + indent + "MatchingMaxDegreeOfParallelism = SettingsFile.Instance.MatchingMaxDegreeOfParallelism,"
-vm = vm[:match.start()] + replacement + vm[match.end():]
-write(vm_path, vm)
+replace_once(
+    "VDF.GUI/ViewModels/MainWindowVM.cs",
+    "\t\t\tScanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;\n",
+    "\t\t\tScanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;\n"
+    "\t\t\tScanner.Settings.MatchingMaxDegreeOfParallelism = SettingsFile.Instance.MatchingMaxDegreeOfParallelism;\n")
 
 concurrency_source = '''// Copyright (C) 2026 0x90d
 // SPDX-License-Identifier: AGPL-3.0-or-later
