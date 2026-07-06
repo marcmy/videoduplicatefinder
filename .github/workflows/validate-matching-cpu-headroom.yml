@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   patch-test-publish:
-    if: github.event.head_commit.message != 'perf: reserve CPU headroom during duplicate matching'
+    if: "${{ github.event.head_commit.message != 'perf: reserve CPU headroom during duplicate matching' }}"
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -64,5 +64,5 @@ jobs:
       - name: Commit validated source changes
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: perf: reserve CPU headroom during duplicate matching
+          commit_message: "perf: reserve CPU headroom during duplicate matching"
           file_pattern: VDF.Core/Settings.cs VDF.Core/ScanEngine.cs VDF.Core/ScanEngine.MatchingConcurrency.cs VDF.Core.Tests/MatchingConcurrencyTests.cs VDF.GUI/Data/SettingsFile.cs VDF.GUI/ViewModels/MainWindowVM.cs
