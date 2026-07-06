@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - perf/matching-cpu-headroom
+  pull_request:
+    branches:
+      - perf/native-hwaccel-from-crashfix
 
 permissions:
   contents: read
