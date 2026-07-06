@@ -10,23 +10,25 @@ permissions:
 
 concurrency:
   group: matching-cpu-headroom
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   patch-test-publish:
-    if: "${{ github.event.head_commit.message != 'perf: reserve CPU headroom during duplicate matching' }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'ci: matching validation') && github.event.head_commit.message != 'perf: reserve CPU headroom during duplicate matching' }}"
     runs-on: windows-2022
     timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup .NET
+      - id: setup
+        name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
-      - name: Apply targeted patch
+      - id: apply
+        name: Apply targeted patch
         shell: pwsh
         run: |
           python tools/apply-matching-headroom.py
@@ -35,19 +37,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --stat
 
-      - name: Run core unit tests
+      - id: core
+        name: Run core unit tests
         shell: pwsh
         run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
 
-      - name: Install FFmpeg
+      - id: ffmpeg
+        name: Install FFmpeg
         shell: pwsh
         run: choco install ffmpeg -y --no-progress
 
-      - name: Run FFmpeg integration tests
+      - id: integration
+        name: Run FFmpeg integration tests
         shell: pwsh
         run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
 
-      - name: Publish Windows Native AOT GUI
+      - id: publish
+        name: Publish Windows Native AOT GUI
         shell: pwsh
         run: |
           dotnet publish VDF.GUI/VDF.GUI.csproj `
@@ -62,7 +68,28 @@ jobs:
           }
 
       - name: Commit validated source changes
+        if: success()
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
           commit_message: "perf: reserve CPU headroom during duplicate matching"
           file_pattern: VDF.Core/Settings.cs VDF.Core/ScanEngine.cs VDF.Core/ScanEngine.MatchingConcurrency.cs VDF.Core.Tests/MatchingConcurrencyTests.cs VDF.GUI/Data/SettingsFile.cs VDF.GUI/ViewModels/MainWindowVM.cs
+
+      - name: Record validation failure
+        if: failure()
+        shell: pwsh
+        run: |
+          @"
+          setup=${{ steps.setup.outcome }}
+          apply=${{ steps.apply.outcome }}
+          core=${{ steps.core.outcome }}
+          ffmpeg=${{ steps.ffmpeg.outcome }}
+          integration=${{ steps.integration.outcome }}
+          publish=${{ steps.publish.outcome }}
+          "@ | Set-Content -LiteralPath validation-status.txt
+
+      - name: Commit validation failure report
+        if: failure()
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "ci: matching validation failed"
+          file_pattern: validation-status.txt
