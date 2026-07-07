@@ -64,17 +64,40 @@ jobs:
 
       - name: Validate Core build
         if: steps.port.outputs.code == '0'
-        run: dotnet build VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+        id: core
+        shell: bash
+        run: |
+          set +e
+          dotnet build VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v minimal > core-build.log 2>&1
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Report Core build failure
+        if: steps.core.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '### Matching-headroom Core build failed'
+            echo
+            echo '```text'
+            grep -E '(^|: )error |Build FAILED|warning [A-Z]+[0-9]+' core-build.log | tail -n 120
+            echo '```'
+          } > core-comment.md
+          gh pr comment 56 --body-file core-comment.md
+          exit 1
 
       - name: Validate GUI build
-        if: steps.port.outputs.code == '0'
+        if: steps.port.outputs.code == '0' && steps.core.outputs.code == '0'
         run: dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
 
       - name: Commit port
-        if: steps.port.outputs.code == '0'
+        if: steps.port.outputs.code == '0' && steps.core.outputs.code == '0'
         shell: bash
         run: |
-          rm -f .github/workflows/port-41-matching-headroom.yml tools/port-41-matching-headroom.py port.log
+          rm -f .github/workflows/port-41-matching-headroom.yml tools/port-41-matching-headroom.py port.log core-build.log
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
