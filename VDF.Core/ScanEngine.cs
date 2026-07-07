@@ -349,6 +349,8 @@ namespace VDF.Core {
 			FfmpegEngine.HardwareAccelerationMode = Settings.HardwareAccelerationMode;
 			FfmpegEngine.CustomFFArguments = Settings.CustomFFArguments;
 			FfmpegEngine.UseNativeBinding = Settings.UseNativeFfmpegBinding;
+			FfmpegEngine.ScanMaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism;
+			FfmpegEngine.ConfigureNativeGrayByteD3D11Concurrency();
 			DatabaseUtils.CustomDatabaseFolder = Settings.CustomDatabaseFolder;
 			DatabaseUtils.InvalidateDatabaseFolder();
 			Duplicates.Clear();

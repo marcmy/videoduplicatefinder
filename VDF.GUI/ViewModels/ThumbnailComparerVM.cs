@@ -600,6 +600,12 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		void UpdateFrameImages() {
+			// Invalidate work started for the previous selection, base frame, or offsets.
+			// A completed stale extraction may populate its cache, but must not update the UI.
+			_frameExtractCts?.Cancel();
+			_frameExtractCts = null;
+			IsExtractingFrame = false;
+
 			var baseIdx = BaseThumbnailIndex;
 			var itemA = SelectedItemA;
 			var itemB = SelectedItemB;
@@ -622,10 +628,18 @@ namespace VDF.GUI.ViewModels {
 				return;
 			}
 
-			_frameExtractCts?.Cancel();
 			var cts = new CancellationTokenSource();
 			_frameExtractCts = cts;
 			IsExtractingFrame = true;
+
+			bool IsStillCurrentRequest() =>
+				!cts.IsCancellationRequested &&
+				ReferenceEquals(_frameExtractCts, cts) &&
+				ReferenceEquals(SelectedItemA, itemA) &&
+				ReferenceEquals(SelectedItemB, itemB) &&
+				BaseThumbnailIndex == baseIdx &&
+				StepA == stepA &&
+				StepB == stepB;
 
 			_ = Task.Run(() => {
 				try {
@@ -635,18 +649,25 @@ namespace VDF.GUI.ViewModels {
 					if (cts.IsCancellationRequested) return;
 
 					RxSchedulers.MainThreadScheduler.Schedule(() => {
-						if (cts.IsCancellationRequested) return;
+						if (!IsStillCurrentRequest())
+							return;
 						if (needExtractA && bmpA != null)
 							ImageA = bmpA;
 						if (needExtractB && bmpB != null)
 							ImageB = bmpB;
 						this.RaisePropertyChanged(nameof(ImageSingle));
+						_frameExtractCts = null;
 						IsExtractingFrame = false;
 						UpdateFrameLabels();
 					});
 				}
 				catch {
-					RxSchedulers.MainThreadScheduler.Schedule(() => IsExtractingFrame = false);
+					RxSchedulers.MainThreadScheduler.Schedule(() => {
+						if (!ReferenceEquals(_frameExtractCts, cts))
+							return;
+						_frameExtractCts = null;
+						IsExtractingFrame = false;
+					});
 				}
 			});
 
