@@ -1,3 +1,4 @@
+# One-time validated port; removed after the product commit lands.
 name: Finalize 4.1 engine and comparer integration
 
 on:
