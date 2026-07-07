@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   apply:
@@ -24,22 +25,48 @@ jobs:
         run: git fetch origin perf/native-hwaccel-from-crashfix
 
       - name: Apply pHash quorum port
+        id: port
         shell: pwsh
-        run: python tools/port-41-phash-quorum.py
+        run: |
+          python tools/port-41-phash-quorum.py *> port.log
+          $code = $LASTEXITCODE
+          Get-Content port.log
+          "code=$code" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Report exact port failure
+        if: steps.port.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $body = @"
+          ### pHash quorum port failed
+
+          ``````text
+          $(Get-Content port.log -Raw)
+          ``````
+          "@
+          gh pr comment 56 --body $body
+          exit 1
 
       - name: Build GUI
+        if: steps.port.outputs.code == '0'
         shell: pwsh
         run: dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
 
       - name: Run Core tests
+        if: steps.port.outputs.code == '0'
         shell: pwsh
         run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
 
       - name: Run GUI tests
+        if: steps.port.outputs.code == '0'
         shell: pwsh
         run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
 
       - name: Commit validated pHash port
+        if: steps.port.outputs.code == '0'
         shell: pwsh
         run: |
           if (Test-Path tools/port-41-comparer-correctness.py) {
