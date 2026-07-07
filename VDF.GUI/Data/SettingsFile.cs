@@ -132,14 +132,6 @@ namespace VDF.GUI.Data {
 			get => _MainWindowMaximized;
 			set => this.RaiseAndSetIfChanged(ref _MainWindowMaximized, value);
 		}
-		string _LastSortOrder = string.Empty;
-		/// <summary>Key of the results sort order (see MainWindowVM.SortOrders), restored on startup.</summary>
-		[JsonPropertyName("LastSortOrder")]
-		public string LastSortOrder {
-			get => _LastSortOrder;
-			set => this.RaiseAndSetIfChanged(ref _LastSortOrder, value);
-		}
-
 		string _LanguageCode = ResolveDefaultLanguageCode();
 		[JsonPropertyName("LanguageCode")]
 		public string LanguageCode {
@@ -164,13 +156,17 @@ namespace VDF.GUI.Data {
 			get => _IgnoreReparsePoints;
 			set => this.RaiseAndSetIfChanged(ref _IgnoreReparsePoints, value);
 		}
-		bool _IgnoreBlackPixels;
+		// IgnoreBlackPixels/IgnoreWhitePixels/CompareHorizontallyFlipped/Percent defaults
+		// form the "Edited & altered copies" scan profile — the recommended default for
+		// fresh installs (redesign stage 2). Existing settings files carry explicit
+		// values for every key, so nobody's configuration changes.
+		bool _IgnoreBlackPixels = true;
 		[JsonPropertyName("IgnoreBlackPixels")]
 		public bool IgnoreBlackPixels {
 			get => _IgnoreBlackPixels;
 			set => this.RaiseAndSetIfChanged(ref _IgnoreBlackPixels, value);
 		}
-		bool _IgnoreWhitePixels;
+		bool _IgnoreWhitePixels = true;
 		[JsonPropertyName("IgnoreWhitePixels")]
 		public bool IgnoreWhitePixels {
 			get => _IgnoreWhitePixels;
@@ -182,13 +178,29 @@ namespace VDF.GUI.Data {
 			get => _MaxDegreeOfParallelism;
 			set => this.RaiseAndSetIfChanged(ref _MaxDegreeOfParallelism, value);
 		}
+		bool _WelcomeStripDismissed;
+		/// <summary>The Setup screen's "New here?" hint strip, dismissible once.</summary>
+		[JsonPropertyName("WelcomeStripDismissed")]
+		public bool WelcomeStripDismissed {
+			get => _WelcomeStripDismissed;
+			set => this.RaiseAndSetIfChanged(ref _WelcomeStripDismissed, value);
+		}
+		ScanKnobs? _CustomScanKnobs;
+		/// <summary>Snapshot of the profile-managed knobs from when the user last left a
+		/// custom configuration; selecting the Custom profile restores it.</summary>
+		[JsonPropertyName("CustomScanKnobs")]
+		public ScanKnobs? CustomScanKnobs {
+			get => _CustomScanKnobs;
+			set => this.RaiseAndSetIfChanged(ref _CustomScanKnobs, value);
+		}
 		Core.FFTools.FFHardwareAccelerationMode _HardwareAccelerationMode = Core.FFTools.FFHardwareAccelerationMode.auto;
 		[JsonPropertyName("HardwareAccelerationMode")]
 		public Core.FFTools.FFHardwareAccelerationMode HardwareAccelerationMode {
 			get => _HardwareAccelerationMode;
 			set => this.RaiseAndSetIfChanged(ref _HardwareAccelerationMode, value);
 		}
-		bool _CompareHorizontallyFlipped = false;
+		// Part of the "Edited & altered copies" default profile (see IgnoreBlackPixels note).
+		bool _CompareHorizontallyFlipped = true;
 		[JsonPropertyName("CompareHorizontallyFlipped")]
 		public bool CompareHorizontallyFlipped {
 			get => _CompareHorizontallyFlipped;
@@ -216,7 +228,16 @@ namespace VDF.GUI.Data {
 		[JsonPropertyName("ThumbnailMaxWidth")]
 		public int ThumbnailMaxWidth {
 			get => _ThumbnailMaxWidth;
-			set => this.RaiseAndSetIfChanged(ref _ThumbnailMaxWidth, Math.Clamp(value, 48, 960));
+			set {
+				int clamped = Math.Clamp(value, 48, 960);
+				if (clamped == _ThumbnailMaxWidth) return;
+				this.RaiseAndSetIfChanged(ref _ThumbnailMaxWidth, clamped);
+				// The old view sized its layout from this extraction width; keep that
+				// behavior by moving the results Preview column along. The drag grip can
+				// still diverge afterwards (a persisted ResultsPreviewWidth is loaded
+				// after this property and wins on startup).
+				ResultsPreviewWidth = clamped;
+			}
 		}
 		bool _ExtendedFFToolsLogging;
 		[JsonPropertyName("ExtendedFFToolsLogging")]
@@ -312,7 +333,8 @@ namespace VDF.GUI.Data {
 			get => _UseExifCreationDate;
 			set => this.RaiseAndSetIfChanged(ref _UseExifCreationDate, value);
 		}
-		float _Percent = 95f;
+		// Part of the "Edited & altered copies" default profile (see IgnoreBlackPixels note).
+		float _Percent = 92f;
 		[JsonPropertyName("Percent")]
 		public float Percent {
 			get => _Percent;
@@ -410,7 +432,8 @@ namespace VDF.GUI.Data {
 			get => _ThumbnailComparerWindowScreenIndex;
 			set => this.RaiseAndSetIfChanged(ref _ThumbnailComparerWindowScreenIndex, value);
 		}
-		CompareMode _ThumbnailComparerMode = CompareMode.Swipe;
+		// Side-by-side first (redesign stage 4, maintainer directive on comparer view modes).
+		CompareMode _ThumbnailComparerMode = CompareMode.SideBySide;
 		[JsonPropertyName("ThumbnailComparerMode")]
 		public CompareMode ThumbnailComparerMode {
 			get => _ThumbnailComparerMode;
@@ -421,12 +444,6 @@ namespace VDF.GUI.Data {
 		public bool ShowThumbnailColumn {
 			get => _ShowThumbnailColumn;
 			set => this.RaiseAndSetIfChanged(ref _ShowThumbnailColumn, value);
-		}
-		bool _ShowPathColumn = true;
-		[JsonPropertyName("ShowPathColumn")]
-		public bool ShowPathColumn {
-			get => _ShowPathColumn;
-			set => this.RaiseAndSetIfChanged(ref _ShowPathColumn, value);
 		}
 		bool _ShowDurationColumn = true;
 		[JsonPropertyName("ShowDurationColumn")]
@@ -440,17 +457,55 @@ namespace VDF.GUI.Data {
 			get => _ShowFormatColumn;
 			set => this.RaiseAndSetIfChanged(ref _ShowFormatColumn, value);
 		}
-		bool _ShowAudioColumn = true;
-		[JsonPropertyName("ShowAudioColumn")]
-		public bool ShowAudioColumn {
-			get => _ShowAudioColumn;
-			set => this.RaiseAndSetIfChanged(ref _ShowAudioColumn, value);
+		bool _ShowBitrateColumn = true;
+		[JsonPropertyName("ShowBitrateColumn")]
+		public bool ShowBitrateColumn {
+			get => _ShowBitrateColumn;
+			set => this.RaiseAndSetIfChanged(ref _ShowBitrateColumn, value);
+		}
+		// First-results hint: "drag the Preview handle / raise the thumbnail width" (one-shot)
+		bool _ResultsHintDismissed;
+		[JsonPropertyName("ResultsHintDismissed")]
+		public bool ResultsHintDismissed {
+			get => _ResultsHintDismissed;
+			set => this.RaiseAndSetIfChanged(ref _ResultsHintDismissed, value);
 		}
 		bool _ShowSimilarityColumn = true;
 		[JsonPropertyName("ShowSimilarityColumn")]
 		public bool ShowSimilarityColumn {
 			get => _ShowSimilarityColumn;
 			set => this.RaiseAndSetIfChanged(ref _ShowSimilarityColumn, value);
+		}
+		bool _ShowSizeDateColumn = true;
+		[JsonPropertyName("ShowSizeDateColumn")]
+		public bool ShowSizeDateColumn {
+			get => _ShowSizeDateColumn;
+			set => this.RaiseAndSetIfChanged(ref _ShowSizeDateColumn, value);
+		}
+		ViewModels.ResultsSortMode _ResultsSortMode = ViewModels.ResultsSortMode.WastedSpace;
+		[JsonPropertyName("ResultsSortMode")]
+		public ViewModels.ResultsSortMode ResultsSortMode {
+			get => _ResultsSortMode;
+			set => this.RaiseAndSetIfChanged(ref _ResultsSortMode, value);
+		}
+		bool _ResultsSortDescending = true;
+		[JsonPropertyName("ResultsSortDescending")]
+		public bool ResultsSortDescending {
+			get => _ResultsSortDescending;
+			set => this.RaiseAndSetIfChanged(ref _ResultsSortDescending, value);
+		}
+		double _ResultsPreviewWidth = 160;
+		/// <summary>Width of the Preview column in the results list; scales the filmstrip frames.</summary>
+		[JsonPropertyName("ResultsPreviewWidth")]
+		public double ResultsPreviewWidth {
+			get => _ResultsPreviewWidth;
+			set => this.RaiseAndSetIfChanged(ref _ResultsPreviewWidth, Math.Clamp(value, 56, 480));
+		}
+		bool _ResultsCompactRows;
+		[JsonPropertyName("ResultsCompactRows")]
+		public bool ResultsCompactRows {
+			get => _ResultsCompactRows;
+			set => this.RaiseAndSetIfChanged(ref _ResultsCompactRows, value);
 		}
 		ThumbnailDoubleClickAction _ThumbnailDoubleClickAction = ThumbnailDoubleClickAction.OpenFile;
 		[JsonPropertyName("ThumbnailDoubleClickAction")]

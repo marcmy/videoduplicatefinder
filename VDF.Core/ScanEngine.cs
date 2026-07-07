@@ -87,6 +87,9 @@ namespace VDF.Core {
 			CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 		DateTime lastCheckpointTime = DateTime.MinValue;
 		readonly object checkpointLock = new();
+		// True between StartSearch beginning a log session and the chained StartCompare
+		// joining it; lets a standalone StartCompare open its own session instead.
+		bool compareIsChainedToSearch;
 
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
@@ -121,17 +124,17 @@ namespace VDF.Core {
 				return;
 			loggedCount = excludedReasonLoggedCounts.AddOrUpdate(reason, 1, (_, count) => count + 1);
 			if (loggedCount <= maxExcludedLogsPerReason)
-				Logger.Instance.Info(T("Log.ExcludedFile", entry.Path, reason, totalCount));
+				Logger.Instance.Warn(T("Log.ExcludedFile", entry.Path, reason, totalCount));
 		}
 		void LogExcludedSummary() {
 			if (!Settings.LogExcludedFiles || excludedReasonCounts.IsEmpty)
 				return;
-			Logger.Instance.Info(T("Log.ExcludedFilesSummary"));
+			Logger.Instance.Warn(T("Log.ExcludedFilesSummary"));
 			foreach (var reason in excludedReasonCounts.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)) {
 				var loggedCount = excludedReasonLoggedCounts.TryGetValue(reason.Key, out var value) ? value : 0;
 				var suppressedCount = Math.Max(0, reason.Value - loggedCount);
 				var suppressionText = suppressedCount > 0 ? T("Log.ExcludedFilesSuppressed", suppressedCount) : string.Empty;
-				Logger.Instance.Info(T("Log.ExcludedFilesSummaryItem", reason.Key, reason.Value, suppressionText));
+				Logger.Instance.Warn(T("Log.ExcludedFilesSummaryItem", reason.Key, reason.Value, suppressionText));
 			}
 		}
 		void IncrementProgress(string path) {
@@ -192,7 +195,7 @@ namespace VDF.Core {
 					Logger.Instance.Info(T("Log.DatabaseCheckpoint", DatabaseUtils.Database.Count));
 				}
 				catch (Exception ex) {
-					Logger.Instance.Info($"Database checkpoint failed (the scan continues; the final save still runs): {ex}");
+					Logger.Instance.Warn($"Database checkpoint failed (the scan continues; the final save still runs): {ex}");
 				}
 			}
 		}
@@ -209,7 +212,7 @@ namespace VDF.Core {
 					Logger.Instance.Info("Paused: database flushed — safe to close the app (a later rescan resumes from the cache).");
 				}
 				catch (Exception ex) {
-					Logger.Instance.Info($"Pause flush failed (the scan continues): {ex}");
+					Logger.Instance.Warn($"Pause flush failed (the scan continues): {ex}");
 				}
 			}
 		}
@@ -230,7 +233,8 @@ namespace VDF.Core {
 				PrepareSearch();
 				SearchTimer.Start();
 				ElapsedTimer.Start();
-				Logger.Instance.InsertSeparator('-');
+				Logger.Instance.BeginSession(T("Log.SessionScan"));
+				compareIsChainedToSearch = true;
 				Logger.Instance.Info(T("Log.BuildingFileList"));
 				await BuildFileList(cancelationTokenSource.Token);
 				Logger.Instance.Info(T("Log.FinishedBuildingFileList", SearchTimer.StopGetElapsedAndRestart()));
@@ -267,6 +271,11 @@ namespace VDF.Core {
 
 		public async void StartCompare() {
 			try {
+				// Standalone compare runs (GUI compare-only rescan, CLI compare command) get
+				// their own log session; a compare chained to StartSearch stays in the scan's.
+				if (!compareIsChainedToSearch)
+					Logger.Instance.BeginSession(T("Log.SessionCompare"));
+				compareIsChainedToSearch = false;
 				PrepareCompare();
 				SearchTimer.Start();
 				ElapsedTimer.Start();
@@ -306,10 +315,11 @@ namespace VDF.Core {
 		/// by the post-hash save and the periodic checkpoints.
 		/// </summary>
 		void AbortScanOnError(Exception ex) {
+			compareIsChainedToSearch = false;
 			if (ex is OperationCanceledException)
 				Logger.Instance.Info(T("Log.ScanAborted"));
 			else
-				Logger.Instance.Info($"Scan aborted because of an unexpected error: {ex}");
+				Logger.Instance.Error($"Scan aborted because of an unexpected error: {ex}");
 			SearchTimer.Stop();
 			ElapsedTimer.Stop();
 			isScanning = false;
@@ -452,7 +462,7 @@ namespace VDF.Core {
 				if (!Directory.Exists(path)) {
 					// A disconnected network drive or removed folder would otherwise be
 					// skipped without a trace, making the scan look broken (0 files found).
-					Logger.Instance.Info($"WARNING: Search directory not found or inaccessible, skipping: '{path}'. If this is a network drive, make sure it is connected (or use the \\\\server\\share UNC path instead of a drive letter).");
+					Logger.Instance.Warn($"Search directory not found or inaccessible, skipping: '{path}'. If this is a network drive, make sure it is connected (or use the \\\\server\\share UNC path instead of a drive letter).");
 					continue;
 				}
 
@@ -466,7 +476,7 @@ namespace VDF.Core {
 					}
 					catch (Exception e) {
 						//https://github.com/0x90d/videoduplicatefinder/issues/237
-						Logger.Instance.Info($"Skipped file '{file}' because of {e}");
+						Logger.Instance.Warn($"Skipped file '{file}' because of {e}");
 						continue;
 					}
 					if (!DatabaseUtils.Database.TryGetValue(fEntry, out var dbEntry)) {
@@ -657,6 +667,18 @@ namespace VDF.Core {
 			entry.invalid || entry.mediaInfo == null || entry.Flags.Has(EntryFlags.ThumbnailError) || (!entry.IsImage && entry.grayBytes.Count < Settings.ThumbnailCount);
 
 		public static Task<bool> LoadDatabase() => Task.Run(DatabaseUtils.LoadDatabase);
+		/// <summary>
+		/// Loads the database from a custom folder. Callers with a configured custom
+		/// database folder must use this at startup — the parameterless overload resolves
+		/// the DEFAULT folder, and the custom one only took effect at the first scan
+		/// (PrepareSearch), so every pre-scan consumer (backup restore's tombstone checks,
+		/// database viewer, entry counts) read the wrong database.
+		/// </summary>
+		public static Task<bool> LoadDatabase(string? customDatabaseFolder) => Task.Run(() => {
+			DatabaseUtils.CustomDatabaseFolder = string.IsNullOrEmpty(customDatabaseFolder) ? null : customDatabaseFolder;
+			DatabaseUtils.InvalidateDatabaseFolder();
+			return DatabaseUtils.LoadDatabase();
+		});
 		public static void SaveDatabase() => DatabaseUtils.SaveDatabase();
 		public static void RemoveFromDatabase(FileEntry dbEntry) => DatabaseUtils.Database.Remove(dbEntry);
 
@@ -738,7 +760,8 @@ namespace VDF.Core {
 				currentStageLabel = string.Empty; // per-file analysis reports its own sub-stages
 				InitProgress(DatabaseUtils.Database.Count);
 				await Parallel.ForEachAsync(DatabaseUtils.Database, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, (entry, token) => {
-					pauseTokenSource.WaitWhilePaused(token);
+					if (!pauseTokenSource.TryWaitWhilePaused(token))
+						return ValueTask.CompletedTask; // canceled while paused — the loop token ends the iteration
 
 					try {
 						entry.invalid = InvalidEntry(entry, out bool reportProgress, out string? invalidReason);
@@ -875,7 +898,7 @@ namespace VDF.Core {
 						// One bad file must not tear down a multi-hour scan. Flag the entry
 						// so it's skipped on subsequent runs (unless AlwaysRetryFailedSampling)
 						// and log enough detail to identify the culprit.
-						Logger.Instance.Info($"Unhandled error processing '{entry.Path}': {ex}");
+						Logger.Instance.Error($"Unhandled error processing '{entry.Path}': {ex}");
 						entry.invalid = true;
 						entry.Flags.Set(EntryFlags.ThumbnailError);
 						IncrementProgress(entry.Path);
@@ -976,7 +999,7 @@ namespace VDF.Core {
 
 	void LogMissingPHash(string path) {
 			if (missingPHashFiles.TryAdd(path, 0))
-				Logger.Instance.Info($"Missing pHash data for '{path}' — file will be skipped in pHash comparisons. Re-scan to repopulate.");
+				Logger.Instance.Warn($"Missing pHash data for '{path}' — file will be skipped in pHash comparisons. Re-scan to repopulate.");
 		}
 
 	/// <summary>
@@ -1105,7 +1128,7 @@ namespace VDF.Core {
 				ScanList = validated;
 			}
 			if (droppedSnapshots > 0)
-				Logger.Instance.Info($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing gray bytes for the current thumbnail positions). Rescan to repopulate.");
+				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing gray bytes for the current thumbnail positions). Rescan to repopulate.");
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
 
@@ -1221,7 +1244,8 @@ namespace VDF.Core {
 
 			// Compare one entry against candidate buckets (bucketed path).
 			void CompareEntry(FileEntry entry, int entryIndex, IEnumerable<int> candidateBucketKeys) {
-				pauseTokenSource.WaitWhilePaused(cancelationTokenSource.Token);
+				if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
+					return; // canceled while paused — the parallel loop's token ends the iteration
 
 				float difference = 0;
 				bool isDuplicate;
@@ -1326,7 +1350,8 @@ namespace VDF.Core {
 			// Linear compare path for small datasets to avoid bucket bookkeeping overhead.
 			void CompareVideosLinear() {
 				Action<int> compareAction = i => {
-					pauseTokenSource.WaitWhilePaused(cancelationTokenSource.Token);
+					if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
+						return; // canceled while paused — the loop guards below end the iteration
 
 					var entry = videoEntries[i];
 					float difference = 0;
@@ -1379,7 +1404,9 @@ namespace VDF.Core {
 						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, compareAction);
 					}
 					else {
-						for (int i = 0; i < videoEntries.Count; i++)
+						// compareAction returns early on cancellation instead of throwing,
+						// so the sequential path must check the token itself.
+						for (int i = 0; i < videoEntries.Count && !cancelationTokenSource.IsCancellationRequested; i++)
 							compareAction(i);
 					}
 				}
@@ -1430,7 +1457,7 @@ namespace VDF.Core {
 			if (mergesBlocked > 0)
 				Logger.Instance.Info($"Group merge validation: blocked {mergesBlocked} merge(s) where group representatives were not similar");
 			if (missingPHashFiles.Count > 0)
-				Logger.Instance.Info($"pHash comparison: {missingPHashFiles.Count} file(s) had missing pHash data and were skipped in pHash comparisons. Delete the database (or rescan with 'Always retry failed sampling') to recompute.");
+				Logger.Instance.Warn($"pHash comparison: {missingPHashFiles.Count} file(s) had missing pHash data and were skipped in pHash comparisons. Delete the database (or rescan with 'Always retry failed sampling') to recompute.");
 			Duplicates = new HashSet<DuplicateItem>(duplicateDict.Values);
 			SplitDaisyChainGroups();
 
@@ -2010,6 +2037,24 @@ namespace VDF.Core {
 			Logger.Instance.Info($"Pruned {ghosts.Count:N0} ghost entries (file missing on a mounted drive, no comparable fingerprint data).");
 			return ghosts.Count;
 		}
+		/// <summary>
+		/// Number of database entries whose path lies under <paramref name="folderPath"/> —
+		/// the "N files known" a setup screen can show instantly, before any folder walk.
+		/// </summary>
+		public static int CountDatabaseEntriesUnder(string folderPath) {
+			if (string.IsNullOrWhiteSpace(folderPath)) return 0;
+			string prefix = folderPath.EndsWith(Path.DirectorySeparatorChar) || folderPath.EndsWith(Path.AltDirectorySeparatorChar)
+				? folderPath
+				: folderPath + Path.DirectorySeparatorChar;
+			var comparison = CoreUtils.IsWindows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+			int n = 0;
+			foreach (var e in DatabaseUtils.Database)
+				if (e.Path.StartsWith(prefix, comparison)) n++;
+			return n;
+		}
+		/// <summary>Total number of entries in the fingerprint database.</summary>
+		public static int DatabaseEntryCount => DatabaseUtils.Database.Count;
+
 		public static bool ExportDataBaseToJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ExportDatabaseToJson(jsonFile, options);
 		public static bool ImportDataBaseFromJson(string jsonFile, JsonSerializerOptions options) => DatabaseUtils.ImportDatabaseFromJson(jsonFile, options);
 
@@ -2115,7 +2160,7 @@ namespace VDF.Core {
 						list = new List<byte[]>(1);
 						var b = ExtractThumbnailJpeg(entry.Path, TimeSpan.Zero, maxDim);
 						if (b == null || b.Length == 0) {
-							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}'.");
+							Logger.Instance.Warn($"Failed loading image from file: '{entry.Path}'.");
 							return ValueTask.CompletedTask;
 						}
 						list.Add(b);
@@ -2131,7 +2176,7 @@ namespace VDF.Core {
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) {
 								failedPositions++;
-								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
+								Logger.Instance.Warn($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
 								continue;
 							}
 							list.Add(b);
@@ -2141,12 +2186,12 @@ namespace VDF.Core {
 							list.Add(NoThumbnailImage);
 							timeStamps.Add(TimeSpan.Zero);
 							entry.ThumbnailWidth = 0;
-							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
+							Logger.Instance.Warn($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
 							Interlocked.Increment(ref placeholders);
 						}
 						else if (list.Count > 0 && failedPositions > 0) {
 							entry.ThumbnailWidth = maxDim;
-							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
+							Logger.Instance.Warn($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
 							Interlocked.Increment(ref loaded);
 						}
 						else if (list.Count > 0) {
@@ -2207,7 +2252,7 @@ namespace VDF.Core {
 						list = new List<byte[]>(1);
 						var b = ExtractThumbnailJpeg(entry.Path, TimeSpan.Zero, maxDim);
 						if (b == null || b.Length == 0) {
-							Logger.Instance.Info($"Failed loading image from file: '{entry.Path}'.");
+							Logger.Instance.Warn($"Failed loading image from file: '{entry.Path}'.");
 							return ValueTask.CompletedTask;
 						}
 						list.Add(b);
@@ -2223,7 +2268,7 @@ namespace VDF.Core {
 							var b = FfmpegEngine.ExtractThumbnailJpeg(entry.Path, timestamp, maxDim, Settings.ExtendedFFToolsLogging);
 							if (b == null || b.Length == 0) {
 								failedPositions++;
-								Logger.Instance.Info($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
+								Logger.Instance.Warn($"Failed extracting thumbnail at {timestamp} for '{entry.Path}', skipping that position.");
 								continue;
 							}
 							list.Add(b);
@@ -2233,12 +2278,12 @@ namespace VDF.Core {
 							list.Add(NoThumbnailImage);
 							timeStamps.Add(TimeSpan.Zero);
 							entry.ThumbnailWidth = 0;
-							Logger.Instance.Info($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
+							Logger.Instance.Warn($"Using placeholder for '{entry.Path}' — all {positionList.Count} sample position(s) failed.");
 							Interlocked.Increment(ref placeholders);
 						}
 						else if (list.Count > 0 && failedPositions > 0) {
 							entry.ThumbnailWidth = maxDim;
-							Logger.Instance.Info($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
+							Logger.Instance.Warn($"Loaded {list.Count}/{positionList.Count} thumbnail(s) for '{entry.Path}' ({failedPositions} position(s) failed).");
 							Interlocked.Increment(ref loaded);
 						}
 						else if (list.Count > 0) {
@@ -2312,7 +2357,7 @@ namespace VDF.Core {
 
 				if (!GrayBytesUtils.VerifyGrayScaleValues(grayBytes)) {
 					imageFile.Flags.Set(EntryFlags.TooDark);
-					Logger.Instance.Info($"ERROR: Graybytes too dark of: {imageFile.Path}");
+					Logger.Instance.Warn($"Graybytes too dark of: {imageFile.Path}");
 					return false;
 				}
 
@@ -2320,7 +2365,7 @@ namespace VDF.Core {
 				return true;
 			}
 			catch (Exception ex) {
-				Logger.Instance.Info(
+				Logger.Instance.Error(
 					$"Exception, file: {imageFile.Path}, reason: {ex.Message}, stacktrace {ex.StackTrace}");
 				imageFile.Flags.Set(EntryFlags.ThumbnailError);
 				return false;
