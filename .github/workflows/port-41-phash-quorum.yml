@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   apply:
@@ -34,20 +33,17 @@ jobs:
           "code=$code" >> $env:GITHUB_OUTPUT
           exit 0
 
-      - name: Report exact port failure
+      - name: Persist exact port failure
         if: steps.port.outputs.code != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          $body = @"
-          ### pHash quorum port failed
-
-          ``````text
-          $(Get-Content port.log -Raw)
-          ``````
-          "@
-          gh pr comment 56 --body $body
+          New-Item -ItemType Directory -Force tools | Out-Null
+          Copy-Item port.log tools/phash-port-failure.log -Force
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f tools/phash-port-failure.log
+          git commit -m 'diagnostics: capture pHash port failure'
+          git push origin HEAD:perf/4.1-native-hwaccel
           exit 1
 
       - name: Build GUI
@@ -71,6 +67,9 @@ jobs:
         run: |
           if (Test-Path tools/port-41-comparer-correctness.py) {
             git rm tools/port-41-comparer-correctness.py
+          }
+          if (Test-Path tools/phash-port-failure.log) {
+            git rm tools/phash-port-failure.log
           }
           git rm tools/port-41-phash-quorum.py
           git config user.name 'github-actions[bot]'
