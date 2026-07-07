@@ -22,7 +22,6 @@ using FFmpeg.AutoGen.Native;
 namespace VDF.Core.FFTools.FFmpegNative {
 	static class FFmpegHelper {
 		static readonly LinuxFunctionResolver linuxFunctionResolver = new();
-		static readonly WindowsFunctionResolver windowsFunctionResolver = new();
 		static readonly MacFunctionResolver macFunctionResolver = new();
 
 		private static bool ffmpegLibraryFound;
@@ -37,6 +36,12 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public static int ThrowExceptionIfError(this int error) {
 			if (error < 0)
 				throw new FFInvalidExitCodeException(Av_strerror(error) ?? "Unknown error");
+			return error;
+		}
+
+		public static int ThrowExceptionIfError(this int error, string operation) {
+			if (error < 0)
+				throw new FFInvalidExitCodeException($"{operation} failed: {Av_strerror(error) ?? "Unknown error"}");
 			return error;
 		}
 
@@ -94,21 +99,27 @@ namespace VDF.Core.FFTools.FFmpegNative {
 					}
 				}
 
-
-				//Try fast lookup first, credits: @Maltragor
-				try {
-					ffmpeg.RootPath = string.Empty;
-					foreach (KeyValuePair<string, int> item in ffmpeg.LibraryVersionMap) {
-						if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-							windowsFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
-						else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-							linuxFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
-						else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-							macFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+				// Do not use LoadLibrary as a discovery mechanism on Windows. Loading each
+				// expected DLL independently can leave a partial FFmpeg set resident when a
+				// later DLL is absent or incompatible. If the auto-downloader then installs a
+				// complete set in <app>/bin, Windows can still bind the new avcodec DLL to the
+				// stale already-loaded avutil DLL until VDF is restarted. Scan directories for
+				// a complete co-located set instead; the actual native call path loads it later.
+				if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
+					// Try the platform loader first on Linux/macOS because libraries may be
+					// available through ldconfig/rpath even when no searchable directory is known.
+					try {
+						ffmpeg.RootPath = string.Empty;
+						foreach (KeyValuePair<string, int> item in ffmpeg.LibraryVersionMap) {
+							if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+								linuxFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+							else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+								macFunctionResolver.GetOrLoadLibrary(item.Key, throwOnError: true);
+						}
+						return true;
 					}
-					return true;
+					catch { }
 				}
-				catch { }
 
 				if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
 					string firstLibrary = $"lib{ffmpeg.LibraryVersionMap.Keys.First()}.so.{ffmpeg.LibraryVersionMap.Values.First()}";
@@ -149,7 +160,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				}
 			}
 			catch (Exception e) {
-				Utils.Logger.Instance.Warn($"Failed to look for ffmpeg libraries: {e}");
+				Utils.Logger.Instance.Info($"Failed to look for ffmpeg libraries: {e}");
 			}
 			return false;
 		}
@@ -164,35 +175,32 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		static bool? canLoadNativeLibraries;
-		/// <summary>
-		/// True only if the FFmpeg shared libraries are present AND can actually be loaded and
-		/// called. <see cref="DoFFmpegLibraryFilesExist"/> only checks that the files exist on
-		/// disk (File.Exists); it never confirms they load. On some machines the libraries are
-		/// present and the right version but still fail to load (missing system dependency,
-		/// security software, an ABI/build mismatch), which previously surfaced as a
-		/// NotSupportedException on every single decode call instead of one clear failure
-		/// (issues #793/#795). Probe one trivial function per library so the load failure is
-		/// detected once, up front. Cached for the process — once a native library fails to
-		/// load it cannot be reloaded without a restart.
-		/// </summary>
-		internal static bool CanLoadNativeLibraries {
+		internal static unsafe bool CanLoadNativeLibraries {
 			get {
 				if (canLoadNativeLibraries.HasValue)
 					return canLoadNativeLibraries.Value;
+
 				bool ok = false;
 				try {
 					if (DoFFmpegLibraryFilesExist) {
-						// Touch each library. If any cannot be loaded/resolved, AutoGen throws here.
 						_ = ffmpeg.avutil_version();
 						_ = ffmpeg.avcodec_version();
 						_ = ffmpeg.avformat_version();
 						_ = ffmpeg.swscale_version();
 						_ = ffmpeg.swresample_version();
+
+						AVFrame* frame = ffmpeg.av_frame_alloc();
+						if (frame != null)
+							ffmpeg.av_frame_free(&frame);
+						AVPacket* packet = ffmpeg.av_packet_alloc();
+						if (packet != null)
+							ffmpeg.av_packet_free(&packet);
+
 						ok = true;
 					}
 				}
 				catch (Exception e) {
-					Utils.Logger.Instance.Warn(
+					Utils.Logger.Instance.Info(
 						$"FFmpeg shared libraries are present but could not be loaded; falling back to process mode. " +
 						$"Reason: {e.GetType().Name}: {e.Message}. {DescribeExpectedLibraries()}");
 					ok = false;
@@ -200,6 +208,13 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				canLoadNativeLibraries = ok;
 				return ok;
 			}
+		}
+
+		internal static void AddOptionalFilterLibraryVersionMapEntries() {
+			// FFmpeg.AutoGen 8's avfilter resolver can request postproc as a dependency
+			// even though it is not included in the default LibraryVersionMap.
+			if (!ffmpeg.LibraryVersionMap.ContainsKey("postproc"))
+				ffmpeg.LibraryVersionMap["postproc"] = 59;
 		}
 
 		/// <summary>
