@@ -38,45 +38,43 @@ jobs:
           path.write_text(text, encoding='utf-8')
 
       - name: Apply pHash quorum port
-        id: port
+        shell: pwsh
+        run: python tools/port-41-phash-quorum.py
+
+      - name: Build GUI
+        id: build
         shell: pwsh
         run: |
-          python tools/port-41-phash-quorum.py *> port.log
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v minimal *> build.log
           $code = $LASTEXITCODE
-          Get-Content port.log
+          Get-Content build.log
           "code=$code" >> $env:GITHUB_OUTPUT
           exit 0
 
-      - name: Persist exact port failure
-        if: steps.port.outputs.code != '0'
+      - name: Persist exact build failure
+        if: steps.build.outputs.code != '0'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force tools | Out-Null
-          Copy-Item port.log tools/phash-port-failure.log -Force
+          Copy-Item build.log tools/phash-build-failure.log -Force
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -f tools/phash-port-failure.log
-          git commit -m 'diagnostics: capture pHash port failure'
+          git add -f tools/phash-build-failure.log
+          git commit -m 'diagnostics: capture pHash build failure'
           git push origin HEAD:perf/4.1-native-hwaccel
           exit 1
 
-      - name: Build GUI
-        if: steps.port.outputs.code == '0'
-        shell: pwsh
-        run: dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
-
       - name: Run Core tests
-        if: steps.port.outputs.code == '0'
+        if: steps.build.outputs.code == '0'
         shell: pwsh
         run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
 
       - name: Run GUI tests
-        if: steps.port.outputs.code == '0'
+        if: steps.build.outputs.code == '0'
         shell: pwsh
         run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
 
       - name: Commit validated pHash port
-        if: steps.port.outputs.code == '0'
+        if: steps.build.outputs.code == '0'
         shell: pwsh
         run: |
           if (Test-Path tools/port-41-comparer-correctness.py) {
@@ -84,6 +82,9 @@ jobs:
           }
           if (Test-Path tools/phash-port-failure.log) {
             git rm tools/phash-port-failure.log
+          }
+          if (Test-Path tools/phash-build-failure.log) {
+            git rm tools/phash-build-failure.log
           }
           git rm tools/port-41-phash-quorum.py
           git config user.name 'github-actions[bot]'
