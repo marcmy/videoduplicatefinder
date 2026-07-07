@@ -1,0 +1,60 @@
+name: Apply 4.1 pHash sample quorum port
+
+on:
+  push:
+    branches:
+      - perf/4.1-native-hwaccel
+    paths:
+      - .github/workflows/port-41-phash-quorum.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/4.1-native-hwaccel
+          fetch-depth: 0
+
+      - name: Fetch reference branch
+        shell: pwsh
+        run: git fetch origin perf/native-hwaccel-from-crashfix
+
+      - name: Apply pHash quorum port
+        shell: pwsh
+        run: python tools/port-41-phash-quorum.py
+
+      - name: Build GUI
+        shell: pwsh
+        run: dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+
+      - name: Run Core tests
+        shell: pwsh
+        run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+
+      - name: Run GUI tests
+        shell: pwsh
+        run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+
+      - name: Commit validated pHash port
+        shell: pwsh
+        run: |
+          if (Test-Path tools/port-41-comparer-correctness.py) {
+            git rm tools/port-41-comparer-correctness.py
+          }
+          git rm tools/port-41-phash-quorum.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add VDF.Core/Settings.cs
+          git add VDF.Core/ScanEngine.cs
+          git add VDF.Core.Tests/PHashSampleQuorumTests.cs
+          git add VDF.GUI/Data/SettingsFile.cs
+          git add VDF.GUI/ViewModels/MainWindowVM.cs
+          git add VDF.GUI/Views/SettingsView.xaml
+          git add VDF.GUI/Assets/Locales
+          git add docs/4.1-perf-port.md
+          git commit -m 'perf: restore multi-sample pHash matching quorum on 4.1'
+          git push origin HEAD:perf/4.1-native-hwaccel
