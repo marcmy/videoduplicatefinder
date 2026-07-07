@@ -24,91 +24,19 @@ jobs:
         run: git fetch origin perf/native-hwaccel-from-crashfix
 
       - name: Apply comparer correctness fixes
-        id: port
         shell: bash
-        run: |
-          set +e
-          python tools/port-41-comparer-correctness.py > port.log 2>&1
-          code=$?
-          cat port.log
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Report port failure
-        if: steps.port.outputs.code != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          {
-            echo '### Comparer correctness port failed'
-            echo
-            echo '```text'
-            cat port.log
-            echo '```'
-          } > port-comment.md
-          gh pr comment 56 --body-file port-comment.md
-          exit 1
+        run: python tools/port-41-comparer-correctness.py
 
       - name: Build GUI
-        if: steps.port.outputs.code == '0'
-        id: gui
-        shell: bash
-        run: |
-          set +e
-          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v minimal > gui-build.log 2>&1
-          code=$?
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Report GUI build failure
-        if: steps.gui.outputs.code != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          {
-            echo '### Comparer correctness GUI build failed'
-            echo
-            echo '```text'
-            grep -E '(^|: )error |Build FAILED|warning [A-Z]+[0-9]+' gui-build.log | tail -n 120
-            echo '```'
-          } > gui-comment.md
-          gh pr comment 56 --body-file gui-comment.md
-          exit 1
+        run: dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
 
       - name: Test GUI
-        if: steps.port.outputs.code == '0' && steps.gui.outputs.code == '0'
-        id: tests
-        shell: bash
-        run: |
-          set +e
-          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v normal > gui-tests.log 2>&1
-          code=$?
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Report GUI test failure
-        if: steps.tests.outputs.code != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          {
-            echo '### Comparer correctness GUI tests failed'
-            echo
-            echo '```text'
-            grep -n -B 4 -A 16 -E '^  Failed |Error Message:|Failed!|Failed:' gui-tests.log | head -n 160
-            echo '```'
-          } > tests-comment.md
-          gh pr comment 56 --body-file tests-comment.md
-          exit 1
+        run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
 
       - name: Commit comparer fixes
-        if: steps.port.outputs.code == '0' && steps.gui.outputs.code == '0' && steps.tests.outputs.code == '0'
         shell: bash
         run: |
-          rm -f .github/workflows/port-41-comparer-correctness.yml tools/port-41-comparer-correctness.py port.log gui-build.log gui-tests.log
+          rm -f .github/workflows/port-41-comparer-correctness.yml tools/port-41-comparer-correctness.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
