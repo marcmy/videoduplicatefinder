@@ -198,6 +198,8 @@ namespace VDF.GUI.ViewModels {
 			get => _ScanProgressMaxValue;
 			set => this.RaiseAndSetIfChanged(ref _ScanProgressMaxValue, value);
 		}
+		/// <summary>Per-drive rows of the Scanning state (mockup .drives); rows exist only while the analysis phase reports drive data.</summary>
+		public ScanDrivesPresenter ScanDrives { get; } = new(() => App.Lang["Scan.FilesPerSec"]);
 		string _ScanProgressCount = string.Empty;
 		public string ScanProgressCount {
 			get => _ScanProgressCount;
@@ -595,6 +597,7 @@ namespace VDF.GUI.ViewModels {
 				ScanProgressCount = $"{e.CurrentPosition:N0} / {e.MaxPosition:N0}";
 				TimeElapsed = e.Elapsed.Format();
 				ScanProgressMaxValue = e.MaxPosition;
+				ScanDrives.Update(e.Drives, DateTime.UtcNow);
 			});
 
 		void Scanner_ScanAborted(object? sender, EventArgs e) =>
@@ -604,6 +607,7 @@ namespace VDF.GUI.ViewModels {
 				IsReadyToCompare = false;
 				IsGathered = false;
 				scheduledScanInProgress = false;
+				ScanDrives.Clear();
 			});
 
 		void Scanner_ScanDone(object? sender, EventArgs e) =>
@@ -615,6 +619,7 @@ namespace VDF.GUI.ViewModels {
 				ScanProgressText = string.Empty;
 				RemainingTime = TimeSpan.Zero.Format();
 				ScanProgressValue = 0;
+				ScanDrives.Clear();
 				var completedScheduledScan = scheduledScanInProgress;
 				scheduledScanInProgress = false;
 
@@ -1572,6 +1577,8 @@ Non-Windows setup:
 			Scanner.Settings.DurationDifferenceMaxSeconds = SettingsFile.Instance.DurationDifferenceMaxSeconds;
 			Scanner.Settings.MaxSamplingDurationSeconds = SettingsFile.Instance.MaxSamplingDurationSeconds;
 			Scanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;
+			Scanner.Settings.HddMaxDegreeOfParallelism = SettingsFile.Instance.HddMaxDegreeOfParallelism;
+			Scanner.Settings.DriveTypeOverrides = SettingsFile.Instance.DriveTypeOverrides;
 			Scanner.Settings.ThumbnailCount = SettingsFile.Instance.Thumbnails;
 			Scanner.Settings.ThumbnailMaxWidth = SettingsFile.Instance.ThumbnailMaxWidth;
 			Scanner.Settings.ExtendedFFToolsLogging = SettingsFile.Instance.ExtendedFFToolsLogging;
