@@ -98,7 +98,7 @@ jobs:
             echo '### Comparer correctness GUI tests failed'
             echo
             echo '```text'
-            tail -n 160 gui-tests.log
+            grep -n -B 4 -A 16 -E '^  Failed |Error Message:|Failed!|Failed:' gui-tests.log | head -n 160
             echo '```'
           } > tests-comment.md
           gh pr comment 56 --body-file tests-comment.md
