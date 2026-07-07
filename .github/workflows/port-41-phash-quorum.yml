@@ -23,6 +23,20 @@ jobs:
         shell: pwsh
         run: git fetch origin perf/native-hwaccel-from-crashfix
 
+      - name: Adapt port script to current settings layout
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('tools/port-41-phash-quorum.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'prop_end = old_gui_settings.index("\\t\\tbool _UseExifCreationDate", prop_start)'
+          new = 'prop_end = old_gui_settings.index("\\t\\tdouble _PercentDurationDifference", prop_start)'
+          if text.count(old) != 1:
+              raise RuntimeError(f'expected one old GUI property boundary, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+          text = text.replace('FormatString="\\{0\\}%"', 'FormatString="{}{0} %"')
+          path.write_text(text, encoding='utf-8')
+
       - name: Apply pHash quorum port
         id: port
         shell: pwsh
