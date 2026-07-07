@@ -862,7 +862,7 @@ namespace VDF.Core.FFTools {
 			return deviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_NONE ? "configured-off" : "requested";
 		}
 
-		static AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {
+		internal static AVHWDeviceType GetConfiguredHardwareDeviceType(bool enableHardwareAcceleration = true) {
 			if (!enableHardwareAcceleration)
 				return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 

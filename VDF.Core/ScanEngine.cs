@@ -1186,6 +1186,9 @@ namespace VDF.Core {
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
 
+			int matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();
+			Logger.Instance.Info($"Duplicate matching concurrency: {matchingMaxDegreeOfParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s); configured matching={Settings.MatchingMaxDegreeOfParallelism}, media extraction={Settings.MaxDegreeOfParallelism}");
+
 			currentStageLabel = T("Scan.Stage.ComparingDuplicates");
 			InitProgress(ScanList.Count);
 
@@ -1391,7 +1394,7 @@ namespace VDF.Core {
 
 				try {
 					if (imageEntries.Count >= largeBucketThreshold) {
-						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, compareAction);
+						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, compareAction);
 					}
 					else {
 						for (int i = 0; i < imageEntries.Count; i++)
@@ -1455,7 +1458,7 @@ namespace VDF.Core {
 
 				try {
 					if (videoEntries.Count >= largeBucketThreshold) {
-						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, compareAction);
+						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, compareAction);
 					}
 					else {
 						// compareAction returns early on cancellation instead of throwing,
@@ -1479,7 +1482,7 @@ namespace VDF.Core {
 					var smallBuckets = videoBuckets.Where(kvp => kvp.Value.Count < largeBucketThreshold).ToList();
 					var largeBuckets = videoBuckets.Where(kvp => kvp.Value.Count >= largeBucketThreshold).ToList();
 
-					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, bucket => {
+					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, bucket => {
 						foreach (var entry in bucket.Value) {
 							int entryIndex = entry.compareIndex;
 							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1493,7 +1496,7 @@ namespace VDF.Core {
 					});
 
 					foreach (var bucket in largeBuckets) {
-						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism }, i => {
+						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, i => {
 							var entry = bucket.Value[i];
 							int entryIndex = entry.compareIndex;
 							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
@@ -1558,6 +1561,7 @@ namespace VDF.Core {
 			Logger.Instance.Info($"Partial clip detection: comparing {videos.Count} video(s) (fingerprint blocks: min={videos.Min(e => e.AudioFingerprint!.Length)}, max={videos.Max(e => e.AudioFingerprint!.Length)})...");
 
 			float simThreshold = (float)Settings.PartialClipSimilarityThreshold;
+			int matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();
 			currentStageLabel = T("Scan.Stage.PartialCompare");
 			InitProgress(videos.Count - 1);
 
@@ -1568,7 +1572,7 @@ namespace VDF.Core {
 			Parallel.For(0, videos.Count - 1,
 				new ParallelOptions {
 					CancellationToken = cancelationTokenSource.Token,
-					MaxDegreeOfParallelism = ParallelDegree
+					MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism
 				},
 				i => {
 					FileEntry source = videos[i];
@@ -1617,7 +1621,7 @@ namespace VDF.Core {
 				try {
 					Parallel.ForEach(assignments, new ParallelOptions {
 						CancellationToken = cancelationTokenSource.Token,
-						MaxDegreeOfParallelism = ParallelDegree
+						MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism
 					}, a => {
 						bool pass = VerifyPartialClipVisually(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec, out float visualSim);
 						if (pass) {

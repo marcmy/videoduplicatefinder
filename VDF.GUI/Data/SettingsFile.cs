@@ -178,6 +178,12 @@ namespace VDF.GUI.Data {
 			get => _MaxDegreeOfParallelism;
 			set => this.RaiseAndSetIfChanged(ref _MaxDegreeOfParallelism, value);
 		}
+		int _MatchingMaxDegreeOfParallelism;
+		[JsonPropertyName("MatchingMaxDegreeOfParallelism")]
+		public int MatchingMaxDegreeOfParallelism {
+			get => _MatchingMaxDegreeOfParallelism;
+			set => this.RaiseAndSetIfChanged(ref _MatchingMaxDegreeOfParallelism, value);
+		}
 		int _HddMaxDegreeOfParallelism = 2;
 		/// <summary>Per-drive cap for slow drives (spindle HDDs / network shares) — see Core setting.</summary>
 		[JsonPropertyName("HddMaxDegreeOfParallelism")]
