@@ -27,14 +27,10 @@ namespace VDF.Core.Tests;
 public class ThumbnailRetryTests {
 	static byte[] NewPlaceholder() => new byte[] { 1 };
 	static byte[] NewRealThumb() => new byte[] { 2, 2 };
-	static DuplicateItem NewCurrentItem(int thumbnailWidth = 0) => new() {
-		ThumbnailWidth = thumbnailWidth,
-		ThumbnailDisplayAspectCorrected = true,
-	};
 
 	[Fact]
 	public void EmptyImageList_IsEligibleForRetry() {
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 
 		Assert.Empty(item.ImageList);
@@ -43,7 +39,7 @@ public class ThumbnailRetryTests {
 
 	[Fact]
 	public void PlaceholderOnly_IsEligibleForRetry() {
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 		item.SetThumbnails(new List<byte[]> { placeholder }, new List<TimeSpan> { TimeSpan.Zero });
 
@@ -52,16 +48,8 @@ public class ThumbnailRetryTests {
 	}
 
 	[Fact]
-	public void LegacyRealThumbnail_IsRetriedOnceForDisplayAspectMigration() {
-		var item = new DuplicateItem(); // false is the serialized default for pre-migration backups
-		item.SetThumbnails(new List<byte[]> { NewRealThumb() }, new List<TimeSpan> { TimeSpan.Zero });
-
-		Assert.True(ScanEngine.ShouldRetryThumbnails(item, placeholder: null));
-	}
-
-	[Fact]
 	public void RealSingleThumbnail_IsNotRetried() {
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 		var real = NewRealThumb();
 		item.SetThumbnails(new List<byte[]> { real }, new List<TimeSpan> { TimeSpan.Zero });
@@ -71,7 +59,7 @@ public class ThumbnailRetryTests {
 
 	[Fact]
 	public void MultipleRealThumbnails_AreNotRetried() {
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 		item.SetThumbnails(
 			new List<byte[]> { NewRealThumb(), NewRealThumb(), NewRealThumb() },
@@ -85,7 +73,7 @@ public class ThumbnailRetryTests {
 		// The check is reference equality (the singleton NoThumbnailImage instance), so a
 		// thumbnail that *happens* to encode the same pixels as the placeholder is not a
 		// retry candidate.
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 		var lookalike = NewPlaceholder(); // same pixels, different instance
 		item.SetThumbnails(new List<byte[]> { lookalike }, new List<TimeSpan> { TimeSpan.Zero });
@@ -95,10 +83,10 @@ public class ThumbnailRetryTests {
 
 	[Fact]
 	public void NullPlaceholder_OnlyEmptyListsRetried() {
-		var withImages = NewCurrentItem();
+		var withImages = new DuplicateItem();
 		withImages.SetThumbnails(new List<byte[]> { NewRealThumb() }, new List<TimeSpan> { TimeSpan.Zero });
 
-		var empty = NewCurrentItem();
+		var empty = new DuplicateItem();
 
 		Assert.False(ScanEngine.ShouldRetryThumbnails(withImages, placeholder: null));
 		Assert.True(ScanEngine.ShouldRetryThumbnails(empty, placeholder: null));
@@ -107,7 +95,7 @@ public class ThumbnailRetryTests {
 	[Fact]
 	public void SmallerExtractionWidth_IsRetried_WhenRequiredWidthGiven() {
 		// #777: explicit reloads refresh thumbnails extracted at a smaller width.
-		var item = NewCurrentItem(thumbnailWidth: 100);
+		var item = new DuplicateItem { ThumbnailWidth = 100 };
 		item.SetThumbnails(new List<byte[]> { NewRealThumb() }, new List<TimeSpan> { TimeSpan.Zero });
 
 		Assert.True(ScanEngine.ShouldRetryThumbnails(item, placeholder: null, requiredWidth: 300));
@@ -118,9 +106,8 @@ public class ThumbnailRetryTests {
 
 	[Fact]
 	public void UnknownExtractionWidth_IsNotRetriedForWidth() {
-		// Older backups have no recorded width (0), but this fixture already represents
-		// display-aspect-corrected thumbnail bytes, so width alone must not force a retry.
-		var item = NewCurrentItem(thumbnailWidth: 0);
+		// Older backups have no recorded width (0) -- don't force a mass re-extract.
+		var item = new DuplicateItem { ThumbnailWidth = 0 };
 		item.SetThumbnails(new List<byte[]> { NewRealThumb() }, new List<TimeSpan> { TimeSpan.Zero });
 
 		Assert.False(ScanEngine.ShouldRetryThumbnails(item, placeholder: null, requiredWidth: 300));
@@ -130,7 +117,7 @@ public class ThumbnailRetryTests {
 	public void PlaceholderAlongsideRealThumbs_IsNotRetried() {
 		// Mixed list (count > 1) means at least one real thumb succeeded — not a candidate
 		// for retry even if one of the entries happens to be the placeholder reference.
-		var item = NewCurrentItem();
+		var item = new DuplicateItem();
 		var placeholder = NewPlaceholder();
 		item.SetThumbnails(
 			new List<byte[]> { placeholder, NewRealThumb() },
