@@ -1,0 +1,69 @@
+name: Apply 4.1 comparer correctness port
+
+on:
+  push:
+    branches:
+      - perf/4.1-native-hwaccel
+    paths:
+      - .github/workflows/port-41-comparer-correctness.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/4.1-native-hwaccel
+          fetch-depth: 0
+
+      - name: Fetch reference branch
+        run: git fetch origin perf/native-hwaccel-from-crashfix
+
+      - name: Apply comparer correctness fixes
+        id: port
+        shell: bash
+        run: |
+          set +e
+          python tools/port-41-comparer-correctness.py > port.log 2>&1
+          code=$?
+          cat port.log
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Report port failure
+        if: steps.port.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '### Comparer correctness port failed'
+            echo
+            echo '```text'
+            cat port.log
+            echo '```'
+          } > port-comment.md
+          gh pr comment 56 --body-file port-comment.md
+          exit 1
+
+      - name: Build and test GUI
+        if: steps.port.outputs.code == '0'
+        shell: bash
+        run: |
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+
+      - name: Commit comparer fixes
+        if: steps.port.outputs.code == '0'
+        shell: bash
+        run: |
+          rm -f .github/workflows/port-41-comparer-correctness.yml tools/port-41-comparer-correctness.py port.log
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix: preserve comparer frame and zoom correctness on 4.1"
+          git push origin HEAD:perf/4.1-native-hwaccel
