@@ -127,37 +127,34 @@ jobs:
           fi
 
       - name: Publish fork 4.1.x release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ github.token }}
+          tag_name: 4.1.x
+          target_commitish: ${{ github.sha }}
+          files: release-assets/GUI-win-x64.zip
+          fail_on_unmatched_files: true
+          body: |
+            Daily Windows x64 GUI-only Native AOT performance build from perf/4.1-native-hwaccel.
+
+            Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, and reserved CPU headroom during duplicate matching.
+
+            This release intentionally publishes only GUI-win-x64.zip. CLI, Web, bundles, symbols, and the retired full Scoop package are not produced.
+
+            Last build based on ${{ github.sha }}
+
+      - name: Remove stale release assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          short_sha="${GITHUB_SHA::7}"
-          cat > release-notes.md <<EOF
-          Daily Windows x64 GUI-only Native AOT performance build from perf/4.1-native-hwaccel.
-
-          Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, and reserved CPU headroom during duplicate matching.
-
-          This release intentionally publishes only GUI-win-x64.zip. CLI, Web, bundles, symbols, and the retired full Scoop package are not produced.
-
-          Last build based on $short_sha
-          EOF
-
-          if gh release view 4.1.x >/dev/null 2>&1; then
-            gh release upload 4.1.x release-assets/GUI-win-x64.zip --clobber
-            gh release edit 4.1.x --target "$GITHUB_SHA" --notes-file release-notes.md
-            while IFS= read -r asset; do
-              if [ "$asset" != 'GUI-win-x64.zip' ]; then
-                gh release delete-asset 4.1.x "$asset" --yes
-              fi
-            done < <(gh release view 4.1.x --json assets --jq '.assets[].name')
-          else
-            gh release create 4.1.x release-assets/GUI-win-x64.zip \
-              --target "$GITHUB_SHA" \
-              --title '4.1.x' \
-              --notes-file release-notes.md
-          fi
+          while IFS= read -r asset; do
+            if [ "$asset" != 'GUI-win-x64.zip' ]; then
+              gh release delete-asset 4.1.x "$asset" --yes
+            fi
+          done < <(gh release view 4.1.x --json assets --jq '.assets[].name')
 
       - name: Trigger Scoop Excavator
         env:
