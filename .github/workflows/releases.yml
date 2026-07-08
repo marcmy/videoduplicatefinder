@@ -1,240 +1,171 @@
-name: Build releases
+name: Build 4.1 performance release
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - perf/native-hwaccel-from-crashfix
+      - perf/4.1-native-hwaccel
     paths-ignore:
       - '.github/workflows/**'
       - 'README.md'
+      - 'docs/**'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: build-releases
+  group: vdf-4.1-performance-release
   cancel-in-progress: true
-    
+
 jobs:
-  cleanup:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+  build:
+    name: Build and test Windows x64 GUI
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
 
-      - name: Delete old release assets
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Verify 4.1 performance engine
+        shell: pwsh
+        run: |
+          $requiredFiles = @(
+            'VDF.Core/FFTools/FFmpegNative/Gray32FrameExtractor.cs',
+            'VDF.Core/FFTools/FFmpegNative/D3D11GrayByteScaler.cs',
+            'VDF.Core/FFTools/FFmpegNative/D3D11VideoProcessorGrayByteScaler.cs',
+            'VDF.Core/ScanEngine.MatchingConcurrency.cs'
+          )
+          foreach ($path in $requiredFiles) {
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required performance-engine file is missing: $path"
+            }
+          }
+
+          $settings = Get-Content VDF.Core/Settings.cs -Raw
+          foreach ($setting in @('MatchingMaxDegreeOfParallelism', 'PHashRequiredMatchingSampleRatio')) {
+            if (!$settings.Contains($setting)) {
+              throw "Required performance setting is missing: $setting"
+            }
+          }
+
+      - name: Run Core tests
+        run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+
+      - name: Run GUI tests
+        run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+
+      - name: Install FFmpeg
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Run FFmpeg integration tests
+        run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+
+      - name: Publish Windows x64 GUI Native AOT
+        run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r win-x64 -o outputGUI
+
+      - name: Package GUI-win-x64.zip
+        shell: pwsh
+        run: |
+          if (!(Test-Path outputGUI/VDF.GUI.exe -PathType Leaf)) {
+            throw 'Native AOT publish did not produce VDF.GUI.exe.'
+          }
+
+          Get-ChildItem outputGUI -Recurse -File |
+            Where-Object Extension -in '.pdb', '.dbg' |
+            Remove-Item -Force
+          Get-ChildItem outputGUI -Recurse -Directory -Filter '*.dSYM' |
+            Remove-Item -Recurse -Force
+
+          $symbols = Get-ChildItem outputGUI -Recurse | Where-Object {
+            (!$_.PSIsContainer -and $_.Extension -in '.pdb', '.dbg') -or
+            ($_.PSIsContainer -and $_.Name -like '*.dSYM')
+          }
+          if ($symbols) {
+            throw 'Runtime GUI output still contains debug symbols.'
+          }
+
+          Compress-Archive -Path outputGUI/* -DestinationPath GUI-win-x64.zip -Force
+          if ((Get-Item GUI-win-x64.zip).Length -le 0) {
+            throw 'GUI archive is empty.'
+          }
+
+      - name: Upload validated GUI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-win-x64-gui
+          path: GUI-win-x64.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish 4.1.x GUI release
+    needs: build
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/4.1-native-hwaccel'
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated GUI archive
+        uses: actions/download-artifact@v8
+        with:
+          name: release-win-x64-gui
+          path: release-assets
+
+      - name: Validate release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive='release-assets/GUI-win-x64.zip'
+          test -s "$archive"
+          unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI\.exe$'
+          if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+            echo 'GUI-win-x64.zip contains debug symbols.' >&2
+            exit 1
+          fi
+
+      - name: Publish fork 4.1.x release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # Delete all existing assets from the 4.0.x release so they get replaced with fresh
-          # builds. '|| true' covers the very first run, before the release exists.
-          gh release view 4.0.x --json assets --jq '.assets[].name' 2>/dev/null | while read -r asset; do
-            gh release delete-asset 4.0.x "$asset" --yes
-          done || true
-
-  build-windows:
-    name: Build windows bundle first
-    needs: cleanup
-    runs-on: windows-2022
-    env:
-      TARGET: win-x64
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
-
-      - name: Verify perf branch code is present
-        shell: pwsh
-        run: |
-          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
-          if ($src -notlike '*d3d11-video-processor-gray32*') {
-            throw "Perf D3D11 graybyte fast path missing from checked-out source."
-          }
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Declare some variables
-        id: vars
-        shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Build
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          # Build GUI
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputGUI"
-          # Build CLI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputCLI"
-          # Build Web
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "$TARGET" -o "outputWeb"
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          cat > release-notes.md <<EOF
+          Daily Windows x64 GUI-only Native AOT performance build from perf/4.1-native-hwaccel.
 
-          bundleDir="Bundle-$TARGET"
-          mkdir -p "$bundleDir"
-          cp -a outputGUI/. "$bundleDir/"
-          copy_unique() {
-            src="$1"
-            while IFS= read -r -d '' file; do
-              rel="${file#$src/}"
-              dest="$bundleDir/$rel"
-              mkdir -p "$(dirname "$dest")"
-              if [ -e "$dest" ]; then
-                if ! cmp -s "$file" "$dest"; then
-                  echo "Bundle conflict: '$rel' differs between publish outputs." >&2
-                  exit 1
-                fi
-              else
-                cp -a "$file" "$dest"
+          Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, and reserved CPU headroom during duplicate matching.
+
+          This release intentionally publishes only GUI-win-x64.zip. CLI, Web, bundles, symbols, and the retired full Scoop package are not produced.
+
+          Last build based on $short_sha
+          EOF
+
+          if gh release view 4.1.x >/dev/null 2>&1; then
+            gh release upload 4.1.x release-assets/GUI-win-x64.zip --clobber
+            gh release edit 4.1.x --target "$GITHUB_SHA" --notes-file release-notes.md
+            while IFS= read -r asset; do
+              if [ "$asset" != 'GUI-win-x64.zip' ]; then
+                gh release delete-asset 4.1.x "$asset" --yes
               fi
-            done < <(find "$src" -type f -print0)
-          }
-          copy_unique outputCLI
-          copy_unique outputWeb
-          for exe in VDF.GUI.exe vdf-cli.exe VDF.Web.exe; do
-            if [ ! -f "$bundleDir/$exe" ]; then
-              echo "Bundle is missing required executable: $exe" >&2
-              exit 1
-            fi
-          done
-          7z a -tzip "GUI-$TARGET.zip" "./outputGUI/*"
-          7z a -tzip "CLI-$TARGET.zip" "./outputCLI/*"
-          7z a -tzip "Web-$TARGET.zip" "./outputWeb/*"
-          7z a -tzip "Bundle-$TARGET.zip" "./$bundleDir"
+            done < <(gh release view 4.1.x --json assets --jq '.assets[].name')
+          else
+            gh release create 4.1.x release-assets/GUI-win-x64.zip \
+              --target "$GITHUB_SHA" \
+              --title '4.1.x' \
+              --notes-file release-notes.md
+          fi
 
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "$bundleDir"
-
-      - name: Publish windows assets
-        uses: softprops/action-gh-release@v3
-        with:
-          token: ${{ github.token }}
-          tag_name: 4.0.x
-          files: |
-            GUI-*
-            CLI-*
-            Web-*
-            Bundle-*
-          body: |
-            Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
-            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
-            Last build based on ${{ steps.vars.outputs.sha_short }}
-
-      - name: Trigger scoop bucket Excavator
-        shell: pwsh
+      - name: Trigger Scoop Excavator
         env:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
+        shell: bash
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-            Write-Host "No cross-repo token secret configured; skipping scoop-bucket Excavator trigger. Add SCOOP_BUCKET_TOKEN, GH_PAT, or PAT with repo/workflow access to enable this."
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'No cross-repository token configured; skipping Scoop Excavator dispatch.'
             exit 0
-          }
-          gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
-
-  build-other:
-    name: Build other releases
-    needs: build-windows
-
-    strategy:
-      matrix:
-        kind: ['linux', 'macOS', 'macOSarm64', 'linuxarm64']
-        include:
-          - kind: linux
-            os: ubuntu-latest
-            target: linux-x64
-            name: linux-x64
-          - kind: macOS
-            os: macos-latest
-            target: osx-x64
-            name: osx-x64
-          - kind: macOSarm64
-            os: macos-latest
-            target: osx-arm64
-            name: osx-arm64
-          - kind: linuxarm64
-            os: ubuntu-latest
-            target: linux-arm64
-            name: linux-arm64
-            
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: perf/native-hwaccel-from-crashfix
-
-      - name: Verify perf branch code is present
-        shell: pwsh
-        run: |
-          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
-          if ($src -notlike '*d3d11-video-processor-gray32*') {
-            throw "Perf D3D11 graybyte fast path missing from checked-out source."
-          }
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Declare some variables
-        id: vars
-        shell: bash
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Build
-        shell: bash
-        run: |
-          # Build GUI
-          dotnet publish ./VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputGUI"
-          # Build CLI
-          dotnet publish ./VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputCLI"
-          # Build Web
-          dotnet publish ./VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r "${{ matrix.target }}" -o "outputWeb"
-          # Pack files
-          if [[ "${{ matrix.target }}" == osx-* ]]; then
-            mkdir -p "Video Duplicate Finder.app/Contents/MacOS"
-            mkdir -p "Video Duplicate Finder.app/Contents/Resources"
-            cp -r outputGUI/. "Video Duplicate Finder.app/Contents/MacOS/"
-            cp "VDF.GUI/Assets/macOS/icon.icns" "Video Duplicate Finder.app/Contents/Resources/icon.icns"
-            cp "VDF.GUI/Assets/macOS/Info.plist" "Video Duplicate Finder.app/Contents/Info.plist"
-            chmod +x "Video Duplicate Finder.app/Contents/MacOS/VDF.GUI"
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              "Video Duplicate Finder.app"
-            codesign --verify --deep --strict --verbose=2 "Video Duplicate Finder.app"
-            tar czvf "GUI-${{ matrix.target }}.tar.gz" "Video Duplicate Finder.app"
-            chmod +x outputCLI/vdf-cli
-            chmod +x outputWeb/VDF.Web
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              outputCLI/vdf-cli
-            codesign --force --deep --sign - \
-              --entitlements "VDF.GUI/Assets/macOS/entitlements.plist" \
-              outputWeb/VDF.Web
-            tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
-            tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
-          else
-            cp "VDF.GUI/Assets/Linux/icon.png" "outputGUI/icon.png"
-            cp "VDF.GUI/Assets/Linux/videoduplicatefinder.desktop" "outputGUI/videoduplicatefinder.desktop"
-            tar czvf "GUI-${{ matrix.target }}.tar.gz" "outputGUI"
-            tar czvf "CLI-${{ matrix.target }}.tar.gz" "outputCLI"
-            tar czvf "Web-${{ matrix.target }}.tar.gz" "outputWeb"
           fi
-          rm -rf "outputGUI" "outputCLI" "outputWeb" "Video Duplicate Finder.app"
-
-      - name: Publish non-windows assets
-        uses: softprops/action-gh-release@v3
-        with:
-          token: ${{ github.token }}
-          tag_name: 4.0.x
-          files: |
-            GUI-*
-            CLI-*
-            Web-*
-          body: |
-            Note: These are daily builds. Attachments are automatically created and replaced on every new commit. Regardless of what the message above says. If you experience upgrade issues you may need to delete your 'ScannedFiles.db' file in VDF folder.
-            4.0 highlights: .NET 10, Avalonia 12, ImageSharp removed (all image processing now via FFmpeg), faster duplicate comparison. Your scan database is migrated automatically on first load; cached image hashes are recomputed on the next scan (videos are unaffected). Downgrading to 3.0.x after that migration is not recommended.
-            Last build based on ${{ steps.vars.outputs.sha_short }}
+          gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
