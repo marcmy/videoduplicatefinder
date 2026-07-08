@@ -8,7 +8,8 @@ on:
       - .github/workflows/capture-4.1-release-hash.yml
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: write
 
 jobs:
   capture:
@@ -17,27 +18,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: perf/4.1-native-hwaccel
-          fetch-depth: 0
 
       - name: Download published GUI asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download 4.1.x --pattern GUI-win-x64.zip --clobber
 
-      - name: Record SHA-256
+      - name: Report SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p release
-          sha256sum GUI-win-x64.zip | awk '{print $1 "  GUI-win-x64.zip"}' > release/GUI-win-x64.sha256
-
-      - name: Commit hash record
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add release/GUI-win-x64.sha256
-          if git diff --cached --quiet; then
-            echo 'Release hash is already current.'
-            exit 0
-          fi
-          git commit -m 'build: record 4.1 GUI release hash'
-          git pull --rebase origin perf/4.1-native-hwaccel
-          git push origin HEAD:perf/4.1-native-hwaccel
+          hash="$(sha256sum GUI-win-x64.zip | awk '{print $1}')"
+          gh pr comment 56 --body "4.1 perf release SHA-256: \`$hash\`"
