@@ -6,4 +6,6 @@ It receives upstream updates from `master` and publishes the GUI-only Windows x6
 
 The release intentionally contains only `GUI-win-x64.zip`; CLI, Web, bundles, symbols, and the retired full package are not produced.
 
+Each successful release writes the exact archive SHA-256 and `4.1.x` URL into `videoduplicatefinder-perf`, then runs Scoop Excavator.
+
 `perf/native-hwaccel-from-crashfix` is retained as historical reference and no longer receives automated syncs or release builds.
