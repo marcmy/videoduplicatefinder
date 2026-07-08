@@ -156,65 +156,13 @@ jobs:
             fi
           done < <(gh release view 4.1.x --json assets --jq '.assets[].name')
 
-      - name: Update Scoop performance manifest
-        env:
-          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "$GH_TOKEN" ]; then
-            echo 'No cross-repository token configured; skipping Scoop manifest update.'
-            exit 0
-          fi
-
-          api='repos/marcmy/scoop-bucket/contents/bucket/videoduplicatefinder-perf.json'
-          response="$(gh api --method GET "$api" -f ref=master)"
-          blob_sha="$(jq -r '.sha' <<< "$response")"
-          jq -r '.content' <<< "$response" | tr -d '\n' | base64 -d > manifest.json
-
-          export VDF_PERF_HASH="$(sha256sum release-assets/GUI-win-x64.zip | awk '{print $1}')"
-          export VDF_PERF_VERSION="4.1.0-perf-git-$(date -u +%Y%m%d-%H%M)"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path('manifest.json')
-          data = json.loads(path.read_text(encoding='utf-8'))
-          url = 'https://github.com/marcmy/videoduplicatefinder/releases/download/4.1.x/GUI-win-x64.zip'
-
-          data['description'] = 'Video Duplicate Finder 4.1 performance GUI from Marc\'s native FFmpeg branch (Native AOT)'
-          data['version'] = os.environ['VDF_PERF_VERSION']
-          data['architecture']['64bit']['url'] = url
-          data['architecture']['64bit']['hash'] = os.environ['VDF_PERF_HASH']
-          data['notes'] = [
-              'This is the actively updated 4.1 GUI-only Native AOT performance package.',
-              '`perf/native-hwaccel-from-crashfix` is retained as historical reference.',
-              'Only VDF state files that exist in the active install are retained during updates or reinstalls.'
-          ]
-
-          for i, line in enumerate(data['checkver']['script']):
-              data['checkver']['script'][i] = line.replace('releases/tags/4.0.x', 'releases/tags/4.1.x')
-          data['checkver']['replace'] = '4.1.0-perf-git-$1$2$3-$4$5'
-          data['autoupdate']['architecture']['64bit']['url'] = url
-
-          path.write_text(json.dumps(data, indent=4) + '\n', encoding='utf-8')
-          PY
-
-          encoded="$(base64 -w0 manifest.json)"
-          gh api --method PUT "$api" \
-            -f message='videoduplicatefinder-perf: switch active line to 4.1' \
-            -f content="$encoded" \
-            -f sha="$blob_sha" \
-            -f branch=master
-
       - name: Trigger Scoop Excavator
         env:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
         shell: bash
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo 'No cross-repository token configured; skipping Scoop Excavator dispatch.'
+            echo 'No cross-repository token configured; Scoop Excavator will pick up the release on its schedule.'
             exit 0
           fi
           gh workflow run excavator.yml --repo marcmy/scoop-bucket --ref master
