@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: perf/4.1-native-hwaccel
+          fetch-depth: 0
 
       - name: Download published GUI asset
         env:
@@ -38,4 +39,5 @@ jobs:
             exit 0
           fi
           git commit -m 'build: record 4.1 GUI release hash'
+          git pull --rebase origin perf/4.1-native-hwaccel
           git push origin HEAD:perf/4.1-native-hwaccel
