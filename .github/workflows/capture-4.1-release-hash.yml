@@ -24,6 +24,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download 4.1.x --pattern GUI-win-x64.zip --clobber
 
+      - name: Record published SHA-256 in PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          hash="$(sha256sum GUI-win-x64.zip | awk '{print $1}')"
+          gh api repos/marcmy/videoduplicatefinder/issues/comments/4909627593 \
+            --method PATCH \
+            -f body="4.1 perf release SHA-256: \`$hash\`"
+
       - name: Update videoduplicatefinder-perf manifest
         env:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
