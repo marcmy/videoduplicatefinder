@@ -1,4 +1,4 @@
-name: Refresh perf branch
+name: Refresh 4.1 perf branch
 
 on:
   workflow_dispatch:
@@ -7,9 +7,6 @@ on:
       - Sync master from upstream
     types:
       - completed
-  # Keep workflow-maintenance commits in the perf branch ancestry. The merge step
-  # restores the perf branch's own workflow files, and workflow-only changes do not
-  # dispatch a release build.
   push:
     branches:
       - master
@@ -21,7 +18,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: refresh-perf-branch
+  group: refresh-4.1-perf-branch
   cancel-in-progress: false
 
 jobs:
@@ -30,10 +27,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout perf branch
+      - name: Checkout 4.1 perf branch
         uses: actions/checkout@v5
         with:
-          ref: perf/native-hwaccel-from-crashfix
+          ref: perf/4.1-native-hwaccel
           fetch-depth: 0
 
       - name: Configure git
@@ -44,13 +41,15 @@ jobs:
       - name: Fetch origin branches
         run: |
           git fetch origin master
-          git fetch origin perf/native-hwaccel-from-crashfix
+          git fetch origin perf/4.1-native-hwaccel
 
-      - name: Merge fork master into perf branch
+      - name: Merge fork master into 4.1 perf branch
         id: merge
         shell: bash
         run: |
-          git checkout perf/native-hwaccel-from-crashfix
+          set -euo pipefail
+          branch='perf/4.1-native-hwaccel'
+          git checkout "$branch"
           before="$(git rev-parse HEAD)"
 
           set +e
@@ -58,103 +57,31 @@ jobs:
           merge_status=$?
           set -e
 
-          # The perf branch intentionally owns its workflow definitions. Restore them
-          # before committing so the default GITHUB_TOKEN never needs workflow scope.
+          # The performance branch owns its workflow definitions. Keep them across
+          # upstream refreshes so default-token pushes never need workflow scope.
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
           if [ "$merge_status" -ne 0 ]; then
-            echo "Merge reported conflicts. Auto-resolving only known safe conflicts."
-
+            echo 'Merge reported conflicts. Auto-resolving only known safe files.'
             conflicted_files="$(git diff --name-only --diff-filter=U)"
             echo "$conflicted_files"
 
-            if echo "$conflicted_files" | grep -Fxq "README.md"; then
-              echo "Keeping origin/master version of README.md"
+            if grep -Fxq 'README.md' <<< "$conflicted_files"; then
+              echo 'Keeping origin/master README.md'
               git checkout --theirs -- README.md
               git add README.md
             fi
 
-            if echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FfmpegEngine.cs"; then
-              echo "Keeping the perf FFmpeg implementation and applying master's benign PNG demuxer filtering"
-              git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
-
-              python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
-          text = path.read_text(encoding="utf-8")
-
-          call_anchor = "\t\t\tstring ffmpegError = errOut.ToString();\n\t\t\tlong processTotalMs = processSw.ElapsedMilliseconds;"
-          call_replacement = "\t\t\tstring ffmpegError = errOut.ToString();\n\t\t\t// When a still image was extracted successfully, discard FFmpeg's known-benign\n\t\t\t// PNG demuxer chatter instead of logging a false warning (#805/#809/#815).\n\t\t\tif (bytes != null && ffmpegError.Length > 0 && FileUtils.IsImageFile(settings.File))\n\t\t\t\tffmpegError = FilterBenignImageDemuxerNoise(ffmpegError);\n\t\t\tlong processTotalMs = processSw.ElapsedMilliseconds;"
-
-          if "FilterBenignImageDemuxerNoise(ffmpegError)" not in text:
-              if call_anchor not in text:
-                  raise SystemExit("Could not locate the perf FFmpeg stderr anchor")
-              text = text.replace(call_anchor, call_replacement, 1)
-
-          method_anchor = "\n\t\tprivate static List<string> TokenizeArgs(string args) {"
-          method_lines = [
-              "",
-              "\t\t// Markers for FFmpeg PNG demuxer false-positives that occur after a still frame",
-              "\t\t// has already been decoded successfully (issues #805/#809/#815).",
-              "\t\tstatic readonly string[] BenignImageDemuxerMarkers = {",
-              "\t\t\t\"Invalid PNG signature\",",
-              "\t\t\t\"chunk too big\",",
-              "\t\t};",
-              "",
-              "\t\t/// <summary>",
-              "\t\t/// Strips known-benign FFmpeg demuxer lines (and the png decoder's follow-up",
-              "\t\t/// \"Decoding error\" line) from captured stderr. Only used for still images whose",
-              "\t\t/// frame was nonetheless extracted, so a non-fatal decode line cannot hide a real",
-              "\t\t/// failure. Returns the surviving lines with the original leading newline layout.",
-              "\t\t/// </summary>",
-              "\t\tstatic string FilterBenignImageDemuxerNoise(string errOut) {",
-              "\t\t\tvar lines = errOut.Split(Environment.NewLine);",
-              "\t\t\tvar kept = new List<string>(lines.Length);",
-              "\t\t\tforeach (var line in lines) {",
-              "\t\t\t\tif (line.Length == 0)",
-              "\t\t\t\t\tcontinue;",
-              "\t\t\t\tbool benign = false;",
-              "\t\t\t\tforeach (var marker in BenignImageDemuxerMarkers)",
-              "\t\t\t\t\tif (line.Contains(marker, StringComparison.OrdinalIgnoreCase)) {",
-              "\t\t\t\t\t\tbenign = true;",
-              "\t\t\t\t\t\tbreak;",
-              "\t\t\t\t\t}",
-              "\t\t\t\t// The png decoder emits a paired \"Decoding error: Invalid data ...\" line",
-              "\t\t\t\t// alongside the bogus signature; drop it too when it names the png decoder.",
-              "\t\t\t\tif (!benign && line.Contains(\"/png @\", StringComparison.Ordinal) &&",
-              "\t\t\t\t\tline.Contains(\"Decoding error\", StringComparison.Ordinal))",
-              "\t\t\t\t\tbenign = true;",
-              "\t\t\t\tif (!benign)",
-              "\t\t\t\t\tkept.Add(line);",
-              "\t\t\t}",
-              "\t\t\treturn kept.Count == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, kept);",
-              "\t\t}",
-              "",
-          ]
-          method = "\n".join(method_lines)
-
-          if "static string FilterBenignImageDemuxerNoise" not in text:
-              if method_anchor not in text:
-                  raise SystemExit("Could not locate the perf TokenizeArgs anchor")
-              text = text.replace(method_anchor, method + method_anchor, 1)
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-              git add VDF.Core/FFTools/FfmpegEngine.cs
-            fi
-
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
-              echo "Unresolved conflicts remain:"
+              echo 'Unresolved source conflicts remain and require review:'
               echo "$remaining_conflicts"
               exit 1
             fi
+          fi
 
-            git commit --no-edit
-          elif git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
 
@@ -163,9 +90,9 @@ jobs:
           echo "after=$after" >> "$GITHUB_OUTPUT"
 
           if [ "$before" = "$after" ]; then
-            echo "merge_changed=false" >> "$GITHUB_OUTPUT"
-            echo "meaningful_changed=false" >> "$GITHUB_OUTPUT"
-            echo "No perf branch changes from origin/master."
+            echo 'merge_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'No 4.1 perf branch changes from origin/master.'
             exit 0
           fi
 
@@ -173,32 +100,30 @@ jobs:
           meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/)' || true)"
 
           {
-            echo "changed_files<<EOF"
+            echo 'changed_files<<EOF'
             echo "$changed_files"
-            echo "EOF"
-            echo "meaningful_changes<<EOF"
+            echo 'EOF'
+            echo 'meaningful_changes<<EOF'
             echo "$meaningful_changes"
-            echo "EOF"
+            echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-          echo "merge_changed=true" >> "$GITHUB_OUTPUT"
+          echo 'merge_changed=true' >> "$GITHUB_OUTPUT"
           if [ -n "$meaningful_changes" ]; then
-            echo "meaningful_changed=true" >> "$GITHUB_OUTPUT"
-            echo "Meaningful changes detected:"
+            echo 'meaningful_changed=true' >> "$GITHUB_OUTPUT"
+            echo 'Meaningful changes detected:'
             echo "$meaningful_changes"
           else
-            echo "meaningful_changed=false" >> "$GITHUB_OUTPUT"
-            echo "Only ignored files changed; release build will not be dispatched."
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Only ignored files changed; release build will not be dispatched.'
           fi
 
-      - name: Push updated branch
+      - name: Push updated 4.1 branch
         if: steps.merge.outputs.merge_changed == 'true'
-        run: |
-          git push origin perf/native-hwaccel-from-crashfix
+        run: git push origin perf/4.1-native-hwaccel
 
-      - name: Trigger Build releases
+      - name: Trigger 4.1 performance release
         if: steps.merge.outputs.meaningful_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run releases.yml --ref perf/native-hwaccel-from-crashfix
+        run: gh workflow run releases.yml --ref perf/4.1-native-hwaccel
