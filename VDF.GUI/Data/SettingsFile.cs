@@ -351,6 +351,12 @@ namespace VDF.GUI.Data {
 			get => _UsePHash;
 			set => this.RaiseAndSetIfChanged(ref _UsePHash, value);
 		}
+		float _PHashRequiredMatchingSampleRatioPercent = 60f;
+		[JsonPropertyName("PHashRequiredMatchingSampleRatioPercent")]
+		public float PHashRequiredMatchingSampleRatioPercent {
+			get => _PHashRequiredMatchingSampleRatioPercent;
+			set => this.RaiseAndSetIfChanged(ref _PHashRequiredMatchingSampleRatioPercent, Math.Clamp(value, 1f, 100f));
+		}
 		bool _UseExifCreationDate;
 		[JsonPropertyName("UseExifCreationDate")]
 		public bool UseExifCreationDate {

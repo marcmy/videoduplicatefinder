@@ -1,7 +1,0 @@
-D:\a\videoduplicatefinder\videoduplicatefinder\tools\port-41-phash-quorum.py:79: SyntaxWarning: invalid escape sequence '\{'
-  <NumericUpDown Classes="stepper" FormatString="\{0\}%" Increment="1" Maximum="100" Minimum="1"
-Traceback (most recent call last):
-  File "D:\a\videoduplicatefinder\videoduplicatefinder\tools\port-41-phash-quorum.py", line 33, in <module>
-    prop_end = old_gui_settings.index("\t\tbool _UseExifCreationDate", prop_start)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ValueError: substring not found

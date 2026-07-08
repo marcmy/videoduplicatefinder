@@ -1066,6 +1066,24 @@ namespace VDF.Core {
 		/// stored data is incomplete for the current scan settings — those entries are
 		/// excluded from the comparison instead of failing on every pair.
 		/// </summary>
+		internal static bool TryGetOrComputePHash(FileEntry entry, Dictionary<double, byte[]?> grayBytes, double index, bool persist, out ulong pHashValue) {
+			entry.PHashes ??= new Dictionary<double, ulong?>();
+			if (entry.PHashes.TryGetValue(index, out ulong? cachedPHash) && cachedPHash.HasValue) {
+				pHashValue = cachedPHash.Value;
+				return true;
+			}
+
+			if (!grayBytes.TryGetValue(index, out byte[]? bytes) || bytes == null) {
+				pHashValue = 0;
+				return false;
+			}
+
+			pHashValue = pHash.PerceptualHash.ComputePHashFromGray32x32(bytes);
+			if (persist)
+				entry.PHashes[index] = pHashValue;
+			return true;
+		}
+
 		bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
 			if (entry.IsImage) {
 				if (!entry.grayBytes.TryGetValue(0, out byte[]? imageGray) || imageGray == null)
@@ -1084,14 +1102,13 @@ namespace VDF.Core {
 			entry.compareGray = gray;
 
 			if (usePHashing) {
-				double idx0 = GetGrayBytesIndex(entry, positionList[0]);
-				if (!entry.PHashes.TryGetValue(idx0, out ulong? phash)) {
-					phash = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[0]);
-					entry.PHashes[idx0] = phash; // cache for future quick rescans
-				}
-				if (phash == null)
+				for (int j = 0; j < positionList.Count; j++) {
+					double idx = GetGrayBytesIndex(entry, positionList[j]);
+					if (TryGetOrComputePHash(entry, entry.grayBytes, idx, persist: true, out _))
+						continue;
 					LogMissingPHash(entry.Path);
-				entry.comparePHash = phash;
+					return false;
+				}
 			}
 			return true;
 		}
@@ -1112,21 +1129,68 @@ namespace VDF.Core {
 
 			if (Settings.UsePHashing) {
 				float differenceLimitpHash = Settings.Percent / 100f;
-
-				// Entries with unrecoverable pHash data were logged once during
-				// snapshot building; they simply never match in pHash mode.
-				ulong? phash = overrideGray != null ? overridePHash : entry.comparePHash;
-				ulong? phash_comp = compItem.comparePHash;
-				if (phash == null || phash_comp == null) {
+				int sampleCount = Math.Min(grayBytes.Length, positionList.Count);
+				if (sampleCount == 0) {
 					difference = 1f;
 					return false;
 				}
-				bool isDup = pHash.PHashCompare.IsDuplicateByPercent(phash.Value, phash_comp.Value, out float similarity, differenceLimitpHash, strict: true);
-				difference = 1f - similarity;
-				return isDup;
+
+				float requiredSampleRatio = Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f);
+				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * requiredSampleRatio));
+				int matchingSamples = 0;
+				float matchedPHashDiffSum = 0f;
+
+				for (int j = 0; j < sampleCount; j++) {
+					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
+					double compIndex = GetGrayBytesIndex(compItem, positionList[j]);
+					bool hasEntryPHash;
+					ulong phash;
+					if (overrideGray != null) {
+						if (grayBytes[j] == null) {
+							phash = 0;
+							hasEntryPHash = false;
+						}
+						else {
+							phash = pHash.PerceptualHash.ComputePHashFromGray32x32(grayBytes[j]!);
+							hasEntryPHash = true;
+						}
+					}
+					else {
+						hasEntryPHash = TryGetOrComputePHash(entry, entry.grayBytes, entryIndex, persist: true, out phash);
+					}
+					bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
+					if (!hasEntryPHash || !hasCompPHash) {
+						// Log per-file (deduplicated) rather than per-pair: a single file with
+						// a stored-null pHash entry would otherwise emit one line for every
+						// candidate it's compared against. The summary line at end of
+						// ScanForDuplicates reports how many distinct files were affected.
+						if (!hasEntryPHash) LogMissingPHash(entry.Path);
+						if (!hasCompPHash) LogMissingPHash(compItem.Path);
+						difference = 1f;
+						return false;
+					}
+
+					bool sampleMatches = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
+					if (sampleMatches) {
+						matchingSamples++;
+						matchedPHashDiffSum += 1f - similarity;
+					}
+
+					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples) {
+						difference = 1f;
+						return false;
+					}
+				}
+
+				if (matchingSamples < requiredMatchingSamples) {
+					difference = 1f;
+					return false;
+				}
+
+				difference = matchedPHashDiffSum / matchingSamples;
+				return !float.IsNaN(difference);
 
 			}
-
 			byte[]?[] compGray = compItem.compareGray!;
 			differenceLimit *= grayBytes.Length;
 			float diffSum = 0;

@@ -536,6 +536,9 @@ namespace VDF.GUI.ViewModels {
 			UpdateCullingInfo();
 		}
 
+internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
+	mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
+
 		// Auto-fallback to Single when only one image is available. Must not write to
 		// settings — otherwise the persisted user preference gets clobbered on every open.
 		void ForceSingleViewWithoutPersist() {
@@ -582,7 +585,7 @@ namespace VDF.GUI.ViewModels {
 				ImageB = SelectedItemB?.Thumbnail;
 			}
 
-			if (SelectedCompareMode != CompareMode.Single && (ImageA is null || ImageB is null))
+			if (ShouldForceSingleView(SelectedCompareMode, SelectedItemA is not null, SelectedItemB is not null))
 				ForceSingleViewWithoutPersist();
 
 			this.RaisePropertyChanged(nameof(ImageSingle));

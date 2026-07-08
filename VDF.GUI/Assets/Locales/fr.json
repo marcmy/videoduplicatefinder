@@ -682,6 +682,8 @@
 	"Settings.Row.Percent.Desc": "À quel point les images échantillonnées de deux fichiers doivent se ressembler pour compter comme doublons. 100 % ne trouve que des images quasi identiques ; ~95 % détecte les réencodages typiques ; plus bas révèle aussi les copies filigranées ou recadrées, au prix de faux positifs.",
 	"Settings.Row.UsePHash.Title": "Utiliser le hachage perceptuel (pHash)",
 	"Settings.Row.UsePHash.Desc": "Comparaison bien plus rapide sur les grandes bibliothèques et robuste aux petites variations de luminosité ; un peu plus grossière que la différence en niveaux de gris brute. Les images utilisent toujours les niveaux de gris. Ignoré sur les anciennes bases 16×16.",
+	"Settings.Row.PHashSampleRatio.Title": "Proportion requise d’échantillons concordants",
+	"Settings.Row.PHashSampleRatio.Desc": "Pourcentage minimal de positions d’image échantillonnées qui doivent chacune dépasser le seuil de similarité pHash. Une valeur élevée réduit les faux positifs dus à une seule image ressemblante ; 60 % est un bon équilibre.",
 	"Settings.Row.Flip.Title": "Comparer les miroirs horizontaux",
 	"Settings.Row.Flip.Desc": "Détecte les rééditions en miroir ; les correspondances sont marquées comme retournées dans les résultats. Coût : double environ le travail de comparaison.",
 	"Settings.Row.IgnoreBW.Title": "Ignorer les pixels noirs / blancs",
