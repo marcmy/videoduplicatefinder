@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build and validate Windows GUI
+    name: Build and test Windows x64 GUI
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
@@ -29,19 +29,33 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Verify native performance engine
+      - name: Verify 4.1 performance engine
         shell: pwsh
         run: |
-          $src = Get-Content VDF.Core/FFTools/FfmpegEngine.cs -Raw
-          if ($src -notlike '*d3d11-video-processor-gray32*') {
-            throw 'Native D3D11 gray-byte fast path is missing from the checked-out source.'
+          $requiredFiles = @(
+            'VDF.Core/FFTools/FFmpegNative/Gray32FrameExtractor.cs',
+            'VDF.Core/FFTools/FFmpegNative/D3D11GrayByteScaler.cs',
+            'VDF.Core/FFTools/FFmpegNative/D3D11VideoProcessorGrayByteScaler.cs',
+            'VDF.Core/ScanEngine.MatchingConcurrency.cs'
+          )
+          foreach ($path in $requiredFiles) {
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required performance-engine file is missing: $path"
+            }
           }
-          if ($src -notlike '*capability-bypass*') {
-            throw 'Capability-scoped hardware fallback logic is missing from the checked-out source.'
+
+          $settings = Get-Content VDF.Core/Settings.cs -Raw
+          foreach ($setting in @('MatchingMaxDegreeOfParallelism', 'PHashRequiredMatchingSampleRatio')) {
+            if (!$settings.Contains($setting)) {
+              throw "Required performance setting is missing: $setting"
+            }
           }
 
       - name: Run Core tests
         run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+
+      - name: Run GUI tests
+        run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
 
       - name: Install FFmpeg
         run: choco install ffmpeg -y --no-progress
@@ -52,59 +66,103 @@ jobs:
       - name: Publish Windows x64 GUI Native AOT
         run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r win-x64 -o outputGUI
 
-      - name: Verify package
+      - name: Package GUI-win-x64.zip
         shell: pwsh
         run: |
-          if (-not (Test-Path outputGUI/VDF.GUI.exe)) {
+          if (!(Test-Path outputGUI/VDF.GUI.exe -PathType Leaf)) {
             throw 'Native AOT publish did not produce VDF.GUI.exe.'
           }
-          Get-ChildItem outputGUI -Recurse | Where-Object {
-            $_.Extension -in '.pdb', '.dbg', '.dSYM'
-          } | ForEach-Object {
-            throw "Runtime package contains a symbol file: $($_.FullName)"
-          }
-          Compress-Archive -Path outputGUI/* -DestinationPath GUI-win-x64.zip -Force
 
-      - name: Upload GUI package
+          Get-ChildItem outputGUI -Recurse -File |
+            Where-Object Extension -in '.pdb', '.dbg' |
+            Remove-Item -Force
+          Get-ChildItem outputGUI -Recurse -Directory -Filter '*.dSYM' |
+            Remove-Item -Recurse -Force
+
+          $symbols = Get-ChildItem outputGUI -Recurse | Where-Object {
+            (!$_.PSIsContainer -and $_.Extension -in '.pdb', '.dbg') -or
+            ($_.PSIsContainer -and $_.Name -like '*.dSYM')
+          }
+          if ($symbols) {
+            throw 'Runtime GUI output still contains debug symbols.'
+          }
+
+          Compress-Archive -Path outputGUI/* -DestinationPath GUI-win-x64.zip -Force
+          if ((Get-Item GUI-win-x64.zip).Length -le 0) {
+            throw 'GUI archive is empty.'
+          }
+
+      - name: Upload validated GUI archive
         uses: actions/upload-artifact@v7
         with:
-          name: GUI-win-x64
+          name: release-win-x64-gui
           path: GUI-win-x64.zip
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
   publish:
-    name: Publish GUI release
+    name: Publish 4.1.x GUI release
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/perf/4.1-native-hwaccel' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/4.1-native-hwaccel'
     permissions:
       contents: write
     steps:
-      - name: Download GUI package
+      - name: Download validated GUI archive
         uses: actions/download-artifact@v8
         with:
-          name: GUI-win-x64
+          name: release-win-x64-gui
+          path: release-assets
 
-      - name: Publish 4.1.x release
-        uses: softprops/action-gh-release@v3
-        with:
-          token: ${{ github.token }}
-          tag_name: 4.1.x
-          files: GUI-win-x64.zip
-          fail_on_unmatched_files: true
-          body: |
-            Daily Windows x64 performance build based on the 4.1 interface and scan architecture.
+      - name: Validate release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive='release-assets/GUI-win-x64.zip'
+          test -s "$archive"
+          unzip -Z1 "$archive" | grep -Eq '(^|/)VDF\.GUI\.exe$'
+          if unzip -Z1 "$archive" | grep -Eiq '\.(pdb|dbg)$|\.dSYM/'; then
+            echo 'GUI-win-x64.zip contains debug symbols.' >&2
+            exit 1
+          fi
 
-            Includes native batched FFmpeg frame extraction, D3D11 gray-byte acceleration,
-            capability-scoped hardware fallback, drive-aware media scanning, and reserved CPU
-            headroom during duplicate matching.
+      - name: Publish fork 4.1.x release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          cat > release-notes.md <<EOF
+          Daily Windows x64 GUI-only Native AOT performance build from perf/4.1-native-hwaccel.
 
-            The asset is replaced on each successful branch update.
+          Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, and reserved CPU headroom during duplicate matching.
+
+          This release intentionally publishes only GUI-win-x64.zip. CLI, Web, bundles, symbols, and the retired full Scoop package are not produced.
+
+          Last build based on $short_sha
+          EOF
+
+          if gh release view 4.1.x >/dev/null 2>&1; then
+            gh release upload 4.1.x release-assets/GUI-win-x64.zip --clobber
+            gh release edit 4.1.x --target "$GITHUB_SHA" --notes-file release-notes.md
+            while IFS= read -r asset; do
+              if [ "$asset" != 'GUI-win-x64.zip' ]; then
+                gh release delete-asset 4.1.x "$asset" --yes
+              fi
+            done < <(gh release view 4.1.x --json assets --jq '.assets[].name')
+          else
+            gh release create 4.1.x release-assets/GUI-win-x64.zip \
+              --target "$GITHUB_SHA" \
+              --title '4.1.x' \
+              --notes-file release-notes.md
+          fi
 
       - name: Trigger Scoop Excavator
         env:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN || secrets.GH_PAT || secrets.PAT }}
+        shell: bash
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo 'No cross-repository token configured; skipping Scoop Excavator dispatch.'
