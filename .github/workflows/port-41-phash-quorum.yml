@@ -50,7 +50,7 @@ jobs:
               old_region = old_scan[old_start:old_end]
           ''').strip()
           new_region = dedent('''
-              helper_match = re.search(r"\\n\\t\\t(?:static\\s+)?bool\\s+TryGetOrComputePHash\\s*\\(", old_scan)
+              helper_match = re.search(r"\\n\\t\\t(?:internal\\s+)?(?:static\\s+)?bool\\s+TryGetOrComputePHash\\s*\\(", old_scan)
               if helper_match is None:
                   raise RuntimeError("TryGetOrComputePHash helper was not found in the reference branch")
               helper_start = helper_match.start() + 1
