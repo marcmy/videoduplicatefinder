@@ -1,0 +1,41 @@
+name: Capture 4.1 release hash
+
+on:
+  push:
+    branches:
+      - perf/4.1-native-hwaccel
+    paths:
+      - .github/workflows/capture-4.1-release-hash.yml
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/4.1-native-hwaccel
+
+      - name: Download published GUI asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download 4.1.x --pattern GUI-win-x64.zip --clobber
+
+      - name: Record SHA-256
+        run: |
+          mkdir -p release
+          sha256sum GUI-win-x64.zip | awk '{print $1 "  GUI-win-x64.zip"}' > release/GUI-win-x64.sha256
+
+      - name: Commit hash record
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add release/GUI-win-x64.sha256
+          if git diff --cached --quiet; then
+            echo 'Release hash is already current.'
+            exit 0
+          fi
+          git commit -m 'build: record 4.1 GUI release hash'
+          git push origin HEAD:perf/4.1-native-hwaccel
