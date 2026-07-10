@@ -25,4 +25,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo 'Dispatching structurally robust maintenance patch.'
-          gh workflow run apply-perf-maintenance.yml --ref master
+          gh workflow run apply-perf-maintenance.yml --repo marcmy/videoduplicatefinder --ref master
