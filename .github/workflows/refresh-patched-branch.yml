@@ -2,6 +2,11 @@ name: Refresh 4.1 perf branch
 # One-shot cleanup trigger; the job restores the permanent workflow afterward.
 
 on:
+  workflow_run:
+    workflows:
+      - Sync master from upstream
+    types:
+      - completed
   push:
     branches:
       - master
@@ -18,6 +23,7 @@ concurrency:
 
 jobs:
   cleanup-obsolete-workflow-runs:
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout master
