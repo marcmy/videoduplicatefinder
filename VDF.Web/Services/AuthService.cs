@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY without even the implied warranty of
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -99,7 +99,9 @@ namespace VDF.Web.Services {
 			ctx.Response.Cookies.Append(CookieName, token, new CookieOptions {
 				HttpOnly = true,
 				SameSite = SameSiteMode.Strict,
-				// Forwarded Headers Middleware updates IsHttps only for configured trusted proxies.
+				// True for direct HTTPS or when a TRUSTED reverse proxy (see
+				// forwarded-headers setup in Program.cs) reported https; stays false
+				// on plain-HTTP deployments (Docker default) so nothing breaks there.
 				Secure = ctx.Request.IsHttps,
 				// Persistent: survives browser restarts for 30 days.
 				// Otherwise: session cookie, gone when the browser closes.
@@ -135,9 +137,10 @@ namespace VDF.Web.Services {
 		}
 
 		void PrintPasswordBanner() {
-			// Never send the password through ILogger because providers may persist structured logs.
+			// ILogger providers may persist structured logs, so the password itself
+			// only goes to stdout below (which is how Docker users read it anyway).
 			_logger.LogInformation("============================================");
-			_logger.LogInformation("  Web UI authentication is enabled.");
+			_logger.LogInformation("  Web UI authentication is enabled. The password is printed to stdout.");
 			_logger.LogInformation("============================================");
 
 			var envOverride = Environment.GetEnvironmentVariable("VDF_WEB_PASSWORD");
