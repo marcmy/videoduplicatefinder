@@ -1,0 +1,1470 @@
+diff --cc VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
+index 95cc3d6,75a7c11..0000000
+--- a/VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
++++ b/VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
+@@@ -46,7 -26,7 +46,11 @@@ namespace VDF.Core.FFTools.FFmpegNativ
+  		private AVFrame* _pReceivedFrame;
+  		private readonly int _streamIndex;
+  		private readonly AVIOInterruptCB_callback _interruptCbDelegate;
+++<<<<<<< HEAD
+ +		private readonly int _timeoutMs;
+++=======
++ 		private readonly long _timeoutTicks;
+++>>>>>>> origin/master
+  		private long _deadlineTicks;
+  
+  		public VideoStreamDecoder(string url, AVHWDeviceType HWDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE, int timeoutMs = 15_000) {
+@@@ -57,7 -37,13 +61,17 @@@
+  			// Set up an interrupt callback so FFmpeg aborts blocking I/O when the
+  			// timeout expires.  This lets Dispose() run normally and release the
+  			// file handle — unlike killing a thread, which would leak it.
+++<<<<<<< HEAD
+ +			_timeoutMs = timeoutMs;
+++=======
++ 			// The deadline is re-armed at the start of every TryDecodeFrame: the same
++ 			// decoder serves all sampled positions of a file (batch extraction), and a
++ 			// single construction-time deadline made the TOTAL decode time of the batch
++ 			// count against one 15 s budget — long/slow files tripped the interrupt
++ 			// halfway through and every remaining position failed to CLI fallback.
++ 			_timeoutTicks = (long)(timeoutMs / 1000.0 * Stopwatch.Frequency);
++ 			_deadlineTicks = Stopwatch.GetTimestamp() + _timeoutTicks;
+++>>>>>>> origin/master
+  			_interruptCbDelegate = _ => Stopwatch.GetTimestamp() > _deadlineTicks ? 1 : 0;
+  			_pFormatContext->interrupt_callback = new AVIOInterruptCB { callback = _interruptCbDelegate };
+  
+@@@ -81,15 -65,14 +95,17 @@@
+  			_pCodecContext = ffmpeg.avcodec_alloc_context3(codec);
+  			if (_pCodecContext == null)
+  				throw new FFInvalidExitCodeException("Failed to allocate AVCodecContext.");
+ -			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE)
+ -				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError();
+ -			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError();
+ -			ffmpeg.avcodec_open2(_pCodecContext, codec, null).ThrowExceptionIfError();
+ +			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
+ +				ResetTimeout();
+ +				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError($"av_hwdevice_ctx_create({HWDeviceType})");
+ +			}
+ +			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError("avcodec_parameters_to_context");
+ +			ResetTimeout();
+ +			ffmpeg.avcodec_open2(_pCodecContext, codec, null).ThrowExceptionIfError("avcodec_open2");
+  
+  			CodecName = ffmpeg.avcodec_get_name(codec->id);
++ 			// Container-level pixel aspect ratio for anamorphic content; 0/1 when unknown.
++ 			StreamSampleAspectRatio = _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;
+  			FrameSize = new Size(_pCodecContext->width, _pCodecContext->height);
+  			if (FrameSize.Width <= 0 || FrameSize.Height <= 0)
+  				throw new FFInvalidExitCodeException($"Invalid frame dimensions {FrameSize.Width}x{FrameSize.Height}.");
+@@@ -114,64 -97,7 +130,68 @@@
+  		public Size FrameSize { get; }
+  		public AVPixelFormat PixelFormat { get; }
+  		public bool IsHardwareDecode { get; }
+++<<<<<<< HEAD
+ +		internal AVRational StreamTimeBase => _pFormatContext->streams[_streamIndex]->time_base;
+ +		internal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;
+ +
+ +		void ResetTimeout() {
+ +			_deadlineTicks = Stopwatch.GetTimestamp() + (long)(_timeoutMs / 1000.0 * Stopwatch.Frequency);
+ +		}
+ +
+ +		long ToStreamPts(TimeSpan position) {
+ +			AVRational timebase = _pFormatContext->streams[_streamIndex]->time_base;
+ +			double ptsPerSecond = (double)timebase.den / timebase.num;
+ +			return Convert.ToInt64(position.TotalSeconds * ptsPerSecond);
+ +		}
+ +
+ +		static long GetFrameTimestamp(AVFrame* frame) {
+ +			return frame->best_effort_timestamp != ffmpeg.AV_NOPTS_VALUE
+ +				? frame->best_effort_timestamp
+ +				: frame->pts;
+ +		}
+ +
+ +		static bool FrameSatisfiesTarget(long framePts, long targetPts) {
+ +			return framePts == ffmpeg.AV_NOPTS_VALUE || framePts >= targetPts;
+ +		}
+ +
+ +		static bool IsHardwarePixelFormat(AVPixelFormat pixelFormat) {
+ +			if (pixelFormat < 0 || pixelFormat >= AVPixelFormat.AV_PIX_FMT_NB)
+ +				return false;
+ +
+ +			AVPixFmtDescriptor* descriptor = ffmpeg.av_pix_fmt_desc_get(pixelFormat);
+ +			return descriptor != null && (descriptor->flags & ffmpeg.AV_PIX_FMT_FLAG_HWACCEL) != 0;
+ +		}
+ +
+ +		internal static bool IsHardwareFrame(AVFrame frame) => IsHardwarePixelFormat((AVPixelFormat)frame.format);
+ +
+ +		AVFrame TransferFrameIfNeeded(out long transferMs, out int hardwareTransfers) {
+ +			transferMs = 0;
+ +			hardwareTransfers = 0;
+ +			if (_pCodecContext->hw_device_ctx == null || !IsHardwarePixelFormat((AVPixelFormat)_pFrame->format))
+ +				return *_pFrame;
+ +
+ +			ffmpeg.av_frame_unref(_pReceivedFrame);
+ +			var transferSw = Stopwatch.StartNew();
+ +			ResetTimeout();
+ +			ffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError($"av_hwframe_transfer_data({(AVPixelFormat)_pFrame->format})");
+ +			transferMs = transferSw.ElapsedMilliseconds;
+ +			hardwareTransfers = 1;
+ +			return *_pReceivedFrame;
+ +		}
+ +
+ +		void SeekTo(long targetPts, out long seekMs) {
+ +			var seekSw = Stopwatch.StartNew();
+ +			ResetTimeout();
+ +			if (ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_BACKWARD) < 0) {
+ +				ResetTimeout();
+ +				ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_ANY).ThrowExceptionIfError("av_seek_frame(any fallback)");
+ +			}
+ +			ffmpeg.avcodec_flush_buffers(_pCodecContext);
+ +			seekMs = seekSw.ElapsedMilliseconds;
+ +		}
+++=======
++ 		public AVRational StreamSampleAspectRatio { get; }
+++>>>>>>> origin/master
+  
+  		protected virtual void Dispose(bool disposing) {
+  			ReleaseUnmanaged();
+@@@ -217,24 -143,26 +237,29 @@@
+  		}
+  
+  		public bool TryDecodeFrame(out AVFrame frame, TimeSpan position) {
+++<<<<<<< HEAD
+ +			return TryDecodeFrame(out frame, position, out _);
+ +		}
+ +
+ +		internal bool TryDecodeFrame(out AVFrame frame, TimeSpan position, out DecodedFrameTiming timing) {
+ +			return TryDecodeFrame(out frame, position, out timing, FrameTransferMode.TransferHardwareFrame);
+ +		}
+ +
+ +		internal bool TryDecodeFrame(out AVFrame frame, TimeSpan position, out DecodedFrameTiming timing, FrameTransferMode transferMode) {
+++=======
++ 			// Fresh timeout budget per position — see the constructor note.
++ 			_deadlineTicks = Stopwatch.GetTimestamp() + _timeoutTicks;
+++>>>>>>> origin/master
+  			ffmpeg.av_frame_unref(_pFrame);
+  			ffmpeg.av_frame_unref(_pReceivedFrame);
+ +			timing = new DecodedFrameTiming(0, 0, 0, 0);
+  
+ -			AVRational timebase = _pFormatContext->streams[_streamIndex]->time_base;
+ -			double AV_TIME_BASE = (double)timebase.den / timebase.num;
+ -			long targetPts = Convert.ToInt64(position.TotalSeconds * AV_TIME_BASE);
+ -
+ -			// Only seek when a non-zero position is requested. Seeking to the start is at best a
+ -			// no-op and on single-frame image demuxers (image2/mjpeg) it overshoots the lone
+ -			// packet, leaving nothing to decode — which silently broke native still-image decode
+ -			// and forced a CLI fallback for every JPEG (native analogue of the #801 -ss-on-stills
+ -			// bug). For position 0 we just decode forward from the start, matching the CLI grabber.
+ -			if (targetPts > 0) {
+ -				if (ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_BACKWARD) < 0)
+ -					ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_ANY).ThrowExceptionIfError();
+ -
+ -				ffmpeg.avcodec_flush_buffers(_pCodecContext);
+ -			}
+ +			long targetPts = ToStreamPts(position);
+ +			long seekMs = 0;
+ +			// Seeking to zero can overshoot the sole packet in single-frame image
+ +			// demuxers. Decode forward from the start for position zero instead.
+ +			if (targetPts > 0)
+ +				SeekTo(targetPts, out seekMs);
+  
+  			// Decode forward from keyframe until we reach the target PTS.
+  			// Cap iterations to prevent infinite loops on corrupt files.
+@@@ -323,123 -244,24 +348,142 @@@
+  				ffmpeg.av_frame_unref(_pFrame);
+  			}
+  
+++<<<<<<< HEAD
+ +			long decodeMs = decodeSw.ElapsedMilliseconds;
+ +			if (!foundTargetFrame) {
+++=======
++ 			// Only download when the frame actually lives in GPU memory. Hardware
++ 			// decoders can silently fall back to software frames (unsupported
++ 			// profile/level); calling av_hwframe_transfer_data on those returns
++ 			// EINVAL and needlessly failed the whole file to the CLI fallback.
++ 			// Callers already read the source format from the frame itself when
++ 			// hardware decode was requested, so a software frame flows through fine.
++ 			if (_pCodecContext->hw_device_ctx != null && _pFrame->hw_frames_ctx != null) {
++ 				ffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError();
++ 				// The transfer copies only pixel data; frame properties live on the source
++ 				// hw frame and must be carried across explicitly. Notably sample_aspect_ratio,
++ 				// which the display-thumbnail path reads to widen anamorphic content — without
++ 				// this the SAR correction silently no-ops under hardware decode.
++ 				ffmpeg.av_frame_copy_props(_pReceivedFrame, _pFrame);
++ 				frame = *_pReceivedFrame;
++ 			}
++ 			else
+++>>>>>>> origin/master
+ +				frame = *_pFrame;
+ +				timing = new DecodedFrameTiming(seekMs, decodeMs, 0, 0);
+ +				return false;
+ +			}
+ +
+ +			if (transferMode == FrameTransferMode.KeepHardwareFrame) {
+  				frame = *_pFrame;
+ +				timing = new DecodedFrameTiming(seekMs, decodeMs, 0, 0);
+ +				return true;
+ +			}
+ +
+ +			frame = TransferFrameIfNeeded(out long transferMs, out int hardwareTransfers);
+ +			timing = new DecodedFrameTiming(seekMs, decodeMs, transferMs, hardwareTransfers);
+ +
+ +			return true;
+ +		}
+ +
+ +		public bool TryDecodeFrames(IReadOnlyList<TimeSpan> sortedPositions, Action<TimeSpan, AVFrame, DecodedFrameTiming> handleFrame, out long seekMs) {
+ +			return TryDecodeFrames(sortedPositions, handleFrame, out seekMs, FrameTransferMode.TransferHardwareFrame);
+ +		}
+ +
+ +		internal bool TryDecodeFrames(IReadOnlyList<TimeSpan> sortedPositions, Action<TimeSpan, AVFrame, DecodedFrameTiming> handleFrame, out long seekMs, FrameTransferMode transferMode) {
+ +			seekMs = 0;
+ +			if (sortedPositions.Count == 0)
+ +				return true;
+ +
+ +			ffmpeg.av_frame_unref(_pFrame);
+ +			ffmpeg.av_frame_unref(_pReceivedFrame);
+ +
+ +			long[] targetPts = new long[sortedPositions.Count];
+ +			for (int i = 0; i < sortedPositions.Count; i++)
+ +				targetPts[i] = ToStreamPts(sortedPositions[i]);
+ +
+ +			SeekTo(targetPts[0], out seekMs);
+ +
+ +			int targetIndex = 0;
+ +			var decodeSw = Stopwatch.StartNew();
+ +			while (targetIndex < sortedPositions.Count) {
+ +				int error;
+ +				do {
+ +					ffmpeg.av_packet_unref(_pPacket);
+ +					ResetTimeout();
+ +					error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
+ +					if (error == ffmpeg.AVERROR_EOF) {
+ +						if (DrainDecoder(sortedPositions, targetPts, handleFrame, ref targetIndex, decodeSw, seekMs, transferMode))
+ +							return true;
+ +						return false;
+ +					}
+ +					error.ThrowExceptionIfError("av_read_frame while decoding graybyte batch");
+ +				} while (_pPacket->stream_index != _streamIndex);
+ +
+ +				try {
+ +					ResetTimeout();
+ +					ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket).ThrowExceptionIfError("avcodec_send_packet while decoding graybyte batch");
+ +				}
+ +				finally {
+ +					ffmpeg.av_packet_unref(_pPacket);
+ +				}
+ +
+ +				if (DrainReceivedFrames(sortedPositions, targetPts, handleFrame, ref targetIndex, decodeSw, seekMs, transferMode))
+ +					return true;
+ +			}
+ +
+ +			return true;
+ +		}
+ +
+ +		bool DrainDecoder(IReadOnlyList<TimeSpan> sortedPositions, long[] targetPts, Action<TimeSpan, AVFrame, DecodedFrameTiming> handleFrame, ref int targetIndex, Stopwatch decodeSw, long seekMs, FrameTransferMode transferMode) {
+ +			ResetTimeout();
+ +			int error = ffmpeg.avcodec_send_packet(_pCodecContext, null);
+ +			if (error < 0 && error != ffmpeg.AVERROR_EOF)
+ +				error.ThrowExceptionIfError("avcodec_send_packet(NULL) while draining decoder");
+ +			return DrainReceivedFrames(sortedPositions, targetPts, handleFrame, ref targetIndex, decodeSw, seekMs, transferMode);
+ +		}
+ +
+ +		bool DrainReceivedFrames(IReadOnlyList<TimeSpan> sortedPositions, long[] targetPts, Action<TimeSpan, AVFrame, DecodedFrameTiming> handleFrame, ref int targetIndex, Stopwatch decodeSw, long seekMs, FrameTransferMode transferMode) {
+ +			while (targetIndex < sortedPositions.Count) {
+ +				ResetTimeout();
+ +				int error = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
+ +				if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN) || error == ffmpeg.AVERROR_EOF)
+ +					return false;
+ +				error.ThrowExceptionIfError("avcodec_receive_frame while draining decoder");
+ +
+ +				long framePts = GetFrameTimestamp(_pFrame);
+ +				if (FrameSatisfiesTarget(framePts, targetPts[targetIndex])) {
+ +					long decodeMs = decodeSw.ElapsedMilliseconds;
+ +					AVFrame frame;
+ +					long transferMs;
+ +					int hardwareTransfers;
+ +					if (transferMode == FrameTransferMode.KeepHardwareFrame) {
+ +						frame = *_pFrame;
+ +						transferMs = 0;
+ +						hardwareTransfers = 0;
+ +					}
+ +					else {
+ +						frame = TransferFrameIfNeeded(out transferMs, out hardwareTransfers);
+ +					}
+ +					long emittedSeekMs = targetIndex == 0 ? seekMs : 0;
+ +					long emittedDecodeMs = decodeMs;
+ +					long emittedTransferMs = transferMs;
+ +					int emittedHardwareTransfers = hardwareTransfers;
+ +					do {
+ +						handleFrame(sortedPositions[targetIndex], frame, new DecodedFrameTiming(emittedSeekMs, emittedDecodeMs, emittedTransferMs, emittedHardwareTransfers));
+ +						targetIndex++;
+ +						emittedSeekMs = 0;
+ +						emittedDecodeMs = 0;
+ +						emittedTransferMs = 0;
+ +						emittedHardwareTransfers = 0;
+ +					} while (targetIndex < sortedPositions.Count && FrameSatisfiesTarget(framePts, targetPts[targetIndex]));
+ +
+ +					decodeSw.Restart();
+ +				}
+ +
+ +				ffmpeg.av_frame_unref(_pFrame);
+ +				ffmpeg.av_frame_unref(_pReceivedFrame);
+ +			}
+  
+  			return true;
+  		}
+diff --cc VDF.Core/FFTools/FfmpegEngine.cs
+index e71ff8f,a0fd7d9..0000000
+--- a/VDF.Core/FFTools/FfmpegEngine.cs
++++ b/VDF.Core/FFTools/FfmpegEngine.cs
+@@@ -1582,114 -332,91 +1582,142 @@@ namespace VDF.Core.FFTools 
+  			return frames;
+  		}
+  
+ -		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging) {
+ +		static int GetGrayScaleSideLength(int sideLength) =>
+ +			sideLength > 0 ? Math.Clamp(sideLength, 16, 256) : 32;
+  
+ -			const int N = 32;
+ -			const int ExpectedBytes = N * N;
+ +		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging, int timeoutMilliseconds = TimeoutDuration) {
+  			bool isGrayByte = settings.GrayScale == 1;
+ +			int graySideLength =
+ +				GetGrayScaleSideLength(settings.GrayScaleSize);
+ +			int expectedGrayBytes = graySideLength * graySideLength;
+ +			string hardwarePolicy = "unresolved";
+ +			bool bypassHardwareForFamily = isGrayByte && ShouldBypassGrayByteHardwareForFamily(settings.HardwareFamilyKey);
+ +			bool bypassHardwareForCodec = ShouldBypassHardwareDecodeForCodec(
+ +				settings.HardwareCodecName,
+ +				out _,
+ +				settings.HardwareFamilyKey);
+ +			bool enableHardwareAcceleration;
+ +			if (settings.SoftwareDecodeOnly) {
+ +				hardwarePolicy = "software-decode-only";
+ +				enableHardwareAcceleration = false;
+ +			}
+ +			else if (settings.ForceCpuDecode) {
+ +				hardwarePolicy = "hardware-decode-failure-cpu-retry";
+ +				enableHardwareAcceleration = false;
+ +			}
+ +			else if (bypassHardwareForCodec) {
+ +				hardwarePolicy = "hardware-decode-codec-bypass";
+ +				enableHardwareAcceleration = false;
+ +			}
+ +			else if (bypassHardwareForFamily) {
+ +				hardwarePolicy = "hardware-decode-failure-cpu-family-bypass";
+ +				enableHardwareAcceleration = false;
+ +			}
+ +			else {
+ +				enableHardwareAcceleration = isGrayByte
+ +					? ShouldUseProcessHardwareAccelerationForGrayBytes(out hardwarePolicy)
+ +					: true;
+ +			}
+ +			AVHWDeviceType nativeHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+  
+  			try {
+ -				if (ShouldUseNativeBinding) {
+ -
+ +				if (ShouldAttemptNativeSingleFrameExtraction(settings)) {
+ +					var totalSw = Stopwatch.StartNew();
+ +					long openMs = 0, seekMs = 0, decodeMs = 0, transferMs = 0, convertMs = 0, copyMs = 0;
+ +					int hardwareTransfers = 0;
+ +					var phaseSw = Stopwatch.StartNew();
+ +					nativeHardwareDeviceType = isGrayByte
+ +						? GetConfiguredGrayByteHardwareDeviceType(out hardwarePolicy)
+ +						: GetConfiguredHardwareDeviceType(enableHardwareAcceleration);
+ +					if (settings.ForceCpuDecode || bypassHardwareForFamily) {
+ +						nativeHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+ +						hardwarePolicy = settings.ForceCpuDecode ? "hardware-decode-failure-cpu-retry" : "hardware-decode-failure-cpu-family-bypass";
+ +					}
+ +					if (settings.SoftwareDecodeOnly) {
+ +						nativeHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+ +						hardwarePolicy = "software-decode-only";
+ +					}
+ +					if (!isGrayByte)
+ +						hardwarePolicy = settings.SoftwareDecodeOnly ? "software-decode-only" : GetHardwarePolicy(nativeHardwareDeviceType, enableHardwareAcceleration);
+  					FfmpegLogCapture.Reset();
+ -
+ -					AVHWDeviceType HWDevice = settings.SoftwareDecodeOnly
+ -						? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
+ -						: GetConfiguredHardwareDeviceType();
+ -
+ -					using var vsd = new VideoStreamDecoder(settings.File, HWDevice);
+ +					using var vsd = new VideoStreamDecoder(settings.File, nativeHardwareDeviceType);
+ +					openMs = phaseSw.ElapsedMilliseconds;
+  
+  					Size sourceSize = vsd.FrameSize;
+ -
+ -					// Decode first so we know the real source pixel format. For HW decode
+ -					// we can't know this up front — the downloaded sw_format depends on
+ -					// the stream's bit depth (NV12 for 8-bit, P010LE for 10-bit HEVC, etc.).
+ -					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position))
+ +					phaseSw.Restart();
+ +					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position, out DecodedFrameTiming frameTiming))
+  						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+ -
+ -					AVPixelFormat srcPixFmt = vsd.IsHardwareDecode
+ -						? (AVPixelFormat)srcFrame.format
+ -						: vsd.PixelFormat;
+ -					if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
+ -						throw new Exception($"Invalid source pixel format {srcPixFmt}");
+ -
+ -					if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+ -						throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+ -
+ +					seekMs = frameTiming.SeekMs;
+ +					decodeMs = frameTiming.DecodeMs;
+ +					transferMs = frameTiming.TransferMs;
+ +					hardwareTransfers = frameTiming.HardwareTransfers;
+ +
+ +					AVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);
+ +					if (!IsValidPixelFormat(srcPixFmt)) throw new Exception($"Invalid source pixel format {srcPixFmt}");
+ +					if (sourceSize.Width <= 0 || sourceSize.Height <= 0) throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
+ +
+ +					AVRational sampleAspectRatio = srcFrame.sample_aspect_ratio;
+ +					if (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
+ +						sampleAspectRatio = vsd.StreamSampleAspectRatio;
+ +					Size displaySize = isGrayByte
+ +						? sourceSize
+ +						: GetDisplaySizeForSampleAspectRatio(
+ +							sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
+ +					Size destinationSize = isGrayByte
+ +						? new Size(graySideLength, graySideLength)
+ +						: settings.Fullsize == 1
+ +							? displaySize
+ +							: ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
+ +
+++<<<<<<< HEAD
+ +					AVPixelFormat destinationPixelFrmt = isGrayByte ? AVPixelFormat.AV_PIX_FMT_GRAY8 : AVPixelFormat.AV_PIX_FMT_YUVJ420P;
+++=======
++ 					// Anamorphic streams store non-square pixels: widen the coded raster by
++ 					// the sample aspect ratio for display thumbnails, or DVD-style content
++ 					// (e.g. 720x576 16:9) is shown squished. Gray bytes are unaffected —
++ 					// they are force-scaled to a fixed square, which erases aspect ratio.
++ 					AVRational sar = vsd.StreamSampleAspectRatio;
++ 					if (sar.num <= 0 || sar.den <= 0)
++ 						sar = srcFrame.sample_aspect_ratio;
++ 					Size displaySize = isGrayByte ? sourceSize : ApplySampleAspectRatio(sourceSize, sar.num, sar.den);
++ 
++ 					Size destinationSize = isGrayByte ? new Size(N, N) :
++ 						settings.Fullsize == 1 ?
++ 							displaySize :
++ 							ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
++ 
++ 					AVPixelFormat destinationPixelFrmt = isGrayByte ?
++ 						AVPixelFormat.AV_PIX_FMT_GRAY8 :
++ 						AVPixelFormat.AV_PIX_FMT_YUVJ420P;
++ 
++ 					using var vfc = new VideoFrameConverter(
++ 										sourceSize: sourceSize,
++ 										sourcePixelFormat: srcPixFmt,
++ 										destinationSize: destinationSize,
++ 										destinationPixelFormat: destinationPixelFrmt,
++ 										quality: VideoFrameConverter.ScaleQuality.Bicubic,
++ 										bitExact: false);
+++>>>>>>> origin/master
+  
+ +					phaseSw.Restart();
+ +					using var vfc = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, destinationPixelFrmt, isGrayByte ? VideoFrameConverter.ScaleQuality.FastBilinear : VideoFrameConverter.ScaleQuality.Bicubic, false);
+  					AVFrame convertedFrame = vfc.Convert(srcFrame);
+ +					convertMs = phaseSw.ElapsedMilliseconds;
+  
+ -					if (convertedFrame.data[0] == null)
+ -						throw new Exception("Converted frame has no data[0] (null).");
+ -
+ -
+ +					phaseSw.Restart();
+  					if (isGrayByte) {
+ -						int width = convertedFrame.width; // should be 32
+ -						if (convertedFrame.linesize[0] < width)
+ -							throw new Exception($"Invalid linesize ({convertedFrame.linesize[0]}) for width {width}.");
+ -						int height = convertedFrame.height; // should be 32
+ -						int srcStride = convertedFrame.linesize[0]; // can be >= width (padding)
+ -						IntPtr srcPtr = (IntPtr)convertedFrame.data[0];
+ -
+ -						if (width != N || height != N)
+ -							throw new Exception($"Unexpected size {width}x{height}, expected {N}x{N}.");
+ -
+ -						byte[] outBuf = new byte[width * height]; // 1024
+ -						fixed (byte* destPtr = outBuf) {
+ -							byte* sourcePtr = (byte*)srcPtr;
+ -							for (int y = 0; y < height; y++) {
+ -								// Source: y*stride bytes offset; Target: y*width bytes
+ -								Buffer.MemoryCopy(sourcePtr + (y * srcStride), destPtr + (y * width), width, width);
+ -							}
+ -						}
+ +						byte[] outBuf =
+ +							ExtractGrayFrameFromFrame(
+ +								convertedFrame,
+ +								graySideLength);
+ +						copyMs = phaseSw.ElapsedMilliseconds;
+ +						if (ShouldLogNativeSuccessTiming(extendedLogging))
+ +							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
+ +						if (nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && vsd.IsHardwareDecode)
+ +							RecordHardwareDecodeSuccessForCodec(
+ +							settings.HardwareCodecName,
+ +							settings.HardwareFamilyKey);
+ +						RecordNativeSuccess();
+  						return outBuf;
+  					}
+  					else {
+@@@ -1777,25 -488,26 +1805,48 @@@
+  				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("gray");
+  			}
+  			else {
+++<<<<<<< HEAD
+ +				string? vfChain = null;
+ +				if (!FileUtils.IsImageFile(settings.File)) {
+ +					// Convert the coded raster to square pixels before encoding the JPEG.
+ +					// This is the equivalent of a media player's display-size correction.
+ +					vfChain = "scale=trunc(iw*if(eq(sar\\,0)\\,1\\,sar)):ih,setsar=1";
+ +				}
+ +
+ +				if (settings.Fullsize != 1) {
+ +					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
+ +					// Apply the bounding-box resize after correcting the display aspect ratio.
+ +					string resizeFilter = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
+ +					vfChain = vfChain == null ? resizeFilter : $"{vfChain},{resizeFilter}";
+ +				}
+ +
+ +				if (userVfFilter != null)
+ +					vfChain = vfChain == null ? userVfFilter : $"{vfChain},{userVfFilter}";
+ +
+ +				if (vfChain != null) {
+ +					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
+++=======
++ 				// SAR normalization first, so anamorphic videos render at display width
++ 				// and the bounding box below sees display dimensions (matching the native
++ 				// path). sar==0 (unknown) counts as square pixels. Videos only — image
++ 				// demuxer pipelines are fragile (#806) and images have square pixels.
++ 				string? sarChain = BuildSarNormalizationFilter(settings.File);
++ 				if (settings.Fullsize != 1) {
++ 					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
++ 					// Downscale-only fit into a maxW x maxW bounding box (matching the native
++ 					// path and the old resize semantics) — small sources keep their size.
++ 					string vfChain = $"scale=min({maxW}\\,iw):min({maxW}\\,ih):force_original_aspect_ratio=decrease";
++ 					if (sarChain != null) vfChain = $"{sarChain},{vfChain}";
++ 					if (userVfFilter != null) vfChain = $"{vfChain},{userVfFilter}";
++ 					psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
++ 				}
++ 				else {
++ 					string? vfChain = sarChain;
++ 					if (userVfFilter != null) vfChain = vfChain != null ? $"{vfChain},{userVfFilter}" : userVfFilter;
++ 					if (vfChain != null) {
++ 						psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
++ 					}
+++>>>>>>> origin/master
+  				}
+  				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mjpeg");
+  				// Map 1-100 quality onto MJPEG's 2-31 qscale (lower = better), same curve
+@@@ -2158,23 -751,34 +2209,54 @@@
+  		}
+  
+  		/// <summary>
+++<<<<<<< HEAD
+ +		/// Converts coded video dimensions and sample aspect ratio into the square-pixel
+ +		/// dimensions a media player displays. Coded dimensions remain untouched elsewhere.
+ +		/// </summary>
+ +		internal static Size GetDisplaySizeForSampleAspectRatio(
+ +			Size source,
+ +			int sarNumerator,
+ +			int sarDenominator) {
+ +			if (source.Width <= 0 || source.Height <= 0)
+ +				return source;
+ +			if (sarNumerator <= 0 || sarDenominator <= 0 || sarNumerator == sarDenominator)
+ +				return source;
+ +
+ +			double exactWidth = source.Width * (double)sarNumerator / sarDenominator;
+ +			if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth >= int.MaxValue)
+ +				return source;
+ +
+ +			return new Size(Math.Max(1, (int)Math.Floor(exactWidth)), source.Height);
+++=======
++ 		/// Widens a coded frame size to its display size using the stream's sample
++ 		/// (pixel) aspect ratio. Unknown (0), degenerate or implausible SARs leave the
++ 		/// size unchanged — bad container metadata must not distort the thumbnail.
++ 		/// </summary>
++ 		internal static Size ApplySampleAspectRatio(Size codedSize, int sarNum, int sarDen) {
++ 			if (sarNum <= 0 || sarDen <= 0 || sarNum == sarDen)
++ 				return codedSize;
++ 			long displayWidth = (long)Math.Round(codedSize.Width * (double)sarNum / sarDen);
++ 			if (displayWidth <= 0 || displayWidth > 65536)
++ 				return codedSize;
++ 			return new Size((int)displayWidth, codedSize.Height);
++ 		}
++ 
++ 		/// <summary>
++ 		/// The CLI <c>-vf</c> fragment that widens anamorphic video to its display width
++ 		/// (<c>setsar=1</c>), or null for images (square pixels; the image2 demuxer pipeline
++ 		/// is fragile — #806). Mirrors <see cref="ApplySampleAspectRatio"/>: an unknown SAR
++ 		/// (0) is treated as square, and an implausible SAR that would push the display width
++ 		/// past 65536 falls back to the coded width — bad container metadata must not ask
++ 		/// ffmpeg for a multi-hundred-megapixel frame (which just OOMs / fails the thumbnail).
++ 		/// </summary>
++ 		internal static string? BuildSarNormalizationFilter(string file) {
++ 			if (FileUtils.IsImageFile(file))
++ 				return null;
++ 			// SAR multiplier, unknown (0) treated as 1. Commas inside the expression are
++ 			// escaped so the filtergraph parser doesn't read them as filter separators.
++ 			const string sarMul = "if(eq(sar\\,0)\\,1\\,sar)";
++ 			return $"scale=if(gt(iw*{sarMul}\\,65536)\\,iw\\,trunc(iw*{sarMul})):ih,setsar=1";
+++>>>>>>> origin/master
+  		}
+  
+  		/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>
+diff --cc VDF.Core/ScanEngine.cs
+index e6a9d77,c42e135..0000000
+--- a/VDF.Core/ScanEngine.cs
++++ b/VDF.Core/ScanEngine.cs
+@@@ -1061,30 -1196,14 +1198,36 @@@ namespace VDF.Core 
+  	/// <summary>
+  		/// Builds the transient compare snapshot for <paramref name="entry"/>: gray-byte
+  		/// arrays aligned with <see cref="positionList"/> order and, when pHashing is
+- 		/// enabled, the first-position pHash (computed once and cached back into
+- 		/// <see cref="FileEntry.PHashes"/> if it was missing). Returns false when the
+- 		/// stored data is incomplete for the current scan settings — those entries are
+- 		/// excluded from the comparison instead of failing on every pair.
++ 		/// enabled, the pHash of every sampled position (computed once and cached back
++ 		/// into <see cref="FileEntry.PHashes"/> where missing — this prefill is what
++ 		/// keeps the parallel per-pair hot path free of dictionary writes). Returns
++ 		/// false when the stored data is incomplete for the current scan settings —
++ 		/// those entries are excluded from the comparison instead of failing on every
++ 		/// pair.
+  		/// </summary>
+++<<<<<<< HEAD
+ +		internal static bool TryGetOrComputePHash(FileEntry entry, Dictionary<double, byte[]?> grayBytes, double index, bool persist, out ulong pHashValue) {
+ +			entry.PHashes ??= new Dictionary<double, ulong?>();
+ +			if (entry.PHashes.TryGetValue(index, out ulong? cachedPHash) && cachedPHash.HasValue) {
+ +				pHashValue = cachedPHash.Value;
+ +				return true;
+ +			}
+ +
+ +			if (!grayBytes.TryGetValue(index, out byte[]? bytes) || bytes == null) {
+ +				pHashValue = 0;
+ +				return false;
+ +			}
+ +
+ +			pHashValue = pHash.PerceptualHash.ComputePHashFromGray32x32(bytes);
+ +			if (persist)
+ +				entry.PHashes[index] = pHashValue;
+ +			return true;
+ +		}
+ +
+ +		bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
+++=======
++ 		internal bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
+++>>>>>>> origin/master
+  			if (entry.IsImage) {
+  				if (!entry.grayBytes.TryGetValue(0, out byte[]? imageGray) || imageGray == null)
+  					return false;
+@@@ -1099,17 -1218,29 +1242,39 @@@
+  					return false;
+  				gray[j] = data;
+  			}
+- 			entry.compareGray = gray;
+  
+  			if (usePHashing) {
+++<<<<<<< HEAD
+ +				for (int j = 0; j < positionList.Count; j++) {
+ +					double idx = GetGrayBytesIndex(entry, positionList[j]);
+ +					if (TryGetOrComputePHash(entry, entry.grayBytes, idx, persist: true, out _))
+ +						continue;
+ +					LogMissingPHash(entry.Path);
+ +					return false;
+ +				}
+++=======
++ 				var phashes = new ulong[positionList.Count];
++ 				for (int j = 0; j < positionList.Count; j++) {
++ 					double idx = GetGrayBytesIndex(entry, positionList[j]);
++ 					if (entry.PHashes.TryGetValue(idx, out ulong? cached) && cached.HasValue) {
++ 						phashes[j] = cached.Value;
++ 						continue;
++ 					}
++ 					if (gray[j]!.Length != GrayBytesUtils.Side * GrayBytesUtils.Side) {
++ 						// Legacy 16x16 data slipped past the DbVersion gate (mixed database).
++ 						// Return before assigning compareGray so a dropped entry leaves no
++ 						// dangling snapshot behind (the end-of-phase cleanup only visits the
++ 						// validated ScanList).
++ 						LogMissingPHash(entry.Path);
++ 						return false;
++ 					}
++ 					phashes[j] = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[j]);
++ 					entry.PHashes[idx] = phashes[j]; // cache for future quick rescans; also heals stored nulls
++ 				}
++ 				entry.comparePHashes = phashes;
+++>>>>>>> origin/master
+  			}
++ 			entry.compareGray = gray;
+  			return true;
+  		}
+  
+@@@ -1129,68 -1260,52 +1294,114 @@@
+  
+  			if (Settings.UsePHashing) {
+  				float differenceLimitpHash = Settings.Percent / 100f;
+++<<<<<<< HEAD
+ +				int sampleCount = Math.Min(grayBytes.Length, positionList.Count);
+ +				if (sampleCount == 0) {
+ +					difference = 1f;
+ +					return false;
+ +				}
+ +
+ +				float requiredSampleRatio = Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f);
+ +				int requiredMatchingSamples = Math.Max(1, (int)Math.Ceiling(sampleCount * requiredSampleRatio));
+ +				int matchingSamples = 0;
+ +				float matchedPHashDiffSum = 0f;
+ +
+ +				for (int j = 0; j < sampleCount; j++) {
+ +					double entryIndex = GetGrayBytesIndex(entry, positionList[j]);
+ +					double compIndex = GetGrayBytesIndex(compItem, positionList[j]);
+ +					bool hasEntryPHash;
+ +					ulong phash;
+ +					if (overrideGray != null) {
+ +						if (grayBytes[j] == null) {
+ +							phash = 0;
+ +							hasEntryPHash = false;
+ +						}
+ +						else {
+ +							phash = pHash.PerceptualHash.ComputePHashFromGray32x32(grayBytes[j]!);
+ +							hasEntryPHash = true;
+ +						}
+ +					}
+ +					else {
+ +						hasEntryPHash = TryGetOrComputePHash(entry, entry.grayBytes, entryIndex, persist: true, out phash);
+ +					}
+ +					bool hasCompPHash = TryGetOrComputePHash(compItem, compItem.grayBytes, compIndex, persist: true, out ulong phash_comp);
+ +					if (!hasEntryPHash || !hasCompPHash) {
+ +						// Log per-file (deduplicated) rather than per-pair: a single file with
+ +						// a stored-null pHash entry would otherwise emit one line for every
+ +						// candidate it's compared against. The summary line at end of
+ +						// ScanForDuplicates reports how many distinct files were affected.
+ +						if (!hasEntryPHash) LogMissingPHash(entry.Path);
+ +						if (!hasCompPHash) LogMissingPHash(compItem.Path);
+ +						difference = 1f;
+ +						return false;
+ +					}
+ +
+ +					bool sampleMatches = pHash.PHashCompare.IsDuplicateByPercent(phash, phash_comp, out float similarity, differenceLimitpHash, strict: true);
+ +					if (sampleMatches) {
+ +						matchingSamples++;
+ +						matchedPHashDiffSum += 1f - similarity;
+ +					}
+ +
+ +					if (matchingSamples + (sampleCount - j - 1) < requiredMatchingSamples) {
+ +						difference = 1f;
+ +						return false;
+ +					}
+ +				}
+ +
+ +				if (matchingSamples < requiredMatchingSamples) {
+ +					difference = 1f;
+ +					return false;
+ +				}
+ +
+ +				difference = matchedPHashDiffSum / matchingSamples;
+ +				return !float.IsNaN(difference);
+++=======
++ 
++ 				// Entries with unrecoverable pHash data were dropped during snapshot
++ 				// building; a null array only occurs on the flip path when the flipped
++ 				// hashes could not be computed.
++ 				ulong[]? phashes = overrideGray != null ? overridePHashes : entry.comparePHashes;
++ 				ulong[]? phashesComp = compItem.comparePHashes;
++ 				if (phashes == null || phashesComp == null)
++ 					return false;
+++>>>>>>> origin/master
++ 
++ 				// A pair is a duplicate when at least PHashRequiredMatchingSampleRatio
++ 				// of the sampled positions individually pass the similarity threshold.
++ 				// Comparing only one position made a single coincidental frame (black
++ 				// intro, title card) enough to report two unrelated videos as
++ 				// duplicates — and a single divergent frame enough to miss real ones.
++ 				int sampleCount = Math.Min(phashes.Length, phashesComp.Length);
++ 				if (sampleCount == 0)
++ 					return false;
++ 				// requiredMatches is the same for every pair in a scan; the compare phase
++ 				// precomputes it (matchingRequiredSampleMatches). Direct/diagnostic callers
++ 				// leave it null and compute locally.
++ 				int requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
++ 					? precomputed
++ 					: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
++ 				int matches = 0;
++ 				// Mean dissimilarity over ALL sampled positions, not just the matching ones:
++ 				// dividing both orientations by the same sampleCount keeps the normal and
++ 				// flipped `difference` values comparable for the flip-vs-normal selection in
++ 				// TryCheckDuplicate, and stops a fully divergent frame from being hidden
++ 				// behind the high average of the few frames that happened to pass.
++ 				float pHashDiffSum = 0f;
+  
++ 				for (int j = 0; j < sampleCount; j++) {
++ 					bool pass = pHash.PHashCompare.IsDuplicateByPercent(phashes[j], phashesComp[j], out float similarity, differenceLimitpHash, strict: true);
++ 					pHashDiffSum += 1f - similarity;
++ 					if (pass)
++ 						matches++;
++ 					else if (matches + (sampleCount - j - 1) < requiredMatches)
++ 						return false; // quorum unreachable — skip the remaining samples
++ 				}
++ 				if (matches < requiredMatches)
++ 					return false;
++ 
++ 				difference = pHashDiffSum / sampleCount;
++ 				return !float.IsNaN(difference);
+  			}
+ -
+  			byte[]?[] compGray = compItem.compareGray!;
+  			differenceLimit *= grayBytes.Length;
+  			float diffSum = 0;
+@@@ -1251,10 -1366,13 +1462,16 @@@
+  				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing gray bytes for the current thumbnail positions). Rescan to repopulate.");
+  
+  			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
++ 			// Precompute the pHash quorum threshold once for the whole phase (see field note).
++ 			matchingRequiredSampleMatches = usePHashing
++ 				? Math.Max(1, (int)Math.Ceiling(positionList.Count * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)))
++ 				: null;
++ 			int matchingParallelism = MatchingParallelDegree;
++ 			Logger.Instance.Info($"Matching concurrency: {matchingParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s) (configured: matching={Settings.MatchingMaxDegreeOfParallelism}, media reads={Settings.MaxDegreeOfParallelism})");
+  
+ +			int matchingMaxDegreeOfParallelism = GetMatchingMaxDegreeOfParallelism();
+ +			Logger.Instance.Info($"Duplicate matching concurrency: {matchingMaxDegreeOfParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s); configured matching={Settings.MatchingMaxDegreeOfParallelism}, media extraction={Settings.MaxDegreeOfParallelism}");
+ +
+  			currentStageLabel = T("Scan.Stage.ComparingDuplicates");
+  			InitProgress(ScanList.Count);
+  
+@@@ -1460,7 -1578,7 +1677,11 @@@
+  
+  				try {
+  					if (imageEntries.Count >= largeBucketThreshold) {
+++<<<<<<< HEAD
+ +						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, compareAction);
+++=======
++ 						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, compareAction);
+++>>>>>>> origin/master
+  					}
+  					else {
+  						for (int i = 0; i < imageEntries.Count; i++)
+@@@ -1524,7 -1642,7 +1745,11 @@@
+  
+  				try {
+  					if (videoEntries.Count >= largeBucketThreshold) {
+++<<<<<<< HEAD
+ +						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, compareAction);
+++=======
++ 						Parallel.For(0, videoEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, compareAction);
+++>>>>>>> origin/master
+  					}
+  					else {
+  						// compareAction returns early on cancellation instead of throwing,
+@@@ -1548,7 -1666,7 +1773,11 @@@
+  					var smallBuckets = videoBuckets.Where(kvp => kvp.Value.Count < largeBucketThreshold).ToList();
+  					var largeBuckets = videoBuckets.Where(kvp => kvp.Value.Count >= largeBucketThreshold).ToList();
+  
+++<<<<<<< HEAD
+ +					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, bucket => {
+++=======
++ 					Parallel.ForEach(smallBuckets, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, bucket => {
+++>>>>>>> origin/master
+  						foreach (var entry in bucket.Value) {
+  							int entryIndex = entry.compareIndex;
+  							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
+@@@ -1562,7 -1680,7 +1791,11 @@@
+  					});
+  
+  					foreach (var bucket in largeBuckets) {
+++<<<<<<< HEAD
+ +						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism }, i => {
+++=======
++ 						Parallel.For(0, bucket.Value.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, i => {
+++>>>>>>> origin/master
+  							var entry = bucket.Value[i];
+  							int entryIndex = entry.compareIndex;
+  							double durationSeconds = entry.mediaInfo!.Duration.TotalSeconds;
+@@@ -1638,37 -1756,46 +1872,50 @@@
+  			Parallel.For(0, videos.Count - 1,
+  				new ParallelOptions {
+  					CancellationToken = cancelationTokenSource.Token,
+++<<<<<<< HEAD
+ +					MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism
+++=======
++ 					MaxDegreeOfParallelism = MatchingParallelDegree
+++>>>>>>> origin/master
+  				},
+  				i => {
++ 					if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
++ 						return; // canceled while paused — the loop's token ends the remaining iterations
++ 
+  					FileEntry source = videos[i];
+- 					IncrementProgress(Path.GetFileName(source.Path));
+  					double sourceSec = (source.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+- 					if (sourceSec < 1.0) return;
+  
+- 					for (int j = i + 1; j < videos.Count; j++) {
+- 						if (cancelationTokenSource.IsCancellationRequested) break;
+- 						FileEntry clip = videos[j];
+- 						double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
+- 						if (clipSec < 1.0) continue;
++ 					if (sourceSec >= 1.0) {
++ 						for (int j = i + 1; j < videos.Count; j++) {
++ 							if (cancelationTokenSource.IsCancellationRequested) break;
++ 							FileEntry clip = videos[j];
++ 							double clipSec = (clip.mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds;
++ 							if (clipSec < 1.0) continue;
+  
+- 						// Pre-filter 1: clip must be at least PartialClipMinRatio of source
+- 						if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
++ 							// Pre-filter 1: clip must be at least PartialClipMinRatio of source
++ 							if (clipSec / sourceSec < Settings.PartialClipMinRatio) continue;
+  
+- 						// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
+- 						if (clipSec / sourceSec >= 0.95) continue;
++ 							// Pre-filter 2: clip must be shorter than 95% of source (visual dup handles the rest)
++ 							if (clipSec / sourceSec >= 0.95) continue;
+  
+- 						// Fingerprint block sanity (each block ≈ 1 second)
+- 						uint[] fpSource = source.AudioFingerprint!;
+- 						uint[] fpClip = clip.AudioFingerprint!;
+- 						if (fpClip.Length >= fpSource.Length) continue;
++ 							// Fingerprint block sanity (each block ≈ 1 second)
++ 							uint[] fpSource = source.AudioFingerprint!;
++ 							uint[] fpClip = clip.AudioFingerprint!;
++ 							if (fpClip.Length >= fpSource.Length) continue;
+  
+- 						Interlocked.Increment(ref pairsChecked);
+- 						var (sim, offsetSec) = SlidingWindowCompare(fpClip, fpSource, simThreshold);
++ 							Interlocked.Increment(ref pairsChecked);
++ 							var (sim, offsetSec) = SlidingWindowCompare(fpClip, fpSource, simThreshold);
+  
+- 						if (sim >= simThreshold)
+- 							matches.Add((i, j, sim, offsetSec));
++ 							if (sim >= simThreshold)
++ 								matches.Add((i, j, sim, offsetSec));
++ 						}
+  					}
++ 
++ 					// Counted on completion, as every other compare loop does: a source is only done
++ 					// once its whole row of pairs has been checked. Counting at the loop head
++ 					// reported work that had not happened yet — the bar reached its maximum the
++ 					// moment the last iteration *started*.
++ 					IncrementProgress(Path.GetFileName(source.Path));
+  				});
+  
+  			// --- Sequential phase: build groups from matches (preserving longest-source-first order) ---
+@@@ -1680,30 -1807,12 +1927,33 @@@
+  			// Optional visual gate: drop pairs that match audio but differ visually at the
+  			// matched offset (e.g. videos sharing a backing track but otherwise unrelated).
+  			// Uses pHash when Settings.UsePHashing is on, else 32x32 grayscale percentage diff.
+++<<<<<<< HEAD
+ +			if (Settings.PartialClipRequireVisualMatch && assignments.Count > 0) {
+ +				int beforeCount = assignments.Count;
+ +				int dropped = 0;
+ +				var verified = new ConcurrentBag<(int, int, float, int, Guid)>();
+ +				try {
+ +					Parallel.ForEach(assignments, new ParallelOptions {
+ +						CancellationToken = cancelationTokenSource.Token,
+ +						MaxDegreeOfParallelism = matchingMaxDegreeOfParallelism
+ +					}, a => {
+ +						bool pass = VerifyPartialClipVisually(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec, out float visualSim);
+ +						if (pass) {
+ +							verified.Add(a);
+ +						}
+ +						else {
+ +							Interlocked.Increment(ref dropped);
+ +							if (Settings.ExtendedFFToolsLogging)
+ +								Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
+ +						}
+++=======
++ 			if (Settings.PartialClipRequireVisualMatch && assignments.Count > 0)
++ 				assignments = RunPartialClipVisualGate(videos, assignments,
++ 					(source, clip, offsetSec) => {
++ 						bool pass = VerifyPartialClipVisually(source, clip, offsetSec, out float visualSim);
++ 						return (pass, visualSim);
+++>>>>>>> origin/master
+  					});
+- 				}
+- 				catch (OperationCanceledException) { }
+- 				assignments = verified.OrderBy(a => a.Item1).ThenBy(a => a.Item2).ToList();
+- 				Logger.Instance.Info($"Partial clip detection: visual gate kept {assignments.Count}/{beforeCount} assignment(s), dropped {dropped}");
+- 			}
+  
+  			var addedSources = new HashSet<int>();
+  
+diff --cc VDF.Core/Settings.cs
+index d2cc0e8,13cb598..0000000
+--- a/VDF.Core/Settings.cs
++++ b/VDF.Core/Settings.cs
+@@@ -63,7 -63,11 +63,15 @@@ namespace VDF.Core 
+  
+  		public byte Threshhold = 5;
+  		public float Percent = 96f;
+++<<<<<<< HEAD
+ +		/// <summary>Minimum fraction of sampled frame positions that must individually pass pHash similarity.</summary>
+++=======
++ 		/// <summary>
++ 		/// Minimum fraction (0..1) of sampled frame positions that must individually pass
++ 		/// the pHash similarity threshold for a pair to count as duplicates. Only used
++ 		/// when <see cref="UsePHashing"/> is on.
++ 		/// </summary>
+++>>>>>>> origin/master
+  		public float PHashRequiredMatchingSampleRatio = 0.6f;
+  		public double PercentDurationDifference = 20d;
+  		public double DurationDifferenceMinSeconds;
+diff --cc VDF.GUI/Assets/Locales/de.json
+index ef7c4b1,f62a8d9..0000000
+--- a/VDF.GUI/Assets/Locales/de.json
++++ b/VDF.GUI/Assets/Locales/de.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "Wie ähnlich die abgetasteten Frames zweier Dateien sein müssen, um als Duplikate zu gelten. 100 % findet nur nahezu identische Frames; ~95 % erfasst typische Re-Encodes; niedrigere Werte finden auch Kopien mit Wasserzeichen oder Beschnitt – um den Preis von Fehltreffern.",
+  	"Settings.Row.UsePHash.Title": "Perzeptuelles Hashing (pHash) verwenden",
+  	"Settings.Row.UsePHash.Desc": "Deutlich schnellerer Vergleich bei großen Bibliotheken und robust gegen leichte Helligkeitsunterschiede; etwas gröber als der rohe Graustufenvergleich. Bilder verwenden immer Graustufen. Bei alten Datenbanken mit 16×16-Graybytes ohne Wirkung.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "Erforderlicher Anteil übereinstimmender Samples",
+ +	"Settings.Row.PHashSampleRatio.Desc": "Mindestprozentsatz der abgetasteten Bildpositionen, die den pHash-Ähnlichkeitsschwellenwert einzeln erfüllen müssen. Höhere Werte reduzieren Fehlalarme durch ein zufällig ähnliches Einzelbild; 60 % ist ein ausgewogener Standard.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "Erforderliche übereinstimmende Stichproben",
++ 	"Settings.Row.PHashSampleRatio.Desc": "Mindestanteil der abgetasteten Frame-Positionen, die die Ähnlichkeitsschwelle im pHash-Modus einzeln bestehen müssen. Höhere Werte reduzieren Fehltreffer durch einen einzelnen zufällig ähnlichen Frame; 60 % ist ein ausgewogener Standardwert.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "Horizontal gespiegelt vergleichen",
+  	"Settings.Row.Flip.Desc": "Findet gespiegelte Re-Uploads; Treffer werden in den Ergebnissen als gespiegelt markiert. Kosten: etwa doppelter Vergleichsaufwand.",
+  	"Settings.Row.IgnoreBW.Title": "Schwarze / weiße Pixel ignorieren",
+diff --cc VDF.GUI/Assets/Locales/en.json
+index 6f94b55,cc90878..0000000
+--- a/VDF.GUI/Assets/Locales/en.json
++++ b/VDF.GUI/Assets/Locales/en.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "How alike the sampled frames of two files must be to count as duplicates. 100 % finds only near-identical frames; ~95 % catches typical re-encodes; lower also surfaces watermarked or cropped copies at the cost of false positives.",
+  	"Settings.Row.UsePHash.Title": "Use perceptual hashing (pHash)",
+  	"Settings.Row.UsePHash.Desc": "Much faster comparison on large libraries and robust to small brightness shifts; slightly coarser than the raw grayscale diff. Images always use grayscale regardless. Ignored on old databases with 16×16 graybyte values.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "Required matching sample ratio",
+ +	"Settings.Row.PHashSampleRatio.Desc": "Minimum percentage of sampled frame positions that must individually pass the pHash similarity threshold. Higher values reduce false positives from one coincidental frame; 60 % is a balanced default.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "Required matching samples",
++ 	"Settings.Row.PHashSampleRatio.Desc": "Minimum percentage of the sampled frame positions that must individually pass the similarity threshold in pHash mode. Higher values reduce false positives caused by a single coincidental frame; 60 % is a balanced default.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "Compare horizontally flipped",
+  	"Settings.Row.Flip.Desc": "Catches mirror-image re-uploads; matches are marked as flipped in the results. Cost: roughly doubles the comparison work.",
+  	"Settings.Row.IgnoreBW.Title": "Ignore black / white pixels",
+diff --cc VDF.GUI/Assets/Locales/es.json
+index b1c3a15,fe217ce..0000000
+--- a/VDF.GUI/Assets/Locales/es.json
++++ b/VDF.GUI/Assets/Locales/es.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "Cuán parecidos deben ser los fotogramas muestreados de dos archivos para contar como duplicados. 100 % solo encuentra fotogramas casi idénticos; ~95 % detecta recodificaciones típicas; valores más bajos también revelan copias con marca de agua o recortadas, a costa de falsos positivos.",
+  	"Settings.Row.UsePHash.Title": "Usar hashing perceptual (pHash)",
+  	"Settings.Row.UsePHash.Desc": "Comparación mucho más rápida en bibliotecas grandes y robusta ante pequeños cambios de brillo; algo más gruesa que la diferencia de grises en bruto. Las imágenes siempre usan escala de grises. Se ignora en bases de datos antiguas con valores de 16×16.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "Porcentaje requerido de muestras coincidentes",
+ +	"Settings.Row.PHashSampleRatio.Desc": "Porcentaje mínimo de posiciones de fotograma muestreadas que deben superar individualmente el umbral de similitud pHash. Los valores altos reducen falsos positivos por un fotograma coincidente; 60 % es un valor equilibrado.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "Muestras coincidentes requeridas",
++ 	"Settings.Row.PHashSampleRatio.Desc": "Porcentaje mínimo de las posiciones de fotograma muestreadas que deben superar individualmente el umbral de similitud en modo pHash. Valores más altos reducen los falsos positivos causados por un único fotograma casualmente parecido; 60 % es un valor predeterminado equilibrado.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "Comparar volteado horizontalmente",
+  	"Settings.Row.Flip.Desc": "Detecta resubidas en espejo; las coincidencias se marcan como volteadas en los resultados. Coste: aproximadamente duplica el trabajo de comparación.",
+  	"Settings.Row.IgnoreBW.Title": "Ignorar píxeles negros / blancos",
+diff --cc VDF.GUI/Assets/Locales/fr.json
+index e4b5db7,454d575..0000000
+--- a/VDF.GUI/Assets/Locales/fr.json
++++ b/VDF.GUI/Assets/Locales/fr.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "À quel point les images échantillonnées de deux fichiers doivent se ressembler pour compter comme doublons. 100 % ne trouve que des images quasi identiques ; ~95 % détecte les réencodages typiques ; plus bas révèle aussi les copies filigranées ou recadrées, au prix de faux positifs.",
+  	"Settings.Row.UsePHash.Title": "Utiliser le hachage perceptuel (pHash)",
+  	"Settings.Row.UsePHash.Desc": "Comparaison bien plus rapide sur les grandes bibliothèques et robuste aux petites variations de luminosité ; un peu plus grossière que la différence en niveaux de gris brute. Les images utilisent toujours les niveaux de gris. Ignoré sur les anciennes bases 16×16.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "Proportion requise d’échantillons concordants",
+ +	"Settings.Row.PHashSampleRatio.Desc": "Pourcentage minimal de positions d’image échantillonnées qui doivent chacune dépasser le seuil de similarité pHash. Une valeur élevée réduit les faux positifs dus à une seule image ressemblante ; 60 % est un bon équilibre.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "Échantillons correspondants requis",
++ 	"Settings.Row.PHashSampleRatio.Desc": "Pourcentage minimal des positions d'images échantillonnées devant franchir individuellement le seuil de similarité en mode pHash. Des valeurs plus élevées réduisent les faux positifs dus à une seule image fortuitement semblable ; 60 % est une valeur par défaut équilibrée.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "Comparer les miroirs horizontaux",
+  	"Settings.Row.Flip.Desc": "Détecte les rééditions en miroir ; les correspondances sont marquées comme retournées dans les résultats. Coût : double environ le travail de comparaison.",
+  	"Settings.Row.IgnoreBW.Title": "Ignorer les pixels noirs / blancs",
+diff --cc VDF.GUI/Assets/Locales/ko.json
+index 90c1685,d9eab9d..0000000
+--- a/VDF.GUI/Assets/Locales/ko.json
++++ b/VDF.GUI/Assets/Locales/ko.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "두 파일의 샘플 프레임이 얼마나 비슷해야 중복으로 간주되는지 결정합니다. 100%는 거의 동일한 프레임만 찾고, 약 95%는 일반적인 재인코딩을 잡아내며, 더 낮은 값은 워터마크가 있거나 잘린 사본까지 찾지만 오탐이 늘어납니다.",
+  	"Settings.Row.UsePHash.Title": "지각 해싱(pHash) 사용",
+  	"Settings.Row.UsePHash.Desc": "대규모 라이브러리에서 훨씬 빠르게 비교하며 약간의 밝기 변화에도 강합니다. 원시 그레이스케일 비교보다 약간 덜 정밀합니다. 이미지는 항상 그레이스케일을 사용합니다. 16×16 그레이바이트 값을 가진 이전 데이터베이스에서는 무시됩니다.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "필수 일치 샘플 비율",
+ +	"Settings.Row.PHashSampleRatio.Desc": "샘플링한 프레임 위치 중 pHash 유사도 기준을 각각 통과해야 하는 최소 비율입니다. 값을 높이면 우연히 비슷한 한 프레임으로 인한 오탐이 줄어듭니다. 기본값 60%가 균형 잡힌 설정입니다.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "일치해야 하는 샘플 비율",
++ 	"Settings.Row.PHashSampleRatio.Desc": "pHash 모드에서 샘플링된 프레임 위치 중 유사도 임계값을 개별적으로 통과해야 하는 최소 비율입니다. 값이 높을수록 우연히 비슷한 프레임 하나로 인한 오탐이 줄어듭니다. 60%가 균형 잡힌 기본값입니다.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "좌우 반전 비교",
+  	"Settings.Row.Flip.Desc": "좌우 반전된 재업로드를 찾아내며, 결과에서 반전됨으로 표시됩니다. 비용: 비교 작업이 약 두 배가 됩니다.",
+  	"Settings.Row.IgnoreBW.Title": "검은색 / 흰색 픽셀 무시",
+diff --cc VDF.GUI/Assets/Locales/pt.json
+index 9b1b3f7,ba1c5e8..0000000
+--- a/VDF.GUI/Assets/Locales/pt.json
++++ b/VDF.GUI/Assets/Locales/pt.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "Quão parecidos os quadros amostrados de dois arquivos precisam ser para contarem como duplicatas. 100 % encontra apenas quadros quase idênticos; ~95 % captura recodificações típicas; valores menores também revelam cópias com marca d'água ou cortadas, ao custo de falsos positivos.",
+  	"Settings.Row.UsePHash.Title": "Usar hash perceptual (pHash)",
+  	"Settings.Row.UsePHash.Desc": "Comparação muito mais rápida em bibliotecas grandes e robusta a pequenas variações de brilho; um pouco mais grosseira que a diferença em tons de cinza. Imagens sempre usam tons de cinza. Ignorado em bancos de dados antigos com valores 16×16.",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "Proporção necessária de amostras correspondentes",
+ +	"Settings.Row.PHashSampleRatio.Desc": "Percentual mínimo das posições de quadro amostradas que devem superar individualmente o limite de similaridade pHash. Valores maiores reduzem falsos positivos causados por um único quadro parecido; 60 % é um padrão equilibrado.",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "Amostras correspondentes exigidas",
++ 	"Settings.Row.PHashSampleRatio.Desc": "Porcentagem mínima das posições de quadro amostradas que devem passar individualmente o limiar de similaridade no modo pHash. Valores mais altos reduzem falsos positivos causados por um único quadro casualmente parecido; 60 % é um padrão equilibrado.",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "Comparar espelhado horizontalmente",
+  	"Settings.Row.Flip.Desc": "Detecta reenvios espelhados; as correspondências são marcadas como invertidas nos resultados. Custo: aproximadamente dobra o trabalho de comparação.",
+  	"Settings.Row.IgnoreBW.Title": "Ignorar pixels pretos / brancos",
+diff --cc VDF.GUI/Assets/Locales/zh-Hans.json
+index aa82398,af8bcbe..0000000
+--- a/VDF.GUI/Assets/Locales/zh-Hans.json
++++ b/VDF.GUI/Assets/Locales/zh-Hans.json
+@@@ -682,8 -685,8 +685,13 @@@
+  	"Settings.Row.Percent.Desc": "两个文件的采样帧需要多相似才算重复。100% 只找几乎完全相同的帧；约 95% 可捕获典型的重新编码；更低的值还能发现带水印或裁剪的副本，但误报会增多。",
+  	"Settings.Row.UsePHash.Title": "使用感知哈希（pHash）",
+  	"Settings.Row.UsePHash.Desc": "在大型媒体库中比较速度快得多，且不受轻微亮度变化影响；比原始灰度差异略粗糙。图片始终使用灰度比较。旧的 16×16 灰度数据库将忽略此项。",
+++<<<<<<< HEAD
+ +	"Settings.Row.PHashSampleRatio.Title": "所需匹配采样比例",
+ +	"Settings.Row.PHashSampleRatio.Desc": "采样帧位置中必须分别通过 pHash 相似度阈值的最低百分比。较高的值可减少单个偶然相似帧造成的误报；60% 是较均衡的默认值。",
+++=======
++ 	"Settings.Row.PHashSampleRatio.Title": "所需匹配样本比例",
++ 	"Settings.Row.PHashSampleRatio.Desc": "pHash 模式下，采样帧位置中必须单独通过相似度阈值的最低百分比。较高的值可减少由单个偶然相似帧造成的误报；60% 是均衡的默认值。",
+++>>>>>>> origin/master
+  	"Settings.Row.Flip.Title": "比较水平翻转",
+  	"Settings.Row.Flip.Desc": "可发现镜像翻转的重复上传；匹配结果会标记为已翻转。代价：比较工作量约增加一倍。",
+  	"Settings.Row.IgnoreBW.Title": "忽略黑色 / 白色像素",
+diff --cc VDF.GUI/Data/SettingsFile.cs
+index f327dd5,625b225..0000000
+--- a/VDF.GUI/Data/SettingsFile.cs
++++ b/VDF.GUI/Data/SettingsFile.cs
+@@@ -179,6 -179,7 +179,10 @@@ namespace VDF.GUI.Data 
+  			set => this.RaiseAndSetIfChanged(ref _MaxDegreeOfParallelism, value);
+  		}
+  		int _MatchingMaxDegreeOfParallelism;
+++<<<<<<< HEAD
+++=======
++ 		/// <summary>Worker cap for the CPU-bound matching phases; 0 or less = automatic CPU-headroom cap — see Core setting.</summary>
+++>>>>>>> origin/master
+  		[JsonPropertyName("MatchingMaxDegreeOfParallelism")]
+  		public int MatchingMaxDegreeOfParallelism {
+  			get => _MatchingMaxDegreeOfParallelism;
+@@@ -351,11 -352,12 +355,20 @@@
+  			get => _UsePHash;
+  			set => this.RaiseAndSetIfChanged(ref _UsePHash, value);
+  		}
+++<<<<<<< HEAD
+ +		float _PHashRequiredMatchingSampleRatioPercent = 60f;
+ +		[JsonPropertyName("PHashRequiredMatchingSampleRatioPercent")]
+ +		public float PHashRequiredMatchingSampleRatioPercent {
+ +			get => _PHashRequiredMatchingSampleRatioPercent;
+ +			set => this.RaiseAndSetIfChanged(ref _PHashRequiredMatchingSampleRatioPercent, Math.Clamp(value, 1f, 100f));
+++=======
++ 		float _PHashSampleRatioPercent = 60f;
++ 		/// <summary>Percentage of sampled frame positions that must individually pass the pHash threshold — see Core's PHashRequiredMatchingSampleRatio (0..1).</summary>
++ 		[JsonPropertyName("PHashSampleRatioPercent")]
++ 		public float PHashSampleRatioPercent {
++ 			get => _PHashSampleRatioPercent;
++ 			set => this.RaiseAndSetIfChanged(ref _PHashSampleRatioPercent, Math.Clamp(value, 1f, 100f));
+++>>>>>>> origin/master
+  		}
+  		bool _UseExifCreationDate;
+  		[JsonPropertyName("UseExifCreationDate")]
+diff --cc VDF.GUI/Data/ZoomPanPresenter.cs
+index d1db632,3119bfa..0000000
+--- a/VDF.GUI/Data/ZoomPanPresenter.cs
++++ b/VDF.GUI/Data/ZoomPanPresenter.cs
+@@@ -84,16 -84,25 +84,36 @@@ namespace VDF.GUI.Data 
+  			this.GetPropertyChangedObservable(OffsetYProperty).Subscribe(_ => ApplyTransform());
+  		}
+  
++ 		private void OnZoomChanged() {
++ 			// A programmatic zoom (the Zoom-In/Out/Fit toolbar commands set Zoom directly) must
++ 			// re-clamp the pan offsets too: an offset that was valid at the previous zoom can
++ 			// push the now-differently-scaled content out of the viewport, leaving blank space.
++ 			// The wheel and drag handlers already clamp as they compute offsets; this covers
++ 			// every other write to Zoom.
++ 			Point clamped = ClampOffsetsToViewport(OffsetX, OffsetY, Math.Clamp(Zoom, MinZoom, MaxZoom));
++ 			if (clamped.X != OffsetX) OffsetX = clamped.X;
++ 			if (clamped.Y != OffsetY) OffsetY = clamped.Y;
++ 			ApplyTransform();
++ 		}
++ 
+  		private void AttachTransform() {
+  			if (Content is Visual v) {
+++<<<<<<< HEAD
+ +				_group ??= new TransformGroup {
+ +					Children = { _scale, _translate },
+ +				};
+ +
+ +				// Avalonia defaults RenderTransformOrigin to the center. The zoom
+ +				// offset math below is expressed from the content's top-left
+ +				// corner, so leaving the default origin applies a second hidden
+ +				// translation and makes repeated wheel zoom drift down/right.
+++=======
++ 				_group ??= new TransformGroup { Children = { _scale, _translate } };
++ 				// Avalonia defaults RenderTransformOrigin to the center. All offset math
++ 				// here is expressed from the content's top-left corner, so the default
++ 				// origin adds a hidden second translation that makes repeated wheel
++ 				// zoom drift down/right.
+++>>>>>>> origin/master
+  				v.RenderTransformOrigin = RelativePoint.TopLeft;
+  				v.RenderTransform = _group;
+  				ApplyTransform();
+@@@ -107,92 -116,58 +127,145 @@@
+  			InvalidateVisual();
+  		}
+  
+++<<<<<<< HEAD
+ +		private Point GetContentPosition(PointerEventArgs e) =>
+ +			Content is Visual contentVisual
+ +				? e.GetPosition(contentVisual)
+ +				: e.GetPosition(this);
+ +
+ +		static double ClampOffsetToViewport(
+ +			double offset,
+ +			double viewportLength,
+ +			double contentLength,
+ +			double zoom) {
+ +			if (viewportLength <= 0 ||
+ +				contentLength <= 0 ||
+ +				!double.IsFinite(offset) ||
+ +				!double.IsFinite(zoom)) {
+ +				return offset;
+ +			}
+ +
+ +			double scaledLength = contentLength * zoom;
+ +			if (scaledLength <= viewportLength)
+ +				return (viewportLength - scaledLength) / 2d;
+ +
+ +			return Math.Clamp(
+ +				offset,
+ +				viewportLength - scaledLength,
+ +				0d);
+ +		}
+ +
+ +		private Point ClampOffsetsToViewport(
+ +			double offsetX,
+ +			double offsetY,
+ +			double zoom) {
+ +			if (Content is not Visual contentVisual)
+ +				return new Point(offsetX, offsetY);
+ +
+ +			return new Point(
+ +				ClampOffsetToViewport(
+ +					offsetX,
+ +					Bounds.Width,
+ +					contentVisual.Bounds.Width,
+ +					zoom),
+ +				ClampOffsetToViewport(
+ +					offsetY,
+ +					Bounds.Height,
+ +					contentVisual.Bounds.Height,
+ +					zoom));
+ +		}
+ +
+ +		private bool IsNearDivider(PointerEventArgs e) {
+ +			Point contentPoint = GetContentPosition(e);
+ +			double contentGrabDistance = SwipeGrabDistance / Math.Max(Math.Abs(Zoom), 0.0001);
+ +			if (SwipeVertical) {
+ +				var dividerY = SwipeTopOffset + SwipeDisplayHeight * SwipeRatio;
+ +				return Math.Abs(contentPoint.Y - dividerY) <= contentGrabDistance;
+ +			}
+ +			else {
+ +				var dividerX = SwipeLeftOffset + SwipeDisplayWidth * SwipeRatio;
+ +				return Math.Abs(contentPoint.X - dividerX) <= contentGrabDistance;
+ +			}
+ +		}
+ +
+ +		private void OnWheel(
+ +			object? sender,
+ +			PointerWheelEventArgs e) {
+ +			double oldZoom =
+ +				Math.Clamp(Zoom, MinZoom, MaxZoom);
+ +			double factor =
+ +				e.Delta.Y > 0
+ +					? 1.1
+ +					: 1.0 / 1.1;
+ +			double newZoom =
+ +				Math.Clamp(
+ +					oldZoom * factor,
+ +					MinZoom,
+ +					MaxZoom);
+ +
+++=======
++ 		// Avalonia converts the pointer position through the content's inverse render
++ 		// transform, giving the exact content pixel under the cursor at any zoom/offset.
++ 		private Point GetContentPosition(PointerEventArgs e) =>
++ 			Content is Visual contentVisual ? e.GetPosition(contentVisual) : e.GetPosition(this);
++ 
++ 		internal static double ClampOffsetToViewport(double offset, double viewportLength, double contentLength, double zoom) {
++ 			if (viewportLength <= 0 || contentLength <= 0 || !double.IsFinite(offset) || !double.IsFinite(zoom))
++ 				return offset;
++ 
++ 			double scaledLength = contentLength * zoom;
++ 			// Content smaller than the viewport is centered instead of pannable.
++ 			if (scaledLength <= viewportLength)
++ 				return (viewportLength - scaledLength) / 2d;
++ 
++ 			return Math.Clamp(offset, viewportLength - scaledLength, 0d);
++ 		}
++ 
++ 		private Point ClampOffsetsToViewport(double offsetX, double offsetY, double zoom) {
++ 			if (Content is not Visual contentVisual)
++ 				return new Point(offsetX, offsetY);
++ 			return new Point(
++ 				ClampOffsetToViewport(offsetX, Bounds.Width, contentVisual.Bounds.Width, zoom),
++ 				ClampOffsetToViewport(offsetY, Bounds.Height, contentVisual.Bounds.Height, zoom));
++ 		}
++ 
++ 		private bool IsNearDivider(PointerEventArgs e) {
++ 			Point contentPoint = GetContentPosition(e);
++ 			// The grab margin is a screen-space distance; translate it into content
++ 			// space so the divider stays equally grabbable at any zoom level.
++ 			double contentGrabDistance = SwipeGrabDistance / Math.Max(Math.Abs(Zoom), 0.0001);
++ 			if (SwipeVertical) {
++ 				var divY = SwipeTopOffset + SwipeDisplayHeight * SwipeRatio;
++ 				return Math.Abs(contentPoint.Y - divY) <= contentGrabDistance;
++ 			}
++ 			else {
++ 				var divX = SwipeLeftOffset + SwipeDisplayWidth * SwipeRatio;
++ 				return Math.Abs(contentPoint.X - divX) <= contentGrabDistance;
++ 			}
++ 		}
++ 
++ 		private void OnWheel(object? s, PointerWheelEventArgs e) {
++ 			var oldZoom = Math.Clamp(Zoom, MinZoom, MaxZoom);
++ 			var factor = e.Delta.Y > 0 ? 1.1 : (1.0 / 1.1);
++ 			var newZoom = Math.Clamp(oldZoom * factor, MinZoom, MaxZoom);
+++>>>>>>> origin/master
+  			if (Math.Abs(newZoom - oldZoom) < 0.000001d) {
+  				e.Handled = true;
+  				return;
+  			}
+  
+++<<<<<<< HEAD
+ +			// Avalonia converts this pointer location through the current
+ +			// inverse render transform, giving us the exact content pixel
+ +			// under the cursor before zooming.
+ +			Point contentPoint = GetContentPosition(e);
+ +			Point viewportPoint = e.GetPosition(this);
+ +
+++=======
++ 			// Keep the content pixel under the cursor stationary while zooming.
++ 			Point contentPoint = GetContentPosition(e);
++ 			Point viewportPoint = e.GetPosition(this);
+++>>>>>>> origin/master
+  			Point offsets = ClampOffsetsToViewport(
+  				viewportPoint.X - contentPoint.X * newZoom,
+  				viewportPoint.Y - contentPoint.Y * newZoom,
+@@@ -246,13 -221,9 +319,19 @@@
+  				return;
+  			}
+  			if (_panning) {
+++<<<<<<< HEAD
+ +				Point pointer = e.GetPosition(this);
+ +				Vector delta = pointer - _pointerStart;
+ +				Point offsets = ClampOffsetsToViewport(
+ +					_startX + delta.X,
+ +					_startY + delta.Y,
+ +					Math.Clamp(Zoom, MinZoom, MaxZoom));
+ +
+++=======
++ 				var p = e.GetPosition(this);
++ 				var d = p - _pointerStart;
++ 				Point offsets = ClampOffsetsToViewport(_startX + d.X, _startY + d.Y, Math.Clamp(Zoom, MinZoom, MaxZoom));
+++>>>>>>> origin/master
+  				OffsetX = offsets.X;
+  				OffsetY = offsets.Y;
+  				e.Handled = true;
+diff --cc VDF.GUI/ViewModels/ThumbnailComparerVM.cs
+index 2ecd403,d270a7e..0000000
+--- a/VDF.GUI/ViewModels/ThumbnailComparerVM.cs
++++ b/VDF.GUI/ViewModels/ThumbnailComparerVM.cs
+@@@ -536,8 -536,11 +536,16 @@@ namespace VDF.GUI.ViewModels 
+  			UpdateCullingInfo();
+  		}
+  
+++<<<<<<< HEAD
+ +internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
+ +	mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
+++=======
++ 		// Dual modes need two SELECTED items, not two loaded bitmaps: thumbnails load
++ 		// asynchronously, so keying off ImageA/ImageB knocked the dropdown back to
++ 		// Single whenever a mode was picked while thumbnails were still loading.
++ 		internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
++ 			mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
+++>>>>>>> origin/master
+  
+  		// Auto-fallback to Single when only one image is available. Must not write to
+  		// settings — otherwise the persisted user preference gets clobbered on every open.
+@@@ -603,8 -606,9 +611,14 @@@
+  		}
+  
+  		void UpdateFrameImages() {
+++<<<<<<< HEAD
+ +			// Invalidate work started for the previous selection, base frame, or offsets.
+ +			// A completed stale extraction may populate its cache, but must not update the UI.
+++=======
++ 			// Invalidate work started for the previous selection, base frame or offsets.
++ 			// A stale extraction may still complete and populate its cache, but must
++ 			// not touch the UI anymore.
+++>>>>>>> origin/master
+  			_frameExtractCts?.Cancel();
+  			_frameExtractCts = null;
+  			IsExtractingFrame = false;
+@@@ -635,6 -639,9 +649,12 @@@
+  			_frameExtractCts = cts;
+  			IsExtractingFrame = true;
+  
+++<<<<<<< HEAD
+++=======
++ 			// Cancellation alone is not enough: a completed extraction that was
++ 			// superseded (new selection, base frame or step) races the UI-thread
++ 			// schedule against the next request, so re-check every input too.
+++>>>>>>> origin/master
+  			bool IsStillCurrentRequest() =>
+  				!cts.IsCancellationRequested &&
+  				ReferenceEquals(_frameExtractCts, cts) &&
+@@@ -652,8 -659,7 +672,12 @@@
+  					if (cts.IsCancellationRequested) return;
+  
+  					RxSchedulers.MainThreadScheduler.Schedule(() => {
+++<<<<<<< HEAD
+ +						if (!IsStillCurrentRequest())
+ +							return;
+++=======
++ 						if (!IsStillCurrentRequest()) return;
+++>>>>>>> origin/master
+  						if (needExtractA && bmpA != null)
+  							ImageA = bmpA;
+  						if (needExtractB && bmpB != null)
+@@@ -666,8 -672,7 +690,12 @@@
+  				}
+  				catch {
+  					RxSchedulers.MainThreadScheduler.Schedule(() => {
+++<<<<<<< HEAD
+ +						if (!ReferenceEquals(_frameExtractCts, cts))
+ +							return;
+++=======
++ 						if (!ReferenceEquals(_frameExtractCts, cts)) return;
+++>>>>>>> origin/master
+  						_frameExtractCts = null;
+  						IsExtractingFrame = false;
+  					});
+diff --cc VDF.GUI/Views/SettingsView.xaml
+index b4f8cae,433a4b3..0000000
+--- a/VDF.GUI/Views/SettingsView.xaml
++++ b/VDF.GUI/Views/SettingsView.xaml
+@@@ -262,8 -270,8 +270,13 @@@
+                    Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.PHashSampleRatio.Desc]}"
+                    SearchTags="phash samples quorum frames false positives"
+                    IsEnabled="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=UsePHash}">
+++<<<<<<< HEAD
+ +                <NumericUpDown Classes="stepper" FormatString="{}{0} %" Increment="1" Maximum="100" Minimum="1"
+ +                               Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=PHashRequiredMatchingSampleRatioPercent}" />
+++=======
++                 <NumericUpDown Classes="stepper" FormatString="\{0\}%" Increment="1" Maximum="100" Minimum="1"
++                                Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=PHashSampleRatioPercent}" />
+++>>>>>>> origin/master
+                </views:SettingRow>
+  
+                <views:SettingRow
