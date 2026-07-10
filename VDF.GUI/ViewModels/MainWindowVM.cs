@@ -509,6 +509,20 @@ namespace VDF.GUI.ViewModels {
 				ImportScanResultsIncludingThumbnails(BackupScanResultsFile);
 		}
 
+		/// <summary>
+		/// Tells the user when startup had to fall back to default settings because the
+		/// settings file was unreadable (#830). Logged again here because the constructor
+		/// deletes log.txt after the settings were loaded.
+		/// </summary>
+		public async void NotifyStartupSettingsError() {
+			if (SettingsFile.StartupLoadError is not { } error) return;
+			Logger.Instance.Error(error);
+			// Startup fires before the window is shown; a dialog with a non-visible owner throws.
+			while (ApplicationHelpers.MainWindow?.IsVisible != true)
+				await Task.Delay(200);
+			await MessageBoxService.Show(string.Format(App.Lang["Message.SettingsLoadFailed"], error));
+		}
+
 		public async void LoadDatabase() {
 			IsBusy = true;
 			IsBusyOverlayText = "Loading database...";
@@ -586,7 +600,9 @@ namespace VDF.GUI.ViewModels {
 				string stageSuffix = string.IsNullOrEmpty(e.CurrentStage)
 					? string.Empty
 					: e.StageMax > 0 ? $"  [{e.CurrentStage} {e.StageCurrent}/{e.StageMax}]" : $"  [{e.CurrentStage}]";
-				ScanProgressText = e.CurrentFile + stageSuffix;
+				// A phase's opening event carries no file yet (see ScanEngine.InitProgress) — don't
+				// leave the separator's leading spaces dangling in front of the stage label.
+				ScanProgressText = string.IsNullOrEmpty(e.CurrentFile) ? stageSuffix.TrimStart() : e.CurrentFile + stageSuffix;
 				// Separate stage/file properties for the Scanning state's center panel.
 				ScanStageText = string.IsNullOrEmpty(e.CurrentStage)
 					? string.Empty
@@ -630,6 +646,11 @@ namespace VDF.GUI.ViewModels {
 
 				foreach (var item in Scanner.Duplicates)
 					Duplicates.Add(new DuplicateItemVM(item));
+
+				// A completed scan that matched nothing drops back to the Setup screen; flag
+				// it so the screen shows a "no duplicates found" notice instead of looking
+				// identical to the never-scanned state.
+				ShowNoDuplicatesNotice = SetupNotice.ShowAfterScanDone(Duplicates.Count);
 
 				if (SettingsFile.Instance.GeneratePreviewThumbnails) {
 					ShowThumbnailRetrievalProgressBar = true;
@@ -1100,6 +1121,17 @@ namespace VDF.GUI.ViewModels {
 			new(App.Lang["MainWindow.Settings.ThumbnailDoubleClick.OpenThumbnailComparer"], Data.ThumbnailDoubleClickAction.OpenThumbnailComparer),
 		};
 
+		// Bound via SelectedItem (not SelectedValue) so the choice actually persists — see
+		// SettingsCombo / issue #829.
+		public Data.ThumbnailDoubleClickOption? SelectedThumbnailDoubleClickOption {
+			get => Data.SettingsCombo.OptionFor(ThumbnailDoubleClickOptions, SettingsFile.Instance.ThumbnailDoubleClickAction);
+			set {
+				if (value == null || value.Value == SettingsFile.Instance.ThumbnailDoubleClickAction) return;
+				SettingsFile.Instance.ThumbnailDoubleClickAction = value.Value;
+				this.RaisePropertyChanged();
+			}
+		}
+
 		public ReactiveCommand<Unit, Unit> OpenItemInFolderCommand => ReactiveCommand.Create(OpenItemsInFolder);
 
 		public ReactiveCommand<string, Unit> OpenGroupCommand => ReactiveCommand.Create<string>(openInFolder => {
@@ -1523,6 +1555,7 @@ Non-Windows setup:
 			}
 
 			Duplicates.Clear();
+			ShowNoDuplicatesNotice = false;
 
 			// Folder counting is informational only — never let it compete with the scan for IO.
 			folderCounting.CancelAll();
@@ -1577,6 +1610,7 @@ Non-Windows setup:
 			Scanner.Settings.DurationDifferenceMaxSeconds = SettingsFile.Instance.DurationDifferenceMaxSeconds;
 			Scanner.Settings.MaxSamplingDurationSeconds = SettingsFile.Instance.MaxSamplingDurationSeconds;
 			Scanner.Settings.MaxDegreeOfParallelism = SettingsFile.Instance.MaxDegreeOfParallelism;
+			Scanner.Settings.MatchingMaxDegreeOfParallelism = SettingsFile.Instance.MatchingMaxDegreeOfParallelism;
 			Scanner.Settings.HddMaxDegreeOfParallelism = SettingsFile.Instance.HddMaxDegreeOfParallelism;
 			Scanner.Settings.DriveTypeOverrides = SettingsFile.Instance.DriveTypeOverrides;
 			Scanner.Settings.ThumbnailCount = SettingsFile.Instance.Thumbnails;
@@ -1602,6 +1636,7 @@ Non-Windows setup:
 			Scanner.Settings.FolderMatchMode = SettingsFile.Instance.FolderMatchMode;
 			Scanner.Settings.SameFolderDepth = SettingsFile.Instance.SameFolderDepth;
 			Scanner.Settings.UsePHashing = SettingsFile.Instance.UsePHash;
+			Scanner.Settings.PHashRequiredMatchingSampleRatio = SettingsFile.Instance.PHashSampleRatioPercent / 100f;
 			Scanner.Settings.UseExifCreationDate = SettingsFile.Instance.UseExifCreationDate;
 			Scanner.Settings.FilePathNotContainsTexts = SettingsFile.Instance.FilePathNotContainsTexts.ToList();
 			Scanner.Settings.FilterByFileSize = SettingsFile.Instance.FilterByFileSize;
