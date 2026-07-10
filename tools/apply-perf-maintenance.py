@@ -68,7 +68,7 @@ def split_engine() -> None:
         "\t\tstatic void LogNativeTiming(",
         "\t\tconst double SequentialBatchMaxSpanSeconds = 2d;",
         str(SPLIT_FILES[1]),
-        "using System;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n",
+        "using System;\nusing VDF.Core.FFTools.FFmpegNative;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n",
         gate_telemetry,
     )
     engine = extract(
