@@ -1,4 +1,5 @@
 name: Apply perf maintenance bundle
+# Trigger revision 2: previous push used the prior dispatch-only definition.
 
 on:
   workflow_dispatch:
