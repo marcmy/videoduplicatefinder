@@ -3,6 +3,11 @@ import re
 
 ENGINE_PATH = Path("VDF.Core/FFTools/FfmpegEngine.cs")
 TESTS_PATH = Path("VDF.Core.Tests/FFTools/FfmpegEngineTests.cs")
+SPLIT_FILES = [
+    Path("VDF.Core/FFTools/FfmpegEngine.NativeHealth.cs"),
+    Path("VDF.Core/FFTools/FfmpegEngine.Telemetry.cs"),
+    Path("VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs"),
+]
 
 
 def extract(text: str, start_marker: str, end_marker: str, destination: str, header: str, transform=None) -> str:
@@ -39,22 +44,30 @@ def gate_telemetry(region: str) -> str:
 def split_engine() -> None:
     engine = ENGINE_PATH.read_text(encoding="utf-8")
     old_decl = "\tinternal static class FfmpegEngine {"
+    new_decl = "\tinternal static partial class FfmpegEngine {"
+
+    if old_decl not in engine:
+        if new_decl in engine and all(path.exists() for path in SPLIT_FILES):
+            print("FFmpeg engine is already split; no transformation needed.")
+            return
+        raise RuntimeError("FFmpeg engine is neither in the reviewed monolithic form nor the expected split form.")
+
     if engine.count(old_decl) != 1:
         raise RuntimeError(f"FfmpegEngine declaration count: {engine.count(old_decl)}")
-    engine = engine.replace(old_decl, "\tinternal static partial class FfmpegEngine {", 1)
+    engine = engine.replace(old_decl, new_decl, 1)
 
     engine = extract(
         engine,
         "\t\tstatic bool ShouldUseNativeBinding =>",
         "\t\tstatic void LogNativeTiming(",
-        "VDF.Core/FFTools/FfmpegEngine.NativeHealth.cs",
+        str(SPLIT_FILES[0]),
         "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading;\nusing VDF.Core.FFTools.FFmpegNative;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n",
     )
     engine = extract(
         engine,
         "\t\tstatic void LogNativeTiming(",
         "\t\tconst double SequentialBatchMaxSpanSeconds = 2d;",
-        "VDF.Core/FFTools/FfmpegEngine.Telemetry.cs",
+        str(SPLIT_FILES[1]),
         "using System;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n",
         gate_telemetry,
     )
@@ -62,7 +75,7 @@ def split_engine() -> None:
         engine,
         "\t\tstatic bool TryGetNativeGrayByteD3D11ManualMaxConcurrency(out int concurrency) {",
         "\t\tstatic unsafe byte[] ExtractGrayFrameFromFrame(",
-        "VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs",
+        str(SPLIT_FILES[2]),
         "using System;\nusing System.Collections.Generic;\nusing System.Globalization;\nusing System.Linq;\nusing System.Threading;\nusing FFmpeg.AutoGen;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n",
     )
     ENGINE_PATH.write_text(engine, encoding="utf-8")
@@ -70,6 +83,10 @@ def split_engine() -> None:
 
 def update_tests() -> None:
     tests = TESTS_PATH.read_text(encoding="utf-8")
+    if "ShouldLogNativeSuccessTiming_FollowsExtendedLogging" in tests and "ShouldLogGrayByteScanTelemetry_FollowsExtendedLogging" in tests:
+        print("Telemetry tests are already updated.")
+        return
+
     start_marker = "\t[Theory]\n\t[InlineData(false)]\n\t[InlineData(true)]\n\tpublic void ShouldLogNativeSuccessTiming_"
     start = tests.find(start_marker)
     second = tests.find("\tpublic void ShouldLogGrayByteScanTelemetry_", start)
