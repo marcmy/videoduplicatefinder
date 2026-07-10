@@ -1,12 +1,13 @@
 name: Apply staged perf maintenance
 
 on:
-  push:
+  pull_request:
     branches:
-      - automation/perf-maintenance-work
-    paths:
-      - '.github/workflows/apply-perf-maintenance-work.yml'
-      - 'tools/apply-perf-maintenance.py'
+      - perf/4.1-native-hwaccel
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
@@ -17,6 +18,7 @@ concurrency:
 
 jobs:
   apply:
+    if: github.event.pull_request.head.ref == 'automation/perf-maintenance-work'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -56,5 +58,9 @@ jobs:
             VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs \
             VDF.Core.Tests/FFTools/FfmpegEngineTests.cs
           git diff --cached --check
-          git commit -m "refactor: split FFmpeg engine and gate success telemetry"
-          git push origin HEAD:automation/perf-maintenance-work
+          if git diff --cached --quiet; then
+            echo 'Transformation already committed.'
+          else
+            git commit -m "refactor: split FFmpeg engine and gate success telemetry"
+            git push origin HEAD:automation/perf-maintenance-work
+          fi
