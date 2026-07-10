@@ -1,4 +1,5 @@
 name: Refresh 4.1 perf branch
+# Permanent workflow restored after perf-maintenance validation.
 
 on:
   workflow_dispatch:
