@@ -146,17 +146,19 @@ jobs:
 
       - name: Publish validation failure
         if: steps.validate.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          git checkout -B master origin/master
-          mkdir -p .github
-          cp /tmp/refresh-validation.log .github/refresh-validation.log
-          git add .github/refresh-validation.log
-          if ! git diff --cached --quiet; then
-            git commit -m 'ci: record 4.1 refresh validation failure'
-            git push origin HEAD:master
+          api='repos/${{ github.repository }}/contents/.github/refresh-validation.log'
+          encoded="$(base64 -w0 /tmp/refresh-validation.log)"
+          existing_sha="$(gh api --method GET "$api" -f ref=master --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "$api" -f message='ci: record 4.1 refresh validation failure' -f content="$encoded" -f branch=master)
+          if [ -n "$existing_sha" ]; then
+            args+=(-f sha="$existing_sha")
           fi
+          gh api "${args[@]}"
           exit 1
 
       - name: Push updated 4.1 branch
