@@ -1,11 +1,7 @@
 name: Apply perf maintenance bundle
 
 on:
-  push:
-    branches:
-      - master
-    paths:
-      - '.github/workflows/apply-perf-maintenance.yml'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -40,123 +36,77 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          from textwrap import dedent
+          import re
 
           engine_path = Path('VDF.Core/FFTools/FfmpegEngine.cs')
           engine = engine_path.read_text(encoding='utf-8')
 
           old_decl = '\tinternal static class FfmpegEngine {'
-          new_decl = '\tinternal static partial class FfmpegEngine {'
           if engine.count(old_decl) != 1:
-              raise SystemExit(f'Expected one FfmpegEngine declaration, found {engine.count(old_decl)}')
-          engine = engine.replace(old_decl, new_decl, 1)
+              raise SystemExit(f'FfmpegEngine declaration count: {engine.count(old_decl)}')
+          engine = engine.replace(old_decl, '\tinternal static partial class FfmpegEngine {', 1)
 
           def extract(text, start_marker, end_marker, destination, header, transform=None):
-              if text.count(start_marker) != 1:
-                  raise SystemExit(f'{destination}: expected one start marker, found {text.count(start_marker)}')
-              if text.count(end_marker) != 1:
-                  raise SystemExit(f'{destination}: expected one end marker, found {text.count(end_marker)}')
-              start = text.index(start_marker)
-              end = text.index(end_marker, start)
+              start = text.find(start_marker)
+              end = text.find(end_marker, start + 1)
+              if start < 0 or end < 0:
+                  raise SystemExit(f'{destination}: markers not found (start={start}, end={end})')
               region = text[start:end].rstrip() + '\n'
-              if transform is not None:
+              if transform:
                   region = transform(region)
               Path(destination).write_text(header + region + '\t}\n}\n', encoding='utf-8')
+              print(f'{destination}: extracted {region.count(chr(10))} lines')
               return text[:start] + text[end:]
 
-          native_health_header = dedent('''\
-          using System;
-          using System.Collections.Generic;
-          using System.Linq;
-          using System.Threading;
-          using VDF.Core.FFTools.FFmpegNative;
-          using VDF.Core.Utils;
-
-          namespace VDF.Core.FFTools {
-          \tinternal static partial class FfmpegEngine {
-          ''')
           engine = extract(
               engine,
               '\t\tstatic bool ShouldUseNativeBinding =>',
               '\t\tstatic void LogNativeTiming(',
               'VDF.Core/FFTools/FfmpegEngine.NativeHealth.cs',
-              native_health_header)
+              'using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Threading;\nusing VDF.Core.FFTools.FFmpegNative;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n')
 
           def gate_telemetry(region):
-              old_native = dedent('''\
-              \t\tinternal static bool ShouldLogNativeSuccessTiming(bool extendedLogging) {
-              \t\t\t_ = extendedLogging;
-              \t\t\treturn true;
-              \t\t}''')
-              new_native = dedent('''\
-              \t\tinternal static bool ShouldLogNativeSuccessTiming(bool extendedLogging) =>
-              \t\t\textendedLogging;''')
-              old_scan = dedent('''\
-              \t\tinternal static bool ShouldLogGrayByteScanTelemetry(bool extendedLogging) {
-              \t\t\t_ = extendedLogging;
-              \t\t\treturn true;
-              \t\t}''')
-              new_scan = dedent('''\
-              \t\tinternal static bool ShouldLogGrayByteScanTelemetry(bool extendedLogging) =>
-              \t\t\textendedLogging;''')
-              if region.count(old_native) != 1 or region.count(old_scan) != 1:
-                  raise SystemExit('Telemetry gates no longer match reviewed source')
-              return region.replace(old_native, new_native, 1).replace(old_scan, new_scan, 1)
+              replacements = [
+                  (
+                      r'\t\tinternal static bool ShouldLogNativeSuccessTiming\(bool extendedLogging\) \{\n\t\t\t_ = extendedLogging;\n\t\t\treturn true;\n\t\t\}',
+                      '\t\tinternal static bool ShouldLogNativeSuccessTiming(bool extendedLogging) =>\n\t\t\textendedLogging;'),
+                  (
+                      r'\t\tinternal static bool ShouldLogGrayByteScanTelemetry\(bool extendedLogging\) \{\n\t\t\t_ = extendedLogging;\n\t\t\treturn true;\n\t\t\}',
+                      '\t\tinternal static bool ShouldLogGrayByteScanTelemetry(bool extendedLogging) =>\n\t\t\textendedLogging;'),
+              ]
+              for pattern, replacement in replacements:
+                  region, count = re.subn(pattern, lambda _: replacement, region)
+                  if count != 1:
+                      raise SystemExit(f'Telemetry gate replacement count: {count}')
+              return region
 
-          telemetry_header = dedent('''\
-          using System;
-          using VDF.Core.Utils;
-
-          namespace VDF.Core.FFTools {
-          \tinternal static partial class FfmpegEngine {
-          ''')
           engine = extract(
               engine,
               '\t\tstatic void LogNativeTiming(',
               '\t\tconst double SequentialBatchMaxSpanSeconds = 2d;',
               'VDF.Core/FFTools/FfmpegEngine.Telemetry.cs',
-              telemetry_header,
+              'using System;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n',
               gate_telemetry)
 
-          hardware_header = dedent('''\
-          using System;
-          using System.Collections.Generic;
-          using System.Globalization;
-          using System.Linq;
-          using System.Threading;
-          using FFmpeg.AutoGen;
-          using VDF.Core.Utils;
-
-          namespace VDF.Core.FFTools {
-          \tinternal static partial class FfmpegEngine {
-          ''')
           engine = extract(
               engine,
               '\t\tstatic bool TryGetNativeGrayByteD3D11ManualMaxConcurrency(out int concurrency) {',
               '\t\tstatic unsafe byte[] ExtractGrayFrameFromFrame(',
               'VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs',
-              hardware_header)
+              'using System;\nusing System.Collections.Generic;\nusing System.Globalization;\nusing System.Linq;\nusing System.Threading;\nusing FFmpeg.AutoGen;\nusing VDF.Core.Utils;\n\nnamespace VDF.Core.FFTools {\n\tinternal static partial class FfmpegEngine {\n')
 
           engine_path.write_text(engine, encoding='utf-8')
 
           tests_path = Path('VDF.Core.Tests/FFTools/FfmpegEngineTests.cs')
           tests = tests_path.read_text(encoding='utf-8')
-          old_tests = dedent('''\
-          \t[Theory]
-          \t[InlineData(false)]
-          \t[InlineData(true)]
-          \tpublic void ShouldLogNativeSuccessTiming_DoesNotDependOnExtendedLogging(bool extendedLogging) {
-          \t\tAssert.True(FfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
-          \t}
-
-          \t[Theory]
-          \t[InlineData(false)]
-          \t[InlineData(true)]
-          \tpublic void ShouldLogGrayByteScanTelemetry_DoesNotDependOnExtendedLogging(bool extendedLogging) {
-          \t\tAssert.True(FfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
-          \t}''')
-          new_tests = dedent('''\
-          \t[Theory]
+          start_marker = '\t[Theory]\n\t[InlineData(false)]\n\t[InlineData(true)]\n\tpublic void ShouldLogNativeSuccessTiming_'
+          start = tests.find(start_marker)
+          second = tests.find('\tpublic void ShouldLogGrayByteScanTelemetry_', start)
+          end = tests.find('\n\t}', second)
+          if start < 0 or second < 0 or end < 0:
+              raise SystemExit(f'Telemetry test markers not found (start={start}, second={second}, end={end})')
+          end += len('\n\t}')
+          new_tests = '''\t[Theory]
           \t[InlineData(false, false)]
           \t[InlineData(true, true)]
           \tpublic void ShouldLogNativeSuccessTiming_FollowsExtendedLogging(
@@ -176,10 +126,8 @@ jobs:
           \t\tAssert.Equal(
           \t\t\texpected,
           \t\t\tFfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
-          \t}''')
-          if tests.count(old_tests) != 1:
-              raise SystemExit(f'Expected one telemetry test block, found {tests.count(old_tests)}')
-          tests_path.write_text(tests.replace(old_tests, new_tests, 1), encoding='utf-8')
+          \t}'''.replace('          ', '')
+          tests_path.write_text(tests[:start] + new_tests + tests[end:], encoding='utf-8')
           PY
 
       - name: Validate maintenance bundle
