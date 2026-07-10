@@ -2,6 +2,11 @@ name: Apply perf maintenance bundle
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/apply-perf-maintenance.yml'
 
 permissions:
   contents: write
@@ -107,26 +112,26 @@ jobs:
               raise SystemExit(f'Telemetry test markers not found (start={start}, second={second}, end={end})')
           end += len('\n\t}')
           new_tests = '''\t[Theory]
-          \t[InlineData(false, false)]
-          \t[InlineData(true, true)]
-          \tpublic void ShouldLogNativeSuccessTiming_FollowsExtendedLogging(
-          \t\tbool extendedLogging,
-          \t\tbool expected) {
-          \t\tAssert.Equal(
-          \t\t\texpected,
-          \t\t\tFfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
-          \t}
+\t[InlineData(false, false)]
+\t[InlineData(true, true)]
+\tpublic void ShouldLogNativeSuccessTiming_FollowsExtendedLogging(
+\t\tbool extendedLogging,
+\t\tbool expected) {
+\t\tAssert.Equal(
+\t\t\texpected,
+\t\t\tFfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
+\t}
 
-          \t[Theory]
-          \t[InlineData(false, false)]
-          \t[InlineData(true, true)]
-          \tpublic void ShouldLogGrayByteScanTelemetry_FollowsExtendedLogging(
-          \t\tbool extendedLogging,
-          \t\tbool expected) {
-          \t\tAssert.Equal(
-          \t\t\texpected,
-          \t\t\tFfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
-          \t}'''.replace('          ', '')
+\t[Theory]
+\t[InlineData(false, false)]
+\t[InlineData(true, true)]
+\tpublic void ShouldLogGrayByteScanTelemetry_FollowsExtendedLogging(
+\t\tbool extendedLogging,
+\t\tbool expected) {
+\t\tAssert.Equal(
+\t\t\texpected,
+\t\t\tFfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
+\t}'''
           tests_path.write_text(tests[:start] + new_tests + tests[end:], encoding='utf-8')
           PY
 
