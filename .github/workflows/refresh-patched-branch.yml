@@ -57,4 +57,81 @@ jobs:
           merge_status=$?
           set -e
 
-          # The performance branch owns
+          # The performance branch owns its workflow definitions. Keep them across
+          # upstream refreshes so default-token pushes never need workflow scope.
+          git checkout "$before" -- .github/workflows
+          git add .github/workflows
+
+          if [ "$merge_status" -ne 0 ]; then
+            echo 'Merge reported conflicts. Auto-resolving only known safe files.'
+            conflicted_files="$(git diff --name-only --diff-filter=U)"
+            echo "$conflicted_files"
+
+            {
+              echo '### Unresolved merge conflicts'
+              echo
+              echo '```text'
+              echo "$conflicted_files"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if grep -Fxq 'README.md' <<< "$conflicted_files"; then
+              echo 'Keeping origin/master README.md'
+              git checkout --theirs -- README.md
+              git add README.md
+            fi
+
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$remaining_conflicts" ]; then
+              echo 'Unresolved source conflicts remain and require review:'
+              echo "$remaining_conflicts"
+              exit 1
+            fi
+          fi
+
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit --no-edit
+          fi
+
+          after="$(git rev-parse HEAD)"
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+
+          if [ "$before" = "$after" ]; then
+            echo 'merge_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'No 4.1 perf branch changes from origin/master.'
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "$before" "$after")"
+          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/)' || true)"
+
+          {
+            echo 'changed_files<<EOF'
+            echo "$changed_files"
+            echo 'EOF'
+            echo 'meaningful_changes<<EOF'
+            echo "$meaningful_changes"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          echo 'merge_changed=true' >> "$GITHUB_OUTPUT"
+          if [ -n "$meaningful_changes" ]; then
+            echo 'meaningful_changed=true' >> "$GITHUB_OUTPUT"
+            echo 'Meaningful changes detected:'
+            echo "$meaningful_changes"
+          else
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Only ignored files changed; release build will not be dispatched.'
+          fi
+
+      - name: Push updated 4.1 branch
+        if: steps.merge.outputs.merge_changed == 'true'
+        run: git push origin perf/4.1-native-hwaccel
+
+      - name: Trigger 4.1 performance release
+        if: steps.merge.outputs.meaningful_changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run releases.yml --ref perf/4.1-native-hwaccel
