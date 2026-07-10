@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY without even the implied warranty of
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -14,30 +14,28 @@
 // */
 //
 
-using System.Net;
 using Microsoft.AspNetCore.HttpOverrides;
 using VDF.Core;
 using VDF.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Reverse-proxy support: honor X-Forwarded-Proto so Secure-cookie handling knows
+// the original scheme, but only from explicitly trusted proxies (loopback is
+// trusted by ASP.NET's defaults). Unknown proxies' headers are ignored, so a
+// client cannot spoof the scheme. With no env vars set, behavior for direct and
+// plain-HTTP (Docker) deployments is unchanged. Invalid entries only warn —
+// a typo in an env var must not crash-loop the container.
+var trustedProxies = TrustedProxyParser.Parse(
+	Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXIES"),
+	Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXY_NETWORKS"));
 builder.Services.Configure<ForwardedHeadersOptions>(options => {
-	// Only the original scheme is needed for Secure-cookie handling. Forwarded
-	// values are accepted solely from loopback or explicitly configured proxies.
 	options.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
 	options.ForwardLimit = 1;
-
-	foreach (string value in SplitList(Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXIES"))) {
-		if (!IPAddress.TryParse(value, out IPAddress? proxy))
-			throw new InvalidOperationException($"Invalid IP address in VDF_TRUSTED_PROXIES: '{value}'");
+	foreach (var proxy in trustedProxies.Proxies)
 		options.KnownProxies.Add(proxy);
-	}
-
-	foreach (string value in SplitList(Environment.GetEnvironmentVariable("VDF_TRUSTED_PROXY_NETWORKS"))) {
-		if (!System.Net.IPNetwork.TryParse(value, out System.Net.IPNetwork network))
-			throw new InvalidOperationException($"Invalid CIDR network in VDF_TRUSTED_PROXY_NETWORKS: '{value}'");
+	foreach (var network in trustedProxies.Networks)
 		options.KnownIPNetworks.Add(network);
-	}
 });
 
 builder.Services.AddRazorComponents()
@@ -52,8 +50,10 @@ builder.Services.AddSingleton<FFmpegSetupService>();
 
 var app = builder.Build();
 
-// Must run before anything that relies on Request.Scheme. Unknown proxies are
-// ignored, so a client cannot spoof X-Forwarded-Proto to alter cookie security.
+foreach (string warning in trustedProxies.Warnings)
+	app.Logger.LogWarning("{Warning}", warning);
+
+// Must run before anything that reads Request.Scheme / Request.IsHttps.
 app.UseForwardedHeaders();
 
 // Route unhandled exceptions from ScanEngine's async void methods (post-await) to ScanService
@@ -146,7 +146,9 @@ app.MapGet("/thumbnail/hq", async (HttpContext ctx, ScanService scan) => {
 		: TimeSpan.FromSeconds(item.Duration.TotalSeconds * 0.1);
 
 	string cacheKey = $"{path}|{position.TotalSeconds:F2}|{width}|{quality}";
+
 	if (!scan.HqThumbCache.TryGetValue(cacheKey, out var jpeg)) {
+		// FFmpeg encodes at the requested quality directly — no re-encode pass needed.
 		jpeg = await Task.Run(() => ScanEngine.ExtractThumbnailJpeg(path, position, width, quality));
 		if (jpeg == null || jpeg.Length == 0) { ctx.Response.StatusCode = 204; return; }
 		if (scan.HqThumbCache.Count >= 4096)
@@ -173,6 +175,7 @@ app.MapGet("/thumbnail/full", async (HttpContext ctx, ScanService scan) => {
 		: TimeSpan.FromSeconds(item.Duration.TotalSeconds * 0.1);
 
 	string cacheKey = $"{path}|{position.TotalSeconds:F2}|full";
+
 	if (!scan.FullThumbCache.TryGetValue(cacheKey, out var jpeg)) {
 		jpeg = await Task.Run(() => ScanEngine.ExtractThumbnailJpeg(path, position, 0));
 		if (jpeg == null || jpeg.Length == 0) { ctx.Response.StatusCode = 204; return; }
@@ -199,6 +202,7 @@ app.MapGet("/export/csv", (ScanService scan) => {
 	var inv = System.Globalization.CultureInfo.InvariantCulture;
 	var sb = new System.Text.StringBuilder();
 	sb.AppendLine("GroupId,Path,SizeBytes,Duration,Resolution,Fps,BitrateKbs,AudioFormat,AudioSampleRate,Similarity,DateCreated,IsImage");
+	// Keep group members on adjacent rows regardless of list order.
 	foreach (var group in scan.Duplicates.GroupBy(i => i.GroupId))
 		foreach (var item in group)
 			sb.AppendLine(string.Join(',',
@@ -214,6 +218,7 @@ app.MapGet("/export/csv", (ScanService scan) => {
 				item.Similarity.ToString(inv),
 				item.DateCreated.ToString("yyyy-MM-dd HH:mm:ss", inv),
 				item.IsImage.ToString()));
+	// UTF-8 BOM so Excel detects the encoding.
 	var utf8 = System.Text.Encoding.UTF8;
 	byte[] bytes = [.. utf8.GetPreamble(), .. utf8.GetBytes(sb.ToString())];
 	return Microsoft.AspNetCore.Http.Results.File(bytes, "text/csv", "vdf-results.csv");
@@ -227,8 +232,3 @@ var ffmpegSetup = app.Services.GetRequiredService<FFmpegSetupService>();
 _ = ffmpegSetup.CheckAndSetupAsync();
 
 app.Run();
-
-static IEnumerable<string> SplitList(string? value) =>
-	(value ?? string.Empty).Split(
-		[',', ';', ' '],
-		StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

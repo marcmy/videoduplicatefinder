@@ -536,8 +536,11 @@ namespace VDF.GUI.ViewModels {
 			UpdateCullingInfo();
 		}
 
-internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
-	mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
+		// Dual modes need two SELECTED items, not two loaded bitmaps: thumbnails load
+		// asynchronously, so keying off ImageA/ImageB knocked the dropdown back to
+		// Single whenever a mode was picked while thumbnails were still loading.
+		internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA, bool hasSelectionB) =>
+			mode != CompareMode.Single && (!hasSelectionA || !hasSelectionB);
 
 		// Auto-fallback to Single when only one image is available. Must not write to
 		// settings — otherwise the persisted user preference gets clobbered on every open.
@@ -603,8 +606,9 @@ internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA,
 		}
 
 		void UpdateFrameImages() {
-			// Invalidate work started for the previous selection, base frame, or offsets.
-			// A completed stale extraction may populate its cache, but must not update the UI.
+			// Invalidate work started for the previous selection, base frame or offsets.
+			// A stale extraction may still complete and populate its cache, but must
+			// not touch the UI anymore.
 			_frameExtractCts?.Cancel();
 			_frameExtractCts = null;
 			IsExtractingFrame = false;
@@ -635,6 +639,9 @@ internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA,
 			_frameExtractCts = cts;
 			IsExtractingFrame = true;
 
+			// Cancellation alone is not enough: a completed extraction that was
+			// superseded (new selection, base frame or step) races the UI-thread
+			// schedule against the next request, so re-check every input too.
 			bool IsStillCurrentRequest() =>
 				!cts.IsCancellationRequested &&
 				ReferenceEquals(_frameExtractCts, cts) &&
@@ -652,8 +659,7 @@ internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA,
 					if (cts.IsCancellationRequested) return;
 
 					RxSchedulers.MainThreadScheduler.Schedule(() => {
-						if (!IsStillCurrentRequest())
-							return;
+						if (!IsStillCurrentRequest()) return;
 						if (needExtractA && bmpA != null)
 							ImageA = bmpA;
 						if (needExtractB && bmpB != null)
@@ -666,8 +672,7 @@ internal static bool ShouldForceSingleView(CompareMode mode, bool hasSelectionA,
 				}
 				catch {
 					RxSchedulers.MainThreadScheduler.Schedule(() => {
-						if (!ReferenceEquals(_frameExtractCts, cts))
-							return;
+						if (!ReferenceEquals(_frameExtractCts, cts)) return;
 						_frameExtractCts = null;
 						IsExtractingFrame = false;
 					});

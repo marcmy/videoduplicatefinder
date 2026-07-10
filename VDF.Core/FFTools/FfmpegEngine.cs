@@ -1656,9 +1656,9 @@ namespace VDF.Core.FFTools {
 					if (!IsValidPixelFormat(srcPixFmt)) throw new Exception($"Invalid source pixel format {srcPixFmt}");
 					if (sourceSize.Width <= 0 || sourceSize.Height <= 0) throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
 
-					AVRational sampleAspectRatio = srcFrame.sample_aspect_ratio;
+					AVRational sampleAspectRatio = vsd.StreamSampleAspectRatio;
 					if (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
-						sampleAspectRatio = vsd.StreamSampleAspectRatio;
+						sampleAspectRatio = srcFrame.sample_aspect_ratio;
 					Size displaySize = isGrayByte
 						? sourceSize
 						: GetDisplaySizeForSampleAspectRatio(
@@ -1777,12 +1777,7 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("gray");
 			}
 			else {
-				string? vfChain = null;
-				if (!FileUtils.IsImageFile(settings.File)) {
-					// Convert the coded raster to square pixels before encoding the JPEG.
-					// This is the equivalent of a media player's display-size correction.
-					vfChain = "scale=trunc(iw*if(eq(sar\\,0)\\,1\\,sar)):ih,setsar=1";
-				}
+				string? vfChain = BuildSarNormalizationFilter(settings.File);
 
 				if (settings.Fullsize != 1) {
 					int maxW = settings.MaxWidth > 0 ? settings.MaxWidth : 100;
@@ -2171,10 +2166,21 @@ namespace VDF.Core.FFTools {
 				return source;
 
 			double exactWidth = source.Width * (double)sarNumerator / sarDenominator;
-			if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth >= int.MaxValue)
+			if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth > 65536)
 				return source;
 
 			return new Size(Math.Max(1, (int)Math.Floor(exactWidth)), source.Height);
+		}
+
+		// Upstream compatibility name used by the SAR regression tests.
+		internal static Size ApplySampleAspectRatio(Size codedSize, int sarNum, int sarDen) =>
+			GetDisplaySizeForSampleAspectRatio(codedSize, sarNum, sarDen);
+
+		internal static string? BuildSarNormalizationFilter(string file) {
+			if (FileUtils.IsImageFile(file))
+				return null;
+			const string sarMul = "if(eq(sar\\,0)\\,1\\,sar)";
+			return $"scale=if(gt(iw*{sarMul}\\,65536)\\,iw\\,trunc(iw*{sarMul})):ih,setsar=1";
 		}
 
 		/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>

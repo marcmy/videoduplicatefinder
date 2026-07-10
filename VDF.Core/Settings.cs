@@ -63,7 +63,11 @@ namespace VDF.Core {
 
 		public byte Threshhold = 5;
 		public float Percent = 96f;
-		/// <summary>Minimum fraction of sampled frame positions that must individually pass pHash similarity.</summary>
+		/// <summary>
+		/// Minimum fraction (0..1) of sampled frame positions that must individually pass
+		/// the pHash similarity threshold for a pair to count as duplicates. Only used
+		/// when <see cref="UsePHashing"/> is on.
+		/// </summary>
 		public float PHashRequiredMatchingSampleRatio = 0.6f;
 		public double PercentDurationDifference = 20d;
 		public double DurationDifferenceMinSeconds;
@@ -74,8 +78,6 @@ namespace VDF.Core {
 		/// <summary>Maximum width in pixels for display thumbnails (0 = original resolution).</summary>
 		public int ThumbnailMaxWidth = 100;
 		public int MaxDegreeOfParallelism = 1;
-		/// <summary>Maximum workers for duplicate matching. Non-positive values use an automatic CPU-headroom cap.</summary>
-		public int MatchingMaxDegreeOfParallelism;
 		/// <summary>
 		/// Per-drive concurrency cap for slow drives (spindle HDDs, network shares, drives that
 		/// cannot be classified). A single spinning disk seek-thrashes when many files are read
@@ -83,6 +85,13 @@ namespace VDF.Core {
 		/// <see cref="MaxDegreeOfParallelism"/> budget. 0 or negative = default of 2.
 		/// </summary>
 		public int HddMaxDegreeOfParallelism = 2;
+		/// <summary>
+		/// Worker cap for the CPU-bound duplicate-matching phases (visual compare,
+		/// partial-clip compare). Separate from <see cref="MaxDegreeOfParallelism"/>,
+		/// which governs media READS and is tuned to storage, not CPU. 0 or negative =
+		/// automatic: use most of the machine while reserving headroom for the UI.
+		/// </summary>
+		public int MatchingMaxDegreeOfParallelism;
 
 		Dictionary<string, string> driveTypeOverrides = new(StringComparer.OrdinalIgnoreCase);
 		/// <summary>

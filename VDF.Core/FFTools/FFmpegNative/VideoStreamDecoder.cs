@@ -157,6 +157,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			var transferSw = Stopwatch.StartNew();
 			ResetTimeout();
 			ffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError($"av_hwframe_transfer_data({(AVPixelFormat)_pFrame->format})");
+			ffmpeg.av_frame_copy_props(_pReceivedFrame, _pFrame);
 			transferMs = transferSw.ElapsedMilliseconds;
 			hardwareTransfers = 1;
 			return *_pReceivedFrame;
