@@ -33,6 +33,11 @@ jobs:
           ref: perf/4.1-native-hwaccel
           fetch-depth: 0
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
@@ -62,119 +67,19 @@ jobs:
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
-          # Diagnostic files belong only on master and must not enter release branches.
+          # Temporary merge diagnostics belong only on master.
           git rm -f --ignore-unmatch .github/refresh-conflicts.txt .github/refresh-conflicts.diff
 
           if [ "$merge_status" -ne 0 ]; then
-            echo 'Merge reported conflicts. Resolving the reviewed 4.1 adoption overlap.'
+            echo 'Merge reported conflicts. Auto-resolving only known safe files.'
             conflicted_files="$(git diff --name-only --diff-filter=U)"
             echo "$conflicted_files"
 
-            # These two files contain the substantially larger native/D3D11 performance
-            # implementation. Keep that implementation and fold the relevant upstream
-            # safety refinements into it below.
-            ours_files=(
-              'VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs'
-              'VDF.Core/FFTools/FfmpegEngine.cs'
-            )
-
-            # Upstream has now adopted and further refined the matching quorum,
-            # concurrency, comparer, settings, and localization work. Its versions are
-            # the authoritative continuation of those changes.
-            theirs_files=(
-              'VDF.Core/ScanEngine.cs'
-              'VDF.Core/Settings.cs'
-              'VDF.GUI/Assets/Locales/de.json'
-              'VDF.GUI/Assets/Locales/en.json'
-              'VDF.GUI/Assets/Locales/es.json'
-              'VDF.GUI/Assets/Locales/fr.json'
-              'VDF.GUI/Assets/Locales/ko.json'
-              'VDF.GUI/Assets/Locales/pt.json'
-              'VDF.GUI/Assets/Locales/zh-Hans.json'
-              'VDF.GUI/Data/SettingsFile.cs'
-              'VDF.GUI/Data/ZoomPanPresenter.cs'
-              'VDF.GUI/ViewModels/ThumbnailComparerVM.cs'
-              'VDF.GUI/Views/SettingsView.xaml'
-            )
-
-            for file in "${ours_files[@]}"; do
-              if grep -Fxq "$file" <<< "$conflicted_files"; then
-                echo "Keeping performance implementation of $file"
-                git checkout --ours -- "$file"
-                git add "$file"
-              fi
-            done
-
-            for file in "${theirs_files[@]}"; do
-              if grep -Fxq "$file" <<< "$conflicted_files"; then
-                echo "Taking refined upstream implementation of $file"
-                git checkout --theirs -- "$file"
-                git add "$file"
-              fi
-            done
-
-            python3 - <<'PY'
-          from pathlib import Path
-
-          decoder = Path('VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs')
-          text = decoder.read_text(encoding='utf-8')
-          transfer = '\t\t\tffmpeg.av_hwframe_transfer_data(_pReceivedFrame, _pFrame, 0).ThrowExceptionIfError($"av_hwframe_transfer_data({(AVPixelFormat)_pFrame->format})");\n'
-          copy_props = '\t\t\tffmpeg.av_frame_copy_props(_pReceivedFrame, _pFrame);\n'
-          if copy_props not in text:
-              if transfer not in text:
-                  raise SystemExit('Could not locate native frame-transfer call')
-              text = text.replace(transfer, transfer + copy_props, 1)
-          decoder.write_text(text, encoding='utf-8')
-
-          engine = Path('VDF.Core/FFTools/FfmpegEngine.cs')
-          text = engine.read_text(encoding='utf-8')
-
-          old_sar = '''\t\t\t\t\tAVRational sampleAspectRatio = srcFrame.sample_aspect_ratio;
-          \t\t\t\t\tif (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
-          \t\t\t\t\t\tsampleAspectRatio = vsd.StreamSampleAspectRatio;'''
-          new_sar = '''\t\t\t\t\tAVRational sampleAspectRatio = vsd.StreamSampleAspectRatio;
-          \t\t\t\t\tif (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
-          \t\t\t\t\t\tsampleAspectRatio = srcFrame.sample_aspect_ratio;'''
-          if old_sar in text:
-              text = text.replace(old_sar, new_sar, 1)
-
-          text = text.replace(
-              'if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth >= int.MaxValue)',
-              'if (!double.IsFinite(exactWidth) || exactWidth <= 0 || exactWidth > 65536)',
-              1)
-
-          old_filter = '''\t\t\t\tstring? vfChain = null;
-          \t\t\t\tif (!FileUtils.IsImageFile(settings.File)) {
-          \t\t\t\t\t// Convert the coded raster to square pixels before encoding the JPEG.
-          \t\t\t\t\t// This is the equivalent of a media player's display-size correction.
-          \t\t\t\t\tvfChain = "scale=trunc(iw*if(eq(sar\\\\,0)\\\\,1\\\\,sar)):ih,setsar=1";
-          \t\t\t\t}'''
-          new_filter = '''\t\t\t\tstring? vfChain = BuildSarNormalizationFilter(settings.File);'''
-          if old_filter in text:
-              text = text.replace(old_filter, new_filter, 1)
-
-          marker = '''\t\t/// <summary>Downscale-only fit into a maxDim x maxDim bounding box, preserving aspect ratio.</summary>'''
-          helpers = '''\t\t// Upstream compatibility name used by the SAR regression tests.
-          \t\tinternal static Size ApplySampleAspectRatio(Size codedSize, int sarNum, int sarDen) =>
-          \t\t\tGetDisplaySizeForSampleAspectRatio(codedSize, sarNum, sarDen);
-
-          \t\tinternal static string? BuildSarNormalizationFilter(string file) {
-          \t\t\tif (FileUtils.IsImageFile(file))
-          \t\t\t\treturn null;
-          \t\t\tconst string sarMul = "if(eq(sar\\\\,0)\\\\,1\\\\,sar)";
-          \t\t\treturn $"scale=if(gt(iw*{sarMul}\\\\,65536)\\\\,iw\\\\,trunc(iw*{sarMul})):ih,setsar=1";
-          \t\t}
-
-          '''
-          if 'internal static Size ApplySampleAspectRatio(' not in text:
-              if marker not in text:
-                  raise SystemExit('Could not locate SAR helper insertion point')
-              text = text.replace(marker, helpers + marker, 1)
-
-          engine.write_text(text, encoding='utf-8')
-          PY
-
-            git add VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs VDF.Core/FFTools/FfmpegEngine.cs
+            if grep -Fxq 'README.md' <<< "$conflicted_files"; then
+              echo 'Keeping origin/master README.md'
+              git checkout --theirs -- README.md
+              git add README.md
+            fi
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
@@ -220,6 +125,15 @@ jobs:
             echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
             echo 'Only ignored files changed; release build will not be dispatched.'
           fi
+
+      - name: Validate merged 4.1 branch
+        if: steps.merge.outputs.merge_changed == 'true'
+        run: |
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
 
       - name: Push updated 4.1 branch
         if: steps.merge.outputs.merge_changed == 'true'
