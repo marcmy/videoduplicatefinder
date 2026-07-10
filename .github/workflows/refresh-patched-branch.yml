@@ -67,12 +67,6 @@ jobs:
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
-          # Temporary diagnostics belong only on master.
-          git rm -f --ignore-unmatch \
-            .github/refresh-conflicts.txt \
-            .github/refresh-conflicts.diff \
-            .github/refresh-validation.log
-
           if [ "$merge_status" -ne 0 ]; then
             echo 'Merge reported conflicts. Auto-resolving only known safe files.'
             conflicted_files="$(git diff --name-only --diff-filter=U)"
@@ -92,12 +86,6 @@ jobs:
             fi
           fi
 
-          # Upstream renamed the GUI percentage wrapper while adopting the pHash
-          # quorum feature. Keep the performance branch's view-model wired to it.
-          sed -i 's/PHashRequiredMatchingSampleRatioPercent/PHashSampleRatioPercent/g' \
-            VDF.GUI/ViewModels/MainWindowVM.cs
-          git add VDF.GUI/ViewModels/MainWindowVM.cs
-
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
@@ -114,16 +102,7 @@ jobs:
           fi
 
           changed_files="$(git diff --name-only "$before" "$after")"
-          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/|\.github/refresh-(conflicts\.(txt|diff)|validation\.log))' || true)"
-
-          {
-            echo 'changed_files<<EOF'
-            echo "$changed_files"
-            echo 'EOF'
-            echo 'meaningful_changes<<EOF'
-            echo "$meaningful_changes"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
+          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/)' || true)"
 
           echo 'merge_changed=true' >> "$GITHUB_OUTPUT"
           if [ -n "$meaningful_changes" ]; then
@@ -136,43 +115,22 @@ jobs:
           fi
 
       - name: Validate merged 4.1 branch
-        id: validate
         if: steps.merge.outputs.merge_changed == 'true'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          {
-            dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
-            dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
-            dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
-            dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
-            dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
-          } 2>&1 | tee /tmp/refresh-validation.log
-
-      - name: Publish validation failure
-        if: steps.validate.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          api='repos/${{ github.repository }}/contents/.github/refresh-validation.log'
-          encoded="$(base64 -w0 /tmp/refresh-validation.log)"
-          existing_sha="$(gh api --method GET "$api" -f ref=master --jq '.sha' 2>/dev/null || true)"
-          args=(--method PUT "$api" -f message='ci: record 4.1 refresh validation failure' -f content="$encoded" -f branch=master)
-          if [ -n "$existing_sha" ]; then
-            args+=(-f sha="$existing_sha")
-          fi
-          gh api "${args[@]}"
-          exit 1
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
 
       - name: Push updated 4.1 branch
-        if: steps.merge.outputs.merge_changed == 'true' && steps.validate.outcome == 'success'
+        if: steps.merge.outputs.merge_changed == 'true'
         run: git push origin perf/4.1-native-hwaccel
 
       - name: Trigger 4.1 performance release
-        if: steps.merge.outputs.meaningful_changed == 'true' && steps.validate.outcome == 'success'
+        if: steps.merge.outputs.meaningful_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run releases.yml --ref perf/4.1-native-hwaccel
