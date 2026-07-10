@@ -40,16 +40,37 @@ jobs:
         run: python tools/apply-perf-maintenance.py
 
       - name: Validate builds and tests
+        id: validate
+        continue-on-error: true
         shell: pwsh
         run: |
-          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
-          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
-          dotnet build VDF.Benchmarks/VDF.Benchmarks.csproj -c Release -v q
-          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
-          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
-          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+          $log = 'perf-maintenance-validation.log'
+          function Invoke-Logged([scriptblock] $Command) {
+            & $Command 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Invoke-Logged { dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q }
+          Invoke-Logged { dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q }
+          Invoke-Logged { dotnet build VDF.Benchmarks/VDF.Benchmarks.csproj -c Release -v q }
+          Invoke-Logged { dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q }
+          Invoke-Logged { dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q }
+          Invoke-Logged { dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q }
+
+      - name: Upload validation failure
+        if: steps.validate.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-maintenance-validation
+          path: perf-maintenance-validation.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail after preserving validation log
+        if: steps.validate.outcome == 'failure'
+        run: exit 1
 
       - name: Commit validated transformation
+        if: steps.validate.outcome == 'success'
         shell: bash
         run: |
           git add VDF.Core/FFTools/FfmpegEngine.cs \
