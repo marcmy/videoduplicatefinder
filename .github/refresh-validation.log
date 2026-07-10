@@ -1,0 +1,9 @@
+/home/runner/work/videoduplicatefinder/videoduplicatefinder/VDF.GUI/ViewModels/MainWindowVM.cs(1608,78): error CS1061: 'SettingsFile' does not contain a definition for 'PHashRequiredMatchingSampleRatioPercent' and no accessible extension method 'PHashRequiredMatchingSampleRatioPercent' accepting a first argument of type 'SettingsFile' could be found (are you missing a using directive or an assembly reference?) [/home/runner/work/videoduplicatefinder/videoduplicatefinder/VDF.GUI/VDF.GUI.csproj]
+
+Build FAILED.
+
+/home/runner/work/videoduplicatefinder/videoduplicatefinder/VDF.GUI/ViewModels/MainWindowVM.cs(1608,78): error CS1061: 'SettingsFile' does not contain a definition for 'PHashRequiredMatchingSampleRatioPercent' and no accessible extension method 'PHashRequiredMatchingSampleRatioPercent' accepting a first argument of type 'SettingsFile' could be found (are you missing a using directive or an assembly reference?) [/home/runner/work/videoduplicatefinder/videoduplicatefinder/VDF.GUI/VDF.GUI.csproj]
+    0 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:17.37
