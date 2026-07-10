@@ -29,6 +29,10 @@ internal static class Program {
 		if (args.Length > 0 && args[0] == "--probe-compare")
 			return ComparePhaseProbe.Run(args);
 
+		// Repeatable JSON regression probe for the real extraction paths.
+		if (args.Length > 0 && args[0] == "--probe-regression")
+			return RegressionProbe.Run(args);
+
 		// BenchmarkSwitcher routes CLI args (--filter, --list, --job, --exporters …)
 		// to BDN. With no args, prints the menu of available benchmarks.
 		BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
