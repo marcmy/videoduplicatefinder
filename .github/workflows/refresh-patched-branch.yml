@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: refresh-4.1-perf-branch
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
