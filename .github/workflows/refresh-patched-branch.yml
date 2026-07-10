@@ -92,6 +92,12 @@ jobs:
             fi
           fi
 
+          # Upstream renamed the GUI percentage wrapper while adopting the pHash
+          # quorum feature. Keep the performance branch's view-model wired to it.
+          sed -i 's/PHashRequiredMatchingSampleRatioPercent/PHashSampleRatioPercent/g' \
+            VDF.GUI/ViewModels/MainWindowVM.cs
+          git add VDF.GUI/ViewModels/MainWindowVM.cs
+
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
