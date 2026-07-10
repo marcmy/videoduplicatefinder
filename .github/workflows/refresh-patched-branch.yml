@@ -1,4 +1,5 @@
 name: Refresh 4.1 perf branch
+# Trigger installed janitor definition.
 
 on:
   workflow_run:
