@@ -67,8 +67,11 @@ jobs:
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
-          # Temporary merge diagnostics belong only on master.
-          git rm -f --ignore-unmatch .github/refresh-conflicts.txt .github/refresh-conflicts.diff
+          # Temporary diagnostics belong only on master.
+          git rm -f --ignore-unmatch \
+            .github/refresh-conflicts.txt \
+            .github/refresh-conflicts.diff \
+            .github/refresh-validation.log
 
           if [ "$merge_status" -ne 0 ]; then
             echo 'Merge reported conflicts. Auto-resolving only known safe files.'
@@ -105,7 +108,7 @@ jobs:
           fi
 
           changed_files="$(git diff --name-only "$before" "$after")"
-          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/|\.github/refresh-conflicts\.(txt|diff))' || true)"
+          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/|\.github/refresh-(conflicts\.(txt|diff)|validation\.log))' || true)"
 
           {
             echo 'changed_files<<EOF'
@@ -127,20 +130,41 @@ jobs:
           fi
 
       - name: Validate merged 4.1 branch
+        id: validate
         if: steps.merge.outputs.merge_changed == 'true'
+        continue-on-error: true
+        shell: bash
         run: |
-          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
-          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
-          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
-          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
-          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+          set -o pipefail
+          {
+            dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+            dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
+            dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+            dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+            dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+          } 2>&1 | tee /tmp/refresh-validation.log
+
+      - name: Publish validation failure
+        if: steps.validate.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B master origin/master
+          mkdir -p .github
+          cp /tmp/refresh-validation.log .github/refresh-validation.log
+          git add .github/refresh-validation.log
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: record 4.1 refresh validation failure'
+            git push origin HEAD:master
+          fi
+          exit 1
 
       - name: Push updated 4.1 branch
-        if: steps.merge.outputs.merge_changed == 'true'
+        if: steps.merge.outputs.merge_changed == 'true' && steps.validate.outcome == 'success'
         run: git push origin perf/4.1-native-hwaccel
 
       - name: Trigger 4.1 performance release
-        if: steps.merge.outputs.meaningful_changed == 'true'
+        if: steps.merge.outputs.meaningful_changed == 'true' && steps.validate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run releases.yml --ref perf/4.1-native-hwaccel
