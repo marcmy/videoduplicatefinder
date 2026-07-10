@@ -1,4 +1,5 @@
 name: Refresh 4.1 perf branch
+# One-shot cleanup trigger; the job restores the permanent workflow afterward.
 
 on:
   push:
