@@ -2,6 +2,11 @@ name: Refresh 4.1 perf branch
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Sync master from upstream
+    types:
+      - completed
   push:
     branches:
       - master
@@ -9,7 +14,7 @@ on:
       - .github/workflows/refresh-patched-branch.yml
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -17,12 +22,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dispatch-maintenance:
-    runs-on: ubuntu-latest
+  refresh:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-latest
+
     steps:
-      - name: Dispatch staged maintenance workflow
+      - name: Checkout 4.1 perf branch
+        uses: actions/checkout@v5
+        with:
+          ref: perf/4.1-native-hwaccel
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch origin branches
+        run: |
+          git fetch origin master
+          git fetch origin perf/4.1-native-hwaccel
+
+      - name: Merge fork master into 4.1 perf branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='perf/4.1-native-hwaccel'
+          git checkout "$branch"
+          before="$(git rev-parse HEAD)"
+
+          set +e
+          git merge --no-edit --no-commit origin/master
+          merge_status=$?
+          set -e
+
+          # The performance branch owns its workflow definitions. Keep them across
+          # upstream refreshes so default-token pushes never need workflow scope.
+          git checkout "$before" -- .github/workflows
+          git add .github/workflows
+
+          if [ "$merge_status" -ne 0 ]; then
+            echo 'Merge reported conflicts. Auto-resolving only known safe files.'
+            conflicted_files="$(git diff --name-only --diff-filter=U)"
+            echo "$conflicted_files"
+
+            if grep -Fxq 'README.md' <<< "$conflicted_files"; then
+              echo 'Keeping origin/master README.md'
+              git checkout --theirs -- README.md
+              git add README.md
+            fi
+
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$remaining_conflicts" ]; then
+              echo 'Unresolved source conflicts remain and require review:'
+              echo "$remaining_conflicts"
+              exit 1
+            fi
+          fi
+
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit --no-edit
+          fi
+
+          after="$(git rev-parse HEAD)"
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+
+          if [ "$before" = "$after" ]; then
+            echo 'merge_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'No 4.1 perf branch changes from origin/master.'
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "$before" "$after")"
+          meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|\.github/workflows/)' || true)"
+
+          echo 'merge_changed=true' >> "$GITHUB_OUTPUT"
+          if [ -n "$meaningful_changes" ]; then
+            echo 'meaningful_changed=true' >> "$GITHUB_OUTPUT"
+            echo 'Meaningful changes detected:'
+            echo "$meaningful_changes"
+          else
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Only ignored files changed; release build will not be dispatched.'
+          fi
+
+      - name: Validate merged 4.1 branch
+        if: steps.merge.outputs.merge_changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+          dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+
+      - name: Push updated 4.1 branch
+        if: steps.merge.outputs.merge_changed == 'true'
+        run: git push origin perf/4.1-native-hwaccel
+
+      - name: Trigger 4.1 performance release
+        if: steps.merge.outputs.meaningful_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          echo 'Dispatching structurally robust maintenance patch.'
-          gh workflow run apply-perf-maintenance.yml --repo marcmy/videoduplicatefinder --ref master
+        run: gh workflow run releases.yml --ref perf/4.1-native-hwaccel
