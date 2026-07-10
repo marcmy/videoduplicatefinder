@@ -85,6 +85,18 @@ jobs:
             if [ -n "$remaining_conflicts" ]; then
               echo 'Unresolved source conflicts remain and require review:'
               echo "$remaining_conflicts"
+
+              # Persist the exact list on master so it remains visible even when
+              # GitHub or connector log output is truncated before the conflict tail.
+              git merge --abort || true
+              git checkout -B master origin/master
+              mkdir -p .github
+              printf '%s\n' "$remaining_conflicts" > .github/refresh-conflicts.txt
+              git add .github/refresh-conflicts.txt
+              if ! git diff --cached --quiet; then
+                git commit -m 'ci: record 4.1 refresh conflicts'
+                git push origin HEAD:master
+              fi
               exit 1
             fi
           fi
