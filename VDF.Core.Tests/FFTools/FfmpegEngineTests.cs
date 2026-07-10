@@ -151,17 +151,25 @@ public class FfmpegEngineTests {
 	}
 
 	[Theory]
-	[InlineData(false)]
-	[InlineData(true)]
-	public void ShouldLogNativeSuccessTiming_DoesNotDependOnExtendedLogging(bool extendedLogging) {
-		Assert.True(FfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
+	[InlineData(false, false)]
+	[InlineData(true, true)]
+	public void ShouldLogNativeSuccessTiming_FollowsExtendedLogging(
+		bool extendedLogging,
+		bool expected) {
+		Assert.Equal(
+			expected,
+			FfmpegEngine.ShouldLogNativeSuccessTiming(extendedLogging));
 	}
 
 	[Theory]
-	[InlineData(false)]
-	[InlineData(true)]
-	public void ShouldLogGrayByteScanTelemetry_DoesNotDependOnExtendedLogging(bool extendedLogging) {
-		Assert.True(FfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
+	[InlineData(false, false)]
+	[InlineData(true, true)]
+	public void ShouldLogGrayByteScanTelemetry_FollowsExtendedLogging(
+		bool extendedLogging,
+		bool expected) {
+		Assert.Equal(
+			expected,
+			FfmpegEngine.ShouldLogGrayByteScanTelemetry(extendedLogging));
 	}
 
 	[Fact]
