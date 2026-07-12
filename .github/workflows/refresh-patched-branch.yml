@@ -115,6 +115,12 @@ jobs:
           python .github/scripts/patch-perf-merge.py
           git add VDF.Core/FFTools/FfmpegEngine.cs VDF.Core/ScanEngine.cs
 
+          # Fail immediately if the intended all-sample implementation was not inserted.
+          if ! grep -q 'BitOperations.PopCount(phashes\[j\] \^ phashesComp\[j\])' VDF.Core/ScanEngine.cs; then
+            echo '::error file=VDF.Core/ScanEngine.cs::pHash quorum patch was not applied'
+            exit 1
+          fi
+
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
@@ -165,16 +171,19 @@ jobs:
           exec > >(tee perf-validation.log) 2>&1
           dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
           dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
-          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release --logger "console;verbosity=detailed"
           dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
           dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
 
-      - name: Upload validation failure log
+      - name: Upload validation failure state
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-validation-log
-          path: perf-validation.log
+          name: perf-validation-state
+          path: |
+            perf-validation.log
+            VDF.Core/ScanEngine.cs
+            .github/scripts/patch-perf-merge.py
           if-no-files-found: ignore
 
       - name: Push updated 4.1 branch
