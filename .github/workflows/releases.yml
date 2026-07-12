@@ -61,7 +61,22 @@ jobs:
         run: choco install ffmpeg -y --no-progress
 
       - name: Run FFmpeg integration tests
-        run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+        shell: pwsh
+        run: |
+          dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration.trx" 2>&1 |
+            Tee-Object -FilePath integration-test.log
+          exit $LASTEXITCODE
+
+      - name: Upload FFmpeg integration failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-integration-failure-${{ github.run_attempt }}
+          path: |
+            integration-test.log
+            VDF.IntegrationTests/TestResults/integration.trx
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Publish Windows x64 GUI Native AOT
         run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r win-x64 -o outputGUI
