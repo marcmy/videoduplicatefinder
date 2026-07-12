@@ -87,6 +87,22 @@ jobs:
               fi
             done
 
+            # FfmpegEngine contains the performance branch's acceleration work. Use
+            # a three-way merge that keeps all non-conflicting master changes while
+            # preferring the perf version only inside genuinely overlapping hunks.
+            file='VDF.Core/FFTools/FfmpegEngine.cs'
+            if grep -Fxq "$file" <<< "$conflicted_files"; then
+              echo "Merging $file with perf-biased conflict resolution"
+              tmpdir="$(mktemp -d)"
+              git show ":1:$file" > "$tmpdir/base"
+              git show ":2:$file" > "$tmpdir/ours"
+              git show ":3:$file" > "$tmpdir/theirs"
+              git merge-file --ours "$tmpdir/ours" "$tmpdir/base" "$tmpdir/theirs"
+              cp "$tmpdir/ours" "$file"
+              rm -rf "$tmpdir"
+              git add "$file"
+            fi
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo 'Unresolved source conflicts remain and require review:'
