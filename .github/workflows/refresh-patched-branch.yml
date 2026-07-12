@@ -91,6 +91,7 @@ jobs:
             if [ -n "$remaining_conflicts" ]; then
               echo 'Unresolved source conflicts remain and require review:'
               echo "$remaining_conflicts"
+              printf '%s\n' "$remaining_conflicts" > perf-merge-conflicts.txt
               while IFS= read -r file; do
                 [ -z "$file" ] || echo "::error file=$file::Unresolved perf refresh merge conflict"
               done <<< "$remaining_conflicts"
@@ -125,6 +126,14 @@ jobs:
             echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
             echo 'Only ignored files changed; release build will not be dispatched.'
           fi
+
+      - name: Upload merge conflict report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-merge-conflicts
+          path: perf-merge-conflicts.txt
+          if-no-files-found: ignore
 
       - name: Setup .NET
         if: steps.merge.outputs.merge_changed == 'true'
