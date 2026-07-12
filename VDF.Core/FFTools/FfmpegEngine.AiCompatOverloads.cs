@@ -5,7 +5,7 @@ namespace VDF.Core.FFTools {
 	internal static partial class FfmpegEngine {
 		// Preserve upstream's shorter call shape for callers that only provide an
 		// embedding sink. The perf implementation keeps the progress callback as a
-		// separate optional concern.
+		// separate optional concern while remaining source-compatible with upstream.
 		internal static bool GetGrayBytesFromVideo(
 			FileEntry videoFile,
 			List<float> positions,
