@@ -87,17 +87,18 @@ jobs:
               fi
             done
 
-            # FfmpegEngine contains the performance branch's acceleration work. Use
-            # a three-way merge that keeps all non-conflicting master changes while
-            # preferring the perf version only inside genuinely overlapping hunks.
+            # FfmpegEngine contains both upstream AI hooks and perf acceleration work.
+            # Preserve every automatically mergeable change from both sides, but let
+            # master win only the genuinely overlapping hunks so its current API stays
+            # intact. The perf build/tests below guard the acceleration behavior.
             file='VDF.Core/FFTools/FfmpegEngine.cs'
             if grep -Fxq "$file" <<< "$conflicted_files"; then
-              echo "Merging $file with perf-biased conflict resolution"
+              echo "Merging $file with upstream-biased conflict resolution"
               tmpdir="$(mktemp -d)"
               git show ":1:$file" > "$tmpdir/base"
               git show ":2:$file" > "$tmpdir/ours"
               git show ":3:$file" > "$tmpdir/theirs"
-              git merge-file --ours "$tmpdir/ours" "$tmpdir/base" "$tmpdir/theirs"
+              git merge-file --theirs "$tmpdir/ours" "$tmpdir/base" "$tmpdir/theirs"
               cp "$tmpdir/ours" "$file"
               rm -rf "$tmpdir"
               git add "$file"
