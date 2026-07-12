@@ -34,31 +34,25 @@ def restore_phash_quorum() -> None:
         raise RuntimeError("Unable to locate pHash comparison block")
 
     replacement = """\t\t\tif (Settings.UsePHashing) {
-\t\t\t\tfloat differenceLimitpHash = Settings.Percent / 100f;
-
-\t\t\t\t// Entries with unrecoverable pHash data were dropped during snapshot
-\t\t\t\t// building; a null array only occurs on the flip path when the flipped
-\t\t\t\t// hashes could not be computed.
 \t\t\t\tulong[]? phashes = overrideGray != null ? overridePHashes : entry.comparePHashes;
 \t\t\t\tulong[]? phashesComp = compItem.comparePHashes;
 \t\t\t\tif (phashes == null || phashesComp == null)
 \t\t\t\t\treturn false;
 
-\t\t\t\t// Require the configured quorum of sampled positions to pass instead of
-\t\t\t\t// deciding the pair from a single coincidental frame.
 \t\t\t\tint sampleCount = Math.Min(phashes.Length, phashesComp.Length);
 \t\t\t\tif (sampleCount == 0)
 \t\t\t\t\treturn false;
 \t\t\t\tint requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
 \t\t\t\t\t? precomputed
 \t\t\t\t\t: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
+\t\t\t\tint maxDifferentBits = (int)Math.Floor((1.0 - Settings.Percent / 100.0) * 64.0);
 \t\t\t\tint matches = 0;
 \t\t\t\tfloat pHashDiffSum = 0f;
 
 \t\t\t\tfor (int j = 0; j < sampleCount; j++) {
-\t\t\t\t\tbool pass = pHash.PHashCompare.IsDuplicateByPercent(phashes[j], phashesComp[j], out float similarity, differenceLimitpHash, strict: true);
-\t\t\t\t\tpHashDiffSum += 1f - similarity;
-\t\t\t\t\tif (pass)
+\t\t\t\t\tint differingBits = BitOperations.PopCount(phashes[j] ^ phashesComp[j]);
+\t\t\t\t\tpHashDiffSum += differingBits / 64f;
+\t\t\t\t\tif (differingBits <= maxDifferentBits)
 \t\t\t\t\t\tmatches++;
 \t\t\t\t\telse if (matches + (sampleCount - j - 1) < requiredMatches)
 \t\t\t\t\t\treturn false;
