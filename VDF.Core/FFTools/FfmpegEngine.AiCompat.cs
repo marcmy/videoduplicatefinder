@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using VDF.Core.Utils;
 
 namespace VDF.Core.FFTools {
@@ -40,6 +42,82 @@ namespace VDF.Core.FFTools {
 				onSampleComplete?.Invoke(i + 1);
 			}
 			return true;
+		}
+
+		// Dense AI partial-match sampling. Decode a bounded raw RGB24 sequence in one
+		// FFmpeg process, then split the fixed-size output into individual model frames.
+		internal static byte[][]? GetDenseAiFrames(
+			string file,
+			double intervalSeconds,
+			int maxFrames,
+			bool extendedLogging,
+			CancellationToken cancellationToken) {
+			if (maxFrames <= 0)
+				return Array.Empty<byte[]>();
+			intervalSeconds = Math.Max(0.01, intervalSeconds);
+			int side = AI.OnnxEmbedder.InputSide;
+			int frameBytes = side * side * 3;
+
+			var psi = new ProcessStartInfo {
+				FileName = FFmpegPath,
+				CreateNoWindow = true,
+				RedirectStandardInput = false,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				WorkingDirectory = Path.GetDirectoryName(FFmpegPath)!,
+				WindowStyle = ProcessWindowStyle.Hidden
+			};
+			psi.ArgumentList.Add("-hide_banner");
+			psi.ArgumentList.Add("-loglevel");
+			psi.ArgumentList.Add("error");
+			psi.ArgumentList.Add("-nostdin");
+			psi.ArgumentList.Add("-i");
+			psi.ArgumentList.Add(FFToolsUtils.LongPathFix(file));
+			psi.ArgumentList.Add("-vf");
+			psi.ArgumentList.Add($"fps=1/{intervalSeconds.ToString(CultureInfo.InvariantCulture)},scale={side}:{side}:flags=bicubic,format=rgb24");
+			psi.ArgumentList.Add("-frames:v");
+			psi.ArgumentList.Add(maxFrames.ToString(CultureInfo.InvariantCulture));
+			psi.ArgumentList.Add("-f");
+			psi.ArgumentList.Add("rawvideo");
+			psi.ArgumentList.Add("-pix_fmt");
+			psi.ArgumentList.Add("rgb24");
+			psi.ArgumentList.Add("pipe:1");
+
+			using var process = new Process { StartInfo = psi };
+			try {
+				process.Start();
+				FFToolsUtils.LowerChildPriority(process);
+				using var output = new MemoryStream();
+				using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+				timeout.CancelAfter(TimeSpan.FromMinutes(10));
+				Task copyTask = process.StandardOutput.BaseStream.CopyToAsync(output, timeout.Token);
+				Task<string> errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
+				Task waitTask = process.WaitForExitAsync(timeout.Token);
+				Task.WhenAll(copyTask, errorTask, waitTask).GetAwaiter().GetResult();
+				if (process.ExitCode != 0)
+					throw new FFInvalidExitCodeException($"FFmpeg exited with: {process.ExitCode}; {errorTask.Result}");
+
+				byte[] bytes = output.ToArray();
+				int count = Math.Min(maxFrames, bytes.Length / frameBytes);
+				if (count == 0)
+					return null;
+				var frames = new byte[count][];
+				for (int i = 0; i < count; i++) {
+					frames[i] = new byte[frameBytes];
+					Buffer.BlockCopy(bytes, i * frameBytes, frames[i], 0, frameBytes);
+				}
+				return frames;
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+				try { if (!process.HasExited) process.Kill(); } catch { }
+				throw;
+			}
+			catch (Exception ex) {
+				try { if (!process.HasExited) process.Kill(); } catch { }
+				if (extendedLogging)
+					Logger.Instance.Info($"Dense AI frame extraction failed for '{file}': {ex}");
+				return null;
+			}
 		}
 
 		// Upstream API used by AI partial matching. This process fallback deliberately
