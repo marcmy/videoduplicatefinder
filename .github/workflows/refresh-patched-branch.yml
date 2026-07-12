@@ -87,15 +87,13 @@ jobs:
               fi
             done
 
-            # A line-oriented merge of this large method-dense file can splice braces
-            # across conflict boundaries while still returning success. Prefer the
-            # syntactically coherent upstream engine on overlap; perf-only helpers and
-            # partial-class files remain in the branch, and the regression suite below
-            # prevents a push if required acceleration behavior is lost.
+            # FfmpegEngine.cs contains the perf branch's native acceleration engine,
+            # timing types and health policy integration. Preserve that coherent file;
+            # upstream's new AI-facing APIs live in the perf-only AiCompat partial.
             file='VDF.Core/FFTools/FfmpegEngine.cs'
             if grep -Fxq "$file" <<< "$conflicted_files"; then
-              echo "Taking origin/master version of $file; perf tests guard behavior"
-              git checkout --theirs -- "$file"
+              echo "Keeping perf implementation of $file; AiCompat supplies upstream APIs"
+              git checkout --ours -- "$file"
               git add "$file"
             fi
 
