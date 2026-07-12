@@ -79,6 +79,19 @@ jobs:
               git add README.md
             fi
 
+            # Upstream consolidated the GUI and Web FFmpeg download implementations
+            # into VDF.Core.FFTools.FfmpegDownloader. These shells contain no
+            # perf-branch acceleration logic, so master is authoritative for them.
+            for file in \
+              'VDF.GUI/ViewModels/MainWindowVM_FfmpegDownloader.cs' \
+              'VDF.Web/Services/FFmpegSetupService.cs'; do
+              if grep -Fxq "$file" <<< "$conflicted_files"; then
+                echo "Taking origin/master shared-downloader shell for $file"
+                git checkout --theirs -- "$file"
+                git add "$file"
+              fi
+            done
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo 'Unresolved source conflicts remain and require review:'
