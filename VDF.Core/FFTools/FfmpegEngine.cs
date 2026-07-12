@@ -770,6 +770,8 @@ namespace VDF.Core.FFTools {
 
 		public static unsafe byte[]? GetThumbnail(FfmpegSettings settings, bool extendedLogging, int timeoutMilliseconds = TimeoutDuration) {
 			bool isGrayByte = settings.GrayScale == 1;
+			bool isRgbFrame = settings.Rgb224;
+			int expectedRgbBytes = global::VDF.Core.AI.OnnxEmbedder.InputSide * global::VDF.Core.AI.OnnxEmbedder.InputSide * 3;
 			int graySideLength =
 				GetGrayScaleSideLength(settings.GrayScaleSize);
 			int expectedGrayBytes = graySideLength * graySideLength;
@@ -804,7 +806,7 @@ namespace VDF.Core.FFTools {
 			AVHWDeviceType nativeHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 
 			try {
-				if (ShouldAttemptNativeSingleFrameExtraction(settings)) {
+				if (!isRgbFrame && ShouldAttemptNativeSingleFrameExtraction(settings)) {
 					var totalSw = Stopwatch.StartNew();
 					long openMs = 0, seekMs = 0, decodeMs = 0, transferMs = 0, convertMs = 0, copyMs = 0;
 					int hardwareTransfers = 0;
@@ -952,7 +954,14 @@ namespace VDF.Core.FFTools {
 				}
 			}
 
-			if (isGrayByte) {
+			if (isRgbFrame) {
+				int side = global::VDF.Core.AI.OnnxEmbedder.InputSide;
+				psi.ArgumentList.Add("-vf");
+				psi.ArgumentList.Add($"scale={side}:{side}:flags=bicubic,format=rgb24");
+				psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");
+				psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("rgb24");
+			}
+			else if (isGrayByte) {
 				string vfChain = $"scale={graySideLength}:{graySideLength}:flags=bicubic,format=gray";
 				if (userVfFilter != null) vfChain = $"{userVfFilter},{vfChain}";
 				psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vfChain);
@@ -983,7 +992,8 @@ namespace VDF.Core.FFTools {
 			}
 
 			psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
-			foreach (var item in remainingCustomArgs) psi.ArgumentList.Add(item);
+			if (!isRgbFrame)
+				foreach (var item in remainingCustomArgs) psi.ArgumentList.Add(item);
 			psi.ArgumentList.Add("pipe:1");
 
 			var processSw = Stopwatch.StartNew();
@@ -1037,6 +1047,10 @@ namespace VDF.Core.FFTools {
 				if (bytes.Length == 0) bytes = null;
 				else if (isGrayByte && bytes.Length != expectedGrayBytes) {
 					errOut.AppendLine($"graybytes length != {expectedGrayBytes} (got {bytes.Length})");
+					bytes = null;
+				}
+				else if (isRgbFrame && bytes.Length != expectedRgbBytes) {
+					errOut.AppendLine($"AI frame length != {expectedRgbBytes} (got {bytes.Length})");
 					bytes = null;
 				}
 				if (bytes != null && processAttemptedHardware)
