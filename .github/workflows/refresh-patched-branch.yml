@@ -87,20 +87,15 @@ jobs:
               fi
             done
 
-            # FfmpegEngine contains both upstream AI hooks and perf acceleration work.
-            # Preserve every automatically mergeable change from both sides, but let
-            # master win only the genuinely overlapping hunks so its current API stays
-            # intact. The perf build/tests below guard the acceleration behavior.
+            # A line-oriented merge of this large method-dense file can splice braces
+            # across conflict boundaries while still returning success. Prefer the
+            # syntactically coherent upstream engine on overlap; perf-only helpers and
+            # partial-class files remain in the branch, and the regression suite below
+            # prevents a push if required acceleration behavior is lost.
             file='VDF.Core/FFTools/FfmpegEngine.cs'
             if grep -Fxq "$file" <<< "$conflicted_files"; then
-              echo "Merging $file with upstream-biased conflict resolution"
-              tmpdir="$(mktemp -d)"
-              git show ":1:$file" > "$tmpdir/base"
-              git show ":2:$file" > "$tmpdir/ours"
-              git show ":3:$file" > "$tmpdir/theirs"
-              git merge-file --theirs "$tmpdir/ours" "$tmpdir/base" "$tmpdir/theirs"
-              cp "$tmpdir/ours" "$file"
-              rm -rf "$tmpdir"
+              echo "Taking origin/master version of $file; perf tests guard behavior"
+              git checkout --theirs -- "$file"
               git add "$file"
             fi
 
