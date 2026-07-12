@@ -162,11 +162,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee perf-validation.log) 2>&1
           dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
           dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
           dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
           dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
           dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-validation-log
+          path: perf-validation.log
+          if-no-files-found: ignore
 
       - name: Push updated 4.1 branch
         if: steps.merge.outputs.merge_changed == 'true'
