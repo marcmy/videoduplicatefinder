@@ -1536,5 +1536,7 @@ namespace VDF.Core.FFTools {
 		public int JpegQuality;
 		/// <summary>Skip hardware acceleration (used for still images).</summary>
 		public bool SoftwareDecodeOnly;
+		/// <summary>Produce a raw 224x224 RGB24 AI embedding frame.</summary>
+		public bool Rgb224;
 	}
 }

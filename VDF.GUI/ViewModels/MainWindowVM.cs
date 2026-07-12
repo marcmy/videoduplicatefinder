@@ -25,6 +25,7 @@ using System.Reactive.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using Avalonia;
 using Avalonia.Collections;
 using Avalonia.Controls;
@@ -193,6 +194,33 @@ namespace VDF.GUI.ViewModels {
 			get => _IsBusy;
 			set => this.RaiseAndSetIfChanged(ref _IsBusy, value);
 		}
+		bool _IsBusyCancelable;
+		/// <summary>Shows the busy overlay's Cancel button while a cancelable operation runs.</summary>
+		public bool IsBusyCancelable {
+			get => _IsBusyCancelable;
+			set => this.RaiseAndSetIfChanged(ref _IsBusyCancelable, value);
+		}
+		CancellationTokenSource? busyCancellation;
+		/// <summary>
+		/// Registers a cancel source for the current busy-overlay operation and shows the
+		/// overlay's Cancel button. Pair with <see cref="EndCancelableBusyOperation"/> in a
+		/// finally block. Everything runs on the UI thread (ReactiveCommand + await
+		/// continuations), so begin/cancel/end cannot race.
+		/// </summary>
+		internal CancellationToken BeginCancelableBusyOperation() {
+			busyCancellation = new CancellationTokenSource();
+			IsBusyCancelable = true;
+			return busyCancellation.Token;
+		}
+		internal void EndCancelableBusyOperation() {
+			IsBusyCancelable = false;
+			CancellationTokenSource? cts = busyCancellation;
+			busyCancellation = null;
+			cts?.Dispose();
+		}
+		public ReactiveCommand<Unit, Unit> CancelBusyCommand => ReactiveCommand.Create(() => {
+			busyCancellation?.Cancel();
+		});
 		int _ScanProgressMaxValue = 100;
 		public int ScanProgressMaxValue {
 			get => _ScanProgressMaxValue;
@@ -393,7 +421,9 @@ namespace VDF.GUI.ViewModels {
 					or nameof(SettingsFile.CompareHorizontallyFlipped)
 					or nameof(SettingsFile.IgnoreBlackPixels)
 					or nameof(SettingsFile.IgnoreWhitePixels)
-					or nameof(SettingsFile.EnablePartialClipDetection))
+					or nameof(SettingsFile.EnablePartialClipDetection)
+					or nameof(SettingsFile.UseAiMatching)
+					or nameof(SettingsFile.EnableAiPartialDetection))
 					RefreshScanProfileSelection();
 			};
 
@@ -1376,21 +1406,8 @@ namespace VDF.GUI.ViewModels {
 			}
 		});
 
-		static int MapToFfmpegMajor(int avcodecMajor, int avformatMajor, int avutilMajor) {
-			int[] majors = { avcodecMajor, avformatMajor, avutilMajor };
-			int want = 0;
-			foreach (var m in majors) {
-				int v = m switch {
-					62 => 8,
-					61 => 7,
-					60 => 6,
-					59 => 5,
-					_ => 0
-				};
-				if (v > want) want = v;
-			}
-			return want;
-		}
+		static int MapToFfmpegMajor(int avcodecMajor, int avformatMajor, int avutilMajor) =>
+			Core.FFTools.FfmpegDownloader.MapToFfmpegMajor(avcodecMajor, avformatMajor, avutilMajor);
 
 		static string ArchString(Architecture a) => a switch {
 			Architecture.X64 => "x64 (64-bit)",
@@ -1527,6 +1544,14 @@ Non-Windows setup:
 				await MessageBoxService.Show(App.Lang["Message.NativeFfmpegAutoNotSupported"]);
 				return;
 			}
+			if (SettingsFile.Instance.NeedsAiComponents &&
+				!VDF.Core.AI.AiComponents.IsReady) {
+				if (await MessageBoxService.Show(App.Lang["Message.AiComponentsMissingPrompt"], MessageBoxButtons.Yes | MessageBoxButtons.No) != MessageBoxButtons.Yes)
+					return;
+				await DownloadAiComponentsAsync();
+				if (!VDF.Core.AI.AiComponents.IsReady)
+					return;
+			}
 			if (SettingsFile.Instance.Includes.Count == 0) {
 				await MessageBoxService.Show(App.Lang["Message.NoScanFolders"]);
 				return;
@@ -1638,6 +1663,10 @@ Non-Windows setup:
 			Scanner.Settings.SameFolderDepth = SettingsFile.Instance.SameFolderDepth;
 			Scanner.Settings.UsePHashing = SettingsFile.Instance.UsePHash;
 			Scanner.Settings.PHashRequiredMatchingSampleRatio = SettingsFile.Instance.PHashSampleRatioPercent / 100f;
+			Scanner.Settings.UseAiMatching = SettingsFile.Instance.UseAiMatching;
+			Scanner.Settings.AiPercent = SettingsFile.Instance.AiPercent;
+			Scanner.Settings.EnableAiPartialDetection = SettingsFile.Instance.EnableAiPartialDetection;
+			Scanner.Settings.AiPartialHitPercent = SettingsFile.Instance.AiPartialHitPercent;
 			Scanner.Settings.UseExifCreationDate = SettingsFile.Instance.UseExifCreationDate;
 			Scanner.Settings.FilePathNotContainsTexts = SettingsFile.Instance.FilePathNotContainsTexts.ToList();
 			Scanner.Settings.FilterByFileSize = SettingsFile.Instance.FilterByFileSize;
