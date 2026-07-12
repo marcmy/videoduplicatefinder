@@ -1,0 +1,102 @@
+name: Apply RGB224 compatibility fix
+
+on:
+  push:
+    branches:
+      - perf/4.1-native-hwaccel
+    paths:
+      - .github/workflows/apply-rgb224-compat-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: perf/4.1-native-hwaccel
+          fetch-depth: 0
+          token: ${{ secrets.vdf_sync_token }}
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Patch RGB224 process extraction
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path('VDF.Core/FFTools/FfmpegEngine.cs')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '\t\t\tbool isGrayByte = settings.GrayScale == 1;\n',
+                  '\t\t\tbool isGrayByte = settings.GrayScale == 1;\n'
+                  '\t\t\tbool isRgbFrame = settings.Rgb224;\n'
+                  '\t\t\tint expectedRgbBytes = global::VDF.Core.AI.OnnxEmbedder.InputSide * global::VDF.Core.AI.OnnxEmbedder.InputSide * 3;\n'
+              ),
+              (
+                  '\t\t\t\tif (ShouldAttemptNativeSingleFrameExtraction(settings)) {\n',
+                  '\t\t\t\tif (!isRgbFrame && ShouldAttemptNativeSingleFrameExtraction(settings)) {\n'
+              ),
+              (
+                  '\t\t\tif (isGrayByte) {\n'
+                  '\t\t\t\tstring vfChain = $"scale={graySideLength}:{graySideLength}:flags=bicubic,format=gray";\n',
+                  '\t\t\tif (isRgbFrame) {\n'
+                  '\t\t\t\tint side = global::VDF.Core.AI.OnnxEmbedder.InputSide;\n'
+                  '\t\t\t\tpsi.ArgumentList.Add("-vf");\n'
+                  '\t\t\t\tpsi.ArgumentList.Add($"scale={side}:{side}:flags=bicubic,format=rgb24");\n'
+                  '\t\t\t\tpsi.ArgumentList.Add("-f"); psi.ArgumentList.Add("rawvideo");\n'
+                  '\t\t\t\tpsi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("rgb24");\n'
+                  '\t\t\t}\n'
+                  '\t\t\telse if (isGrayByte) {\n'
+                  '\t\t\t\tstring vfChain = $"scale={graySideLength}:{graySideLength}:flags=bicubic,format=gray";\n'
+              ),
+              (
+                  '\t\t\tforeach (var item in remainingCustomArgs) psi.ArgumentList.Add(item);\n',
+                  '\t\t\tif (!isRgbFrame)\n'
+                  '\t\t\t\tforeach (var item in remainingCustomArgs) psi.ArgumentList.Add(item);\n'
+              ),
+              (
+                  '\t\t\t\telse if (isGrayByte && bytes.Length != expectedGrayBytes) {\n'
+                  '\t\t\t\t\terrOut.AppendLine($"graybytes length != {expectedGrayBytes} (got {bytes.Length})");\n'
+                  '\t\t\t\t\tbytes = null;\n'
+                  '\t\t\t\t}\n',
+                  '\t\t\t\telse if (isGrayByte && bytes.Length != expectedGrayBytes) {\n'
+                  '\t\t\t\t\terrOut.AppendLine($"graybytes length != {expectedGrayBytes} (got {bytes.Length})");\n'
+                  '\t\t\t\t\tbytes = null;\n'
+                  '\t\t\t\t}\n'
+                  '\t\t\t\telse if (isRgbFrame && bytes.Length != expectedRgbBytes) {\n'
+                  '\t\t\t\t\terrOut.AppendLine($"AI frame length != {expectedRgbBytes} (got {bytes.Length})");\n'
+                  '\t\t\t\t\tbytes = null;\n'
+                  '\t\t\t\t}\n'
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one patch target, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          '@ | python -
+
+          Remove-Item .github/workflows/apply-rgb224-compat-fix.yml -Force
+
+      - name: Verify integration project compiles
+        run: dotnet build VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v q
+
+      - name: Commit focused fix
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VDF.Core/FFTools/FfmpegEngine.cs .github/workflows/apply-rgb224-compat-fix.yml
+          git commit -m "fix: support raw RGB224 extraction in perf engine"
+          git push origin perf/4.1-native-hwaccel
