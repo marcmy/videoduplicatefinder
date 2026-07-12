@@ -72,7 +72,12 @@ public class PHashSampleQuorumTests {
         Assert.True((bool)build.Invoke(scanner, [entry, true])!);
         Assert.True((bool)build.Invoke(scanner, [other, true])!);
 
-        var check = typeof(ScanEngine).GetMethod("CheckIfDuplicate", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var check = typeof(ScanEngine).GetMethod(
+            "CheckIfDuplicate",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(FileEntry), typeof(byte[][]), typeof(ulong[]), typeof(FileEntry), typeof(float).MakeByRefType()],
+            modifiers: null)!;
         object?[] args = [entry, null, null, other, 0f];
         bool result = (bool)check.Invoke(scanner, args)!;
         difference = (float)args[4]!;
