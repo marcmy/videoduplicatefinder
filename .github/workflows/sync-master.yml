@@ -2,6 +2,11 @@ name: Sync master from upstream
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-master.yml
   schedule:
     - cron: "11 */6 * * *"
 
