@@ -18,7 +18,7 @@ namespace VDF.Core.FFTools {
 			double maxSamplingDurationSeconds,
 			bool extendedLogging,
 			Action<int>? onSampleComplete,
-			AI.IEmbeddingFrameSink? embeddingSink) {
+			global::VDF.Core.AI.IEmbeddingFrameSink? embeddingSink) {
 			bool ok = GetGrayBytesFromVideo(
 				videoFile,
 				positions,
@@ -55,7 +55,7 @@ namespace VDF.Core.FFTools {
 			if (maxFrames <= 0)
 				return Array.Empty<byte[]>();
 			intervalSeconds = Math.Max(0.01, intervalSeconds);
-			int side = AI.OnnxEmbedder.InputSide;
+			int side = global::VDF.Core.AI.OnnxEmbedder.InputSide;
 			int frameBytes = side * side * 3;
 
 			var psi = new ProcessStartInfo {
@@ -130,7 +130,7 @@ namespace VDF.Core.FFTools {
 			bool extendedLogging) {
 			const int N = 32;
 			const int grayExpectedBytes = N * N;
-			int rgbSide = AI.OnnxEmbedder.InputSide;
+			int rgbSide = global::VDF.Core.AI.OnnxEmbedder.InputSide;
 			int rgbExpectedBytes = rgbSide * rgbSide * 3;
 			string rgbTempPath = Path.Combine(Path.GetTempPath(), $"VDF.AiFrame.{Guid.NewGuid():N}.rgb");
 
