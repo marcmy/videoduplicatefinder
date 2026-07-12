@@ -109,6 +109,28 @@ jobs:
             fi
           fi
 
+          # The perf engine keeps its extended settings struct, while upstream now
+          # initializes Rgb224 for AI frame extraction. Add that single contract field
+          # without replacing the perf implementation or its additional settings.
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('VDF.Core/FFTools/FfmpegEngine.cs')
+          text = path.read_text(encoding='utf-8')
+          if 'public bool Rgb224;' not in text:
+              needle = '\t\tpublic bool SoftwareDecodeOnly;\n\t}\n}'
+              replacement = (
+                  '\t\tpublic bool SoftwareDecodeOnly;\n'
+                  '\t\t/// <summary>Produce a raw 224x224 RGB24 AI embedding frame.</summary>\n'
+                  '\t\tpublic bool Rgb224;\n'
+                  '\t}\n}'
+              )
+              if needle not in text:
+                  raise SystemExit('Unable to locate FfmpegSettings insertion point')
+              path.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
+          PY
+          git add VDF.Core/FFTools/FfmpegEngine.cs
+
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
           fi
