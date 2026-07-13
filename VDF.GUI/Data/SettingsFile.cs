@@ -556,11 +556,12 @@ namespace VDF.GUI.Data {
 			set => this.RaiseAndSetIfChanged(ref _ResultsSortDescending, value);
 		}
 		double _ResultsPreviewWidth = 160;
-		/// <summary>Width of the Preview column in the results list; scales the filmstrip frames.</summary>
+		/// <summary>Width of the Preview column in the results list; scales the preview frames.
+		/// The old 480 cap made thumbnails unresizable past a quarter of a 1080p screen (#834).</summary>
 		[JsonPropertyName("ResultsPreviewWidth")]
 		public double ResultsPreviewWidth {
 			get => _ResultsPreviewWidth;
-			set => this.RaiseAndSetIfChanged(ref _ResultsPreviewWidth, Math.Clamp(value, 56, 480));
+			set => this.RaiseAndSetIfChanged(ref _ResultsPreviewWidth, Math.Clamp(value, 56, 1600));
 		}
 		bool _ResultsCompactRows;
 		[JsonPropertyName("ResultsCompactRows")]
@@ -648,7 +649,10 @@ namespace VDF.GUI.Data {
 			set => this.RaiseAndSetIfChanged(ref _PartialClipVisualThresholdPercent, value);
 		}
 
-		List<string> _QualityCriteriaOrder = ["Duration", "Resolution", "FPS", "Bitrate", "Audio Bitrate", "Size"];
+		// Video bitrate ranks above FPS: among equal-resolution re-encodes bitrate is the
+		// stronger quality signal, and a marginally higher framerate must not outrank a
+		// much better encode (#839). Saved user orders are untouched.
+		List<string> _QualityCriteriaOrder = ["Duration", "Resolution", "Bitrate", "FPS", "Audio Bitrate", "Size"];
 		[JsonPropertyName("QualityCriteriaOrder")]
 		public List<string> QualityCriteriaOrder {
 			get => _QualityCriteriaOrder;

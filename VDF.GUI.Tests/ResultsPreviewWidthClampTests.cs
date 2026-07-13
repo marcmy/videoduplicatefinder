@@ -14,25 +14,25 @@
 // */
 //
 
-using Avalonia.Controls;
-using Avalonia.Markup.Xaml;
-using VDF.GUI.ViewModels;
+using VDF.GUI.Data;
 
-namespace VDF.GUI.Views {
-	public class CustomSelectionView : Window {
-		//Designer need this
-		public CustomSelectionView() => InitializeComponent();
-		//Non designer ctor
-		public CustomSelectionView(string a) {
-			DataContext = new CustomSelectionVM(this);
-			InitializeComponent();
-			Owner = ApplicationHelpers.MainWindow;
-
-			if (!VDF.GUI.Data.SettingsFile.Instance.DarkMode)
-				RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Light;
+namespace VDF.GUI.Tests {
+	public class ResultsPreviewWidthClampTests {
+		[Fact]
+		public void PreviewColumn_CanGrowPastTheOld480Cap() {
+			double original = SettingsFile.Instance.ResultsPreviewWidth;
+			try {
+				// #834: the 480px cap made previews unresizable on large screens.
+				SettingsFile.Instance.ResultsPreviewWidth = 1200;
+				Assert.Equal(1200, SettingsFile.Instance.ResultsPreviewWidth);
+				SettingsFile.Instance.ResultsPreviewWidth = 99999;
+				Assert.Equal(1600, SettingsFile.Instance.ResultsPreviewWidth);
+				SettingsFile.Instance.ResultsPreviewWidth = 1;
+				Assert.Equal(56, SettingsFile.Instance.ResultsPreviewWidth);
+			}
+			finally {
+				SettingsFile.Instance.ResultsPreviewWidth = original;
+			}
 		}
-
-		void InitializeComponent() => AvaloniaXamlLoader.Load(this);
-
 	}
 }
