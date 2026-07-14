@@ -58,12 +58,25 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="CornerRadius" Value="12" />
     </Style>
-    <!-- checked rows use the mockup's exact selection tint (the "sel" token) -->
+    <!-- Checked rows: red tint (checked = marked for deletion) plus a danger-colored
+         left edge bar, so they stay clearly visible in dark mode where a background
+         tint alone drowned against the near-black rows (#841). The 3px edge slot is
+         always reserved (transparent when unchecked) so content never shifts. -->
     <Style Selector="Border.resultrow">
       <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
     </Style>
     <Style Selector="Border.resultrow.checked">
       <Setter Property="Background" Value="{DynamicResource VdfSelBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VdfDangerBrush}" />
+    </Style>
+    <!-- Checked row that is ALSO list-selected: the opaque checked tint sits on top
+         of the ListBoxItem's own selection highlight, which left selection nearly
+         invisible (only the foreground shifted). A clearly brighter tint step makes
+         the selected row stand out inside a block of checked rows. -->
+    <Style Selector="ListBox.results ListBoxItem:selected Border.resultrow.checked">
+      <Setter Property="Background" Value="{DynamicResource VdfSelActiveBrush}" />
     </Style>
     <!-- similarity chip: mockup .simchip — soft surface, colored text, 45%-alpha
          border; tier classes (mid/low) are bound from the similarity value -->
@@ -440,19 +453,24 @@
 
         <!-- ~~~~ File row ~~~~ -->
         <DataTemplate DataType="vm:ResultsItemRow">
+          <!-- Left padding is 3 because the resultrow style reserves a 3px edge-bar
+               border slot; 3+3 keeps the content aligned with the header row. -->
           <Border
               Classes="resultrow"
               Classes.checked="{Binding Item.Checked}"
-              Padding="6,0">
+              Padding="3,0,6,0">
             <!-- Row height follows the Preview column width and, once loaded, the
-                 composite's real aspect ratio — a wide filmstrip no longer floats in
-                 a mostly-empty box (#834). -->
+                 preview's real shape: single frames keep their aspect ratio (#834),
+                 multi-frame previews re-wrap to the column width (WrappedFilmstrip,
+                 #847) and the row reserves exactly that wrap height. -->
             <Border.Height>
               <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="row">
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
                 <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ShowThumbnailColumn" />
                 <Binding Path="Item.Thumbnail" />
+                <Binding Path="Item.ThumbnailFrameCount" />
+                <Binding Path="Item.ThumbnailGridColumns" />
               </MultiBinding>
             </Border.Height>
             <Border.ContextMenu>
@@ -470,6 +488,12 @@
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).RenameFileCommand}"
                     Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.RenameFile]}"
                     InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[RenameFile]}" />
+                <!-- Moves the highlighted row(s) with database path tracking - unlike the
+                     action bar's move, this doesn't require checking the file (checked
+                     means "delete"; the file you relocate is usually the keeper) (#843). -->
+                <MenuItem
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).MoveSelectedItemsCommand}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.MoveToFolderEllipsis]}" />
                 <Separator />
                 <MenuItem
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleCheckboxCommand}"
@@ -526,25 +550,21 @@
                     </MultiBinding>
                   </Border.IsVisible>
                 </Border>
-                <!-- Height tracks the Preview column width; Uniform keeps the aspect,
-                     DownOnly never upscales past the extracted bitmap (#787). -->
-                <Image
+                <!-- Frames re-wrap to the column width at display time: they shrink
+                     to stay on one line (#847) and wrap into rows only when they'd
+                     become unreadably small (#834); never upscaled past the
+                     extracted bitmap (#787). Self-measuring — the row height
+                     converter runs the same math. -->
+                <ctl:WrappedFilmstrip
                     Source="{Binding Item.Thumbnail}"
-                    Stretch="Uniform"
-                    StretchDirection="DownOnly"
+                    FrameCount="{Binding Item.ThumbnailFrameCount}"
+                    GridColumns="{Binding Item.ThumbnailGridColumns}"
+                    Compact="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ResultsCompactRows}"
                     Margin="0,2,8,2"
                     HorizontalAlignment="Left"
                     VerticalAlignment="Center"
                     DoubleTapped="OnThumbnailDoubleTapped"
-                    ToolTip.Tip="{Binding Item.ItemInfo.Path}">
-                  <Image.Height>
-                    <MultiBinding Converter="{StaticResource ResultsRowSizingConverter}" ConverterParameter="image">
-                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsPreviewWidth" />
-                      <Binding Source="{x:Static Settings:SettingsFile.Instance}" Path="ResultsCompactRows" />
-                      <Binding Path="Item.Thumbnail" />
-                    </MultiBinding>
-                  </Image.Height>
-                </Image>
+                    ToolTip.Tip="{Binding Item.ItemInfo.Path}" />
               </Grid>
               <!-- similarity chip -->
               <Border
