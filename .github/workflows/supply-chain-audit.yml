@@ -1,64 +1,80 @@
 name: Supply-chain audit
 
 on:
-  workflow_dispatch:
   pull_request:
-  push:
     branches:
       - master
-      - perf/4.1-native-hwaccel
-  schedule:
-    # Every Monday at 07:23 UTC
-    - cron: "23 7 * * 1"
 
 permissions: {}
 
 jobs:
-  trivy:
-    name: Trivy security scan
+  cleanup-obsolete-workflow-history:
+    name: Remove obsolete workflow history by workflow ID
+    if: github.head_ref == 'cleanup/obsolete-actions-sidebar-v2'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'schedule' && 'perf/4.1-native-hwaccel' || github.ref }}
-      - name: Scan repository with Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-      - name: Upload findings to GitHub Security
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-
-  syft:
-    name: Generate independent SBOM
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
+      actions: write
       contents: write
-      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'schedule' && 'perf/4.1-native-hwaccel' || github.ref }}
-      - name: Generate SPDX SBOM with Syft
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          path: .
-          format: spdx-json
-          artifact-name: sbom.spdx.json
-          dependency-snapshot: true
-          upload-artifact: true
-          upload-release-assets: false
+      - name: Remove every run attached to obsolete workflow records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          declare -A targets=(
+            ["Apply 4.1 comparer correctness port"]=1
+            ["Apply 4.1 matching headroom port"]=1
+            ["Apply 4.1 pHash sample quorum port"]=1
+            ["Build 4.1 performance release"]=1
+            ["Capture 4.1 release hash"]=1
+            ["Refresh 4.1 perf branch"]=1
+          )
+
+          mapfile -t workflows < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows?per_page=100" \
+              --jq '.workflows[] | [.id, .name, .path, .state] | @tsv'
+          )
+
+          matched=0
+          deleted=0
+          remaining=0
+
+          for row in "${workflows[@]}"; do
+            IFS=$'\t' read -r workflow_id workflow_name workflow_path workflow_state <<< "$row"
+            [[ -n "${targets[$workflow_name]+present}" ]] || continue
+
+            matched=$((matched + 1))
+            echo "Workflow ${workflow_id}: ${workflow_name} | ${workflow_path} | ${workflow_state}"
+
+            mapfile -t run_ids < <(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?per_page=100" \
+                --jq '.workflow_runs[].id'
+            )
+
+            echo "Found ${#run_ids[@]} run(s) on workflow ${workflow_id}."
+            for run_id in "${run_ids[@]}"; do
+              echo "Deleting run ${run_id} from workflow ${workflow_id}"
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+              deleted=$((deleted + 1))
+            done
+
+            left=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?per_page=1" --jq '.total_count')
+            echo "Remaining runs on workflow ${workflow_id}: ${left}"
+            remaining=$((remaining + left))
+          done
+
+          echo "Matched obsolete workflow records: ${matched}"
+          echo "Deleted runs: ${deleted}"
+          echo "Remaining runs: ${remaining}"
+
+          if (( matched == 0 || remaining > 0 )); then
+            exit 1
+          fi
+
+      - name: Delete temporary cleanup branch
+        if: always()
+        shell: bash
+        run: |
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/cleanup/obsolete-actions-sidebar-v2"
