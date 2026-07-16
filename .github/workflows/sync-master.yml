@@ -22,7 +22,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.vdf_sync_token }}
+          token: ${{ github.token }}
 
       - name: Configure git
         run: |
