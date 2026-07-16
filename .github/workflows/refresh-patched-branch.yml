@@ -33,7 +33,7 @@ jobs:
       - name: Checkout perf branch
         uses: actions/checkout@v5
         with:
-          ref: perf/native-hwaccel-from-crashfix
+          ref: perf/4.1-native-hwaccel
           fetch-depth: 0
 
       - name: Configure git
@@ -44,13 +44,13 @@ jobs:
       - name: Fetch origin branches
         run: |
           git fetch origin master
-          git fetch origin perf/native-hwaccel-from-crashfix
+          git fetch origin perf/4.1-native-hwaccel
 
       - name: Merge fork master into perf branch
         id: merge
         shell: bash
         run: |
-          git checkout perf/native-hwaccel-from-crashfix
+          git checkout perf/4.1-native-hwaccel
           before="$(git rev-parse HEAD)"
 
           set +e
@@ -194,11 +194,11 @@ jobs:
       - name: Push updated branch
         if: steps.merge.outputs.merge_changed == 'true'
         run: |
-          git push origin perf/native-hwaccel-from-crashfix
+          git push origin perf/4.1-native-hwaccel
 
       - name: Trigger Build releases
         if: steps.merge.outputs.meaningful_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run releases.yml --ref perf/native-hwaccel-from-crashfix
+          gh workflow run releases.yml --ref perf/4.1-native-hwaccel
