@@ -198,9 +198,12 @@ jobs:
     name: Publish 4.1.x GUI release
     needs: build
     runs-on: ubuntu-latest
+    environment: scoop-bucket
+    
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name == 'perf/4.1-native-hwaccel'
     permissions:
       contents: write
+      
     steps:
       - name: Download validated GUI archive
         uses: actions/download-artifact@v8
