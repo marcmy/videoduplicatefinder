@@ -659,14 +659,12 @@ namespace VDF.Core.FFTools {
 				psi.ArgumentList.Add(HardwareAccelerationMode.ToString());
 			}
 			bool isImage = FileUtils.IsImageFile(file);
-			psi.ArgumentList.Add("-i");
-			psi.ArgumentList.Add(FFToolsUtils.LongPathFix(file));
 			if (!isImage) {
-				// Compatibility callers prioritize correctness over fast input seeking.
-				// Output-side seeking decodes the reference chain before selecting the frame.
 				psi.ArgumentList.Add("-ss");
 				psi.ArgumentList.Add(position.ToString(null, CultureInfo.InvariantCulture));
 			}
+			psi.ArgumentList.Add("-i");
+			psi.ArgumentList.Add(FFToolsUtils.LongPathFix(file));
 			psi.ArgumentList.Add("-filter_complex");
 			psi.ArgumentList.Add(
 				$"[0:v]split=2[g][r];" +
