@@ -51,6 +51,46 @@ namespace VDF.GUI.Views {
 				ResultsListControl.SelectedItem = row;
 				ResultsListControl.ScrollIntoView(row);
 			};
+			vm.ResultsAnchorProvider = TopmostVisibleRow;
+			vm.ResultsScrollToRow = ScrollRowToTop;
+		}
+
+		/// <summary>Row whose realized container is topmost in the viewport (partially visible counts).</summary>
+		object? TopmostVisibleRow() {
+			if (resultsScrollViewer == null) return null;
+			object? best = null;
+			double bestTop = double.MaxValue;
+			foreach (var container in ResultsListControl.GetRealizedContainers()) {
+				if (container.TranslatePoint(new Point(0, 0), resultsScrollViewer) is not { } p) continue;
+				if (p.Y + container.Bounds.Height <= 0) continue; // fully above the viewport
+				if (p.Y < bestTop) {
+					bestTop = p.Y;
+					best = container.DataContext;
+				}
+			}
+			return best;
+		}
+
+		/// <summary>
+		/// Scrolls the row to the TOP of the viewport once the rebuilt list has a layout.
+		/// ScrollIntoView alone only guarantees visibility (the row lands at whichever
+		/// edge is closer), which still reads as "shuffled to a random place".
+		/// </summary>
+		void ScrollRowToTop(object row) {
+			Avalonia.Threading.Dispatcher.UIThread.Post(() => {
+				int index = ResultsListControl.Items.IndexOf(row);
+				if (index < 0) return;
+				ResultsListControl.ScrollIntoView(index);
+				// ScrollIntoView realized the container; align its top edge after layout.
+				Avalonia.Threading.Dispatcher.UIThread.Post(() => {
+					if (resultsScrollViewer == null) return;
+					var container = ResultsListControl.ContainerFromIndex(index);
+					if (container?.TranslatePoint(new Point(0, 0), resultsScrollViewer) is not { } p) return;
+					resultsScrollViewer.Offset = new Vector(
+						resultsScrollViewer.Offset.X,
+						Math.Max(0, resultsScrollViewer.Offset.Y + p.Y));
+				}, Avalonia.Threading.DispatcherPriority.Loaded);
+			}, Avalonia.Threading.DispatcherPriority.Loaded);
 		}
 
 		// Group headers are rendered inside the same ListBox as file rows; they must never
@@ -77,12 +117,20 @@ namespace VDF.GUI.Views {
 			e.Handled = true;
 		}
 
-		// Click on the path line copies the full path (locked design decision 5).
+		// Click on the path line copies the full path (locked design decision 5), but only
+		// when the row was already selected — see ResultsInteractionRules (#849). This
+		// handler runs on the path element BEFORE the event bubbles up to the ListBoxItem,
+		// so SelectedItems still holds the pre-click selection here.
 		async void OnPathPointerPressed(object? sender, PointerPressedEventArgs e) {
-			if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
 			if ((sender as Control)?.DataContext is not ResultsItemRow row) return;
-			if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
+			bool rowWasAlreadySelected = ResultsListControl.SelectedItems?.Contains(row) == true;
+			if (!ResultsInteractionRules.ShouldCopyPathOnPointerPress(
+					e.GetCurrentPoint(this).Properties.IsLeftButtonPressed, rowWasAlreadySelected))
+				return;
+			if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) {
 				await clipboard.SetTextAsync(row.Item.ItemInfo.Path);
+				await row.Item.FlashPathCopiedAsync();
+			}
 		}
 
 		void OnPreviewGripDragDelta(object? sender, VectorEventArgs e) {
@@ -128,15 +176,60 @@ namespace VDF.GUI.Views {
 				columns.Margin = new Thickness(0, 0, inset, 0);
 		}
 
-		// Hover-diff: same contract as the classic grid — Tag carries the metric name.
+		// Hover-diff. Tag carries the metric name(s), comma-separated: a two-line cell
+		// (Duration·Res) is ONE hover zone activating both its metrics — separate stacked
+		// zones made the display flip on tiny vertical mouse moves (#849 gif).
+		//
+		// Timing: activation waits for the pointer to rest (a raw PointerEntered swap
+		// flipped values the instant the cursor crossed a cell on its way elsewhere),
+		// and clearing gets a short grace so moving between rows of the same group —
+		// whose diffs are identical — doesn't clear and re-flash them. The swap itself
+		// fades in via the metric-diff.diffing animation in XAML.
+		static readonly TimeSpan HoverActivateDelay = TimeSpan.FromMilliseconds(160);
+		static readonly TimeSpan HoverClearGrace = TimeSpan.FromMilliseconds(120);
+		Avalonia.Threading.DispatcherTimer? metricHoverTimer;
+		Avalonia.Threading.DispatcherTimer? metricClearTimer;
+		DuplicateItemVM? activeDiffItem;
+		string? activeDiffMetrics;
+
 		void OnMetricPointerEntered(object? sender, PointerEventArgs e) {
-			if (sender is Border { Tag: string metric, DataContext: ResultsItemRow row })
-				ViewModel?.SetHoveredMetric(row.Item, metric);
+			if (sender is not Border { Tag: string metrics, DataContext: ResultsItemRow row }) return;
+			metricHoverTimer?.Stop();
+			// Same group, same metrics: the shown diffs are already correct — just keep them.
+			if (activeDiffItem != null && activeDiffMetrics == metrics &&
+				activeDiffItem.ItemInfo.GroupId == row.Item.ItemInfo.GroupId) {
+				metricClearTimer?.Stop();
+				return;
+			}
+			metricHoverTimer = RunOnce(HoverActivateDelay, () => {
+				if (ViewModel is not { } vm) return;
+				metricClearTimer?.Stop();
+				if (activeDiffItem != null)
+					vm.ClearHoveredMetric(activeDiffItem);
+				foreach (var metric in metrics.Split(','))
+					vm.SetHoveredMetric(row.Item, metric);
+				activeDiffItem = row.Item;
+				activeDiffMetrics = metrics;
+			});
 		}
 
 		void OnMetricPointerExited(object? sender, PointerEventArgs e) {
-			if (sender is Border { DataContext: ResultsItemRow row })
-				ViewModel?.ClearHoveredMetric(row.Item);
+			metricHoverTimer?.Stop();
+			if (activeDiffItem == null) return;
+			metricClearTimer?.Stop();
+			metricClearTimer = RunOnce(HoverClearGrace, () => {
+				if (activeDiffItem != null)
+					ViewModel?.ClearHoveredMetric(activeDiffItem);
+				activeDiffItem = null;
+				activeDiffMetrics = null;
+			});
+		}
+
+		static Avalonia.Threading.DispatcherTimer RunOnce(TimeSpan delay, Action action) {
+			var timer = new Avalonia.Threading.DispatcherTimer { Interval = delay };
+			timer.Tick += (_, _) => { timer.Stop(); action(); };
+			timer.Start();
+			return timer;
 		}
 	}
 }

@@ -50,6 +50,10 @@ namespace VDF.GUI.ViewModels {
 			set => this.RaiseAndSetIfChanged(ref _SelectedLogItem, value);
 		}
 		List<HashSet<string>> GroupBlacklist = new();
+		// Serializes scan-result exports: automatic backups (after deletes, marks,
+		// thumbnail retrieval) can overlap a user-triggered export, and both write the
+		// same .tmp file next to the target.
+		readonly SemaphoreSlim scanResultsExportGate = new(1, 1);
 		public string BackupScanResultsFile =>
 			Path.Combine(CoreUtils.ResolveDatabaseFolder(SettingsFile.Instance.CustomDatabaseFolder), "backup.scanresults");
 		public string BlacklistedGroupsFile =>
@@ -265,8 +269,18 @@ namespace VDF.GUI.ViewModels {
 		int _DuplicatesCheckedCounter;
 		public int DuplicatesCheckedCounter {
 			get => _DuplicatesCheckedCounter;
-			set => this.RaiseAndSetIfChanged(ref _DuplicatesCheckedCounter, value);
+			set {
+				this.RaiseAndSetIfChanged(ref _DuplicatesCheckedCounter, value);
+				this.RaisePropertyChanged(nameof(CheckedSummaryText));
+			}
 		}
+
+		/// <summary>Action-bar label "N checked from M groups" (group count asked for in the #849 thread).</summary>
+		public string CheckedSummaryText => FormatCheckedSummary(DuplicatesCheckedCounter, checkedCountByGroup.Count,
+			App.Lang["Results.Action.CheckedSummary"], App.Lang["Results.Action.CheckedSummarySingleGroup"]);
+
+		internal static string FormatCheckedSummary(int checkedCount, int groupCount, string pluralFormat, string singleGroupFormat) =>
+			string.Format(groupCount == 1 ? singleGroupFormat : pluralFormat, checkedCount, groupCount);
 		long _DuplicatesCheckedSizeInternal;
 		long DuplicatesCheckedSizeInternal {
 			get => _DuplicatesCheckedSizeInternal;
@@ -349,6 +363,7 @@ namespace VDF.GUI.ViewModels {
 				checkedCountByGroup.Remove(groupId);
 			else
 				checkedCountByGroup[groupId] = count;
+			this.RaisePropertyChanged(nameof(CheckedSummaryText));
 		}
 		public bool IsMultiOpenSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultiple);
 		public bool IsMultiOpenInFolderSupported => !string.IsNullOrEmpty(SettingsFile.Instance.CustomCommands.OpenMultipleInFolder);
@@ -481,11 +496,27 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		public async void Thumbnails_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) {
-			bool isReadyToCompare = IsGathered;
-			isReadyToCompare &= Scanner.Settings.ThumbnailCount == e.NewValue;
-			if (!isReadyToCompare && ApplicationHelpers.MainWindowDataContext.IsReadyToCompare)
-				await MessageBoxService.Show($"Number of thumbnails can't be changed between quick rescans. Full scan will be required.");
+			var (isReadyToCompare, showWarning) = EvaluateThumbnailCountChange(
+				IsGathered, Scanner.Settings.ThumbnailCount, e.NewValue, ApplicationHelpers.MainWindowDataContext.IsReadyToCompare);
+			// The flag must flip BEFORE the dialog await: it used to be reset only after
+			// the box was dismissed, so every further arrow click made in the meantime
+			// still saw wasReady == true and stacked another box on top (2026-07-17
+			// report - clicking the stepper kept spawning boxes until one OK was hit).
 			ApplicationHelpers.MainWindowDataContext.IsReadyToCompare = isReadyToCompare;
+			if (showWarning)
+				await MessageBoxService.Show(App.Lang["Message.ThumbnailCountFullScan"]);
+		}
+
+		/// <summary>
+		/// Thumbnail-count change vs. quick-rescan readiness: changing the count away
+		/// from what the last scan used forces a full scan (warn once); changing it back
+		/// restores quick-rescan readiness silently. Callers must apply the flag before
+		/// showing the warning dialog.
+		/// </summary>
+		internal static (bool IsReadyToCompare, bool ShowWarning) EvaluateThumbnailCountChange(
+				bool isGathered, int engineThumbnailCount, decimal? newValue, bool wasReadyToCompare) {
+			bool ready = isGathered && engineThumbnailCount == newValue;
+			return (ready, !ready && wasReadyToCompare);
 		}
 
 		private void Scanner_ThumbnailProgress(int arg1, int arg2) => Dispatcher.UIThread.Post(() => {
@@ -945,6 +976,7 @@ namespace VDF.GUI.ViewModels {
 
 			if (string.IsNullOrEmpty(path)) return;
 
+			await scanResultsExportGate.WaitAsync();
 			IsBusy = true;
 			IsBusyOverlayText = App.Lang["Busy.SavingScanResults"];
 			var dir = Path.GetDirectoryName(path)!;
@@ -953,46 +985,42 @@ namespace VDF.GUI.ViewModels {
 			try {
 				var snapshot = Duplicates.ToList();
 				var envelope = new ScanResultsEnvelope { Version = ScanResultsEnvelope.CurrentVersion, Items = snapshot };
+				var typeInfo = envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope;
+				var pack = Utils.ThumbCacheHelpers.Provider;
 
-				if (!includeThumbnails) {
-					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					await JsonSerializer.SerializeAsync(fs, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
-				}
-				else {
-					await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-					using var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false);
-					var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
-
-					await using (var es = jsonEntry.Open()) {
-						await JsonSerializer.SerializeAsync(es, envelope, envelopeTypeInfo ?? GuiJsonFieldsContext.Default.ScanResultsEnvelope);
-						await es.FlushAsync();
-					}
-
-					Utils.ThumbCacheHelpers.Provider?.FlushIndex();
-
-					if (TempDirectory != null) {
-						var packPath = Path.Combine(TempDirectory.Path, "thumbs.pack");
-						var idxPath = Path.Combine(TempDirectory.Path, "thumbs.idx");
-
-						if (File.Exists(packPath) && Utils.ThumbCacheHelpers.Provider != null) {
-							var packEntry = zip.CreateEntry("thumbs.pack", CompressionLevel.NoCompression);
-							using var es = packEntry.Open();
-							Utils.ThumbCacheHelpers.Provider.CopyTo(es);
+				// Serialization and the pack copy are heavy file/CPU work; on a large scan
+				// the automatic backup used to freeze the GUI for its entire duration
+				// (it runs on the UI thread right after "Thumbnail loading complete" and
+				// after every deletion batch).
+				await Task.Run(() => {
+					using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024)) {
+						if (!includeThumbnails) {
+							JsonSerializer.Serialize(fs, envelope, typeInfo);
 						}
+						else {
+							using var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false);
+							var jsonEntry = zip.CreateEntry("scan.json", CompressionLevel.NoCompression);
+							using (var es = jsonEntry.Open())
+								JsonSerializer.Serialize(es, envelope, typeInfo);
 
-						if (File.Exists(idxPath)) {
-							var idxEntry = zip.CreateEntry("thumbs.idx", CompressionLevel.NoCompression);
-							using var es = idxEntry.Open();
-							using var fs2 = File.OpenRead(idxPath);
-							fs2.CopyTo(es);
+							if (pack != null) {
+								// Snapshot under the pack lock is cheap (length + index); the
+								// multi-GB copy itself runs lock-free so thumbnail loads in
+								// the UI stay responsive during a backup.
+								var (packLength, indexJson) = pack.SnapshotForExport();
+								var packEntry = zip.CreateEntry("thumbs.pack", CompressionLevel.NoCompression);
+								using (var es = packEntry.Open())
+									pack.CopyPackTo(es, packLength);
+								var idxEntry = zip.CreateEntry("thumbs.idx", CompressionLevel.NoCompression);
+								using (var es = idxEntry.Open())
+									es.Write(indexJson, 0, indexJson.Length);
+							}
 						}
 					}
-				}
-
-				File.Move(tmp, path, overwrite: true);
+					File.Move(tmp, path, overwrite: true);
+				});
 			}
 			catch (Exception ex) {
-				IsBusy = false;
 				string error = string.Format(App.Lang["Message.ExportScanResultsFailed"], ex);
 				Logger.Instance.Error(error);
 				await MessageBoxService.Show(error);
@@ -1000,6 +1028,7 @@ namespace VDF.GUI.ViewModels {
 			finally {
 				try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* ignore */ }
 				IsBusy = false;
+				scanResultsExportGate.Release();
 			}
 		}
 
@@ -1909,18 +1938,21 @@ Non-Windows setup:
 							IsBusyOverlayText = string.Format(App.Lang["Busy.Deleting"], current, total));
 					}
 
-					// Windows recycle-bin deletes go through a single batched shell
-					// operation — one SHFileOperation per file pays the full shell
-					// round-trip each time and is dramatically slower for big batches.
-					// Per-file success is determined afterwards by re-checking existence.
+					// Windows recycle-bin deletes go through batched shell operations —
+					// one SHFileOperation per file pays the full shell round-trip each
+					// time and is dramatically slower for big batches. Batches run per
+					// CHUNK, interleaved with the per-file accounting below: recycling
+					// the whole selection in one call kept the "Deleting files... 0/N"
+					// overlay frozen for the entire operation (#849 report), because the
+					// shell call IS the deletion and the counting only ran afterwards.
+					// Per-file success is determined by re-checking existence.
 					bool batchedRecycle = fromDisk && !permanently && !createLinks && CoreUtils.IsWindows;
-					var batchRecycled = new HashSet<DuplicateItemVM>(ReferenceEqualityComparer<DuplicateItemVM>.Instance);
-					if (batchedRecycle) {
-						var existing = toDelete.Where(d => File.Exists(d.ItemInfo.Path)).ToList();
-						if (existing.Count > 0) {
+					DiskDeletion.RunChunked(toDelete, DiskDeletion.RecycleChunkSize, batchedRecycle,
+						d => d.ItemInfo.Path, File.Exists,
+						paths => {
 							var fs = new FileUtils.SHFILEOPSTRUCT {
 								wFunc = FileUtils.FileOperationType.FO_DELETE,
-								pFrom = string.Join('\0', existing.Select(d => d.ItemInfo.Path)) + "\0\0",
+								pFrom = string.Join('\0', paths) + "\0\0",
 								fFlags = FileUtils.FileOperationFlags.FOF_ALLOWUNDO |
 										 FileUtils.FileOperationFlags.FOF_NOCONFIRMATION |
 										 FileUtils.FileOperationFlags.FOF_NOERRORUI |
@@ -1928,13 +1960,9 @@ Non-Windows setup:
 							};
 							int result = FileUtils.SHFileOperation(ref fs);
 							if (result != 0)
-								Logger.Instance.Warn($"SHFileOperation returned {result:X} for a batch of {existing.Count} file(s); checking which files were actually recycled.");
-							foreach (var d in existing)
-								batchRecycled.Add(d);
-						}
-					}
-
-					foreach (var dub in toDelete) {
+								Logger.Instance.Warn($"SHFileOperation returned {result:X} for a batch of {paths.Count} file(s); checking which files were actually recycled.");
+						},
+						(dub, wasBatchRecycled) => {
 						try {
 							// Path-only entry for the database lookup; FileEntry(string)
 							// stats the file and throws once it's gone.
@@ -1962,7 +1990,7 @@ Non-Windows setup:
 							}
 							else if (fromDisk) {
 								switch (DiskDeletion.DeleteOne(dub.ItemInfo.Path, permanently, batchedRecycle,
-										batchRecycled.Contains(dub), File.Exists, File.Delete, FileUtils.MoveToTrash)) {
+										wasBatchRecycled, File.Exists, File.Delete, FileUtils.MoveToTrash)) {
 									case DiskDeletion.Outcome.Deleted:
 									case DiskDeletion.Outcome.AlreadyRecycled:
 										freedBytes += CheckedSizeOf(dub);
@@ -1998,7 +2026,7 @@ Non-Windows setup:
 							done++;
 							ReportProgress();
 						}
-					}
+					});
 
 					if (missingOnDisk > 0)
 						Logger.Instance.Warn($"{missingOnDisk} of {total} selected files were not found on disk; their entries were removed from the results, but no data was deleted for them.");
