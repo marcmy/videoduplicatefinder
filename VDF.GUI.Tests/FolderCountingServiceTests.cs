@@ -95,14 +95,20 @@ namespace VDF.GUI.Tests {
 				WriteFile($@"big\file{i}.mp4");
 
 			var service = new FolderCountingService(TimeSpan.Zero);
-			using var progressed = new System.Threading.ManualResetEventSlim();
+			using var cancelIssued = new System.Threading.ManualResetEventSlim();
 			bool completed = false;
-			service.StartCounting(root, p => {
-				if (p.Completed) completed = true;
-				else progressed.Set();
-			});
-			Assert.True(progressed.Wait(TimeSpan.FromSeconds(15)), "no progress before cancel");
-			service.Cancel(root);
+			Assert.True(service.StartCounting(root, p => {
+				if (p.Completed) {
+					completed = true;
+					return;
+				}
+
+				// Cancel on the worker's first progress callback so a fast directory walk
+				// cannot finish before the test thread gets scheduled to request it.
+				service.Cancel(root);
+				cancelIssued.Set();
+			}));
+			Assert.True(cancelIssued.Wait(TimeSpan.FromSeconds(15)), "no progress before cancel");
 
 			// Give the walk time to notice the cancellation and unwind.
 			var sw = System.Diagnostics.Stopwatch.StartNew();

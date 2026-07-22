@@ -140,6 +140,7 @@ jobs:
         run: choco install ffmpeg -y --no-progress
 
       - name: Run FFmpeg integration tests
+        id: ffmpeg_integration_tests
         shell: pwsh
         run: |
           dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration.trx" 2>&1 |
@@ -147,7 +148,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Upload FFmpeg integration failure diagnostics
-        if: failure()
+        if: ${{ failure() && steps.ffmpeg_integration_tests.outcome == 'failure' }}
         uses: actions/upload-artifact@v7
         with:
           name: ffmpeg-integration-failure-${{ github.run_attempt }}
