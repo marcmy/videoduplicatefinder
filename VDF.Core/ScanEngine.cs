@@ -606,6 +606,14 @@ namespace VDF.Core {
 				}
 			}
 
+			// #863: a compare-only run (CLI compare, quick rescan) never goes through
+			// BuildFileList, so crash breadcrumbs from a previous session stayed uncollected -
+			// a file that took the process down inside the partial-clip visual gate was
+			// decoded again on the next run and killed it again. Collect them here too;
+			// after a full scan in the same session this finds nothing.
+			ScanCrashJournal.Initialize(DatabaseUtils.GetDatabaseFolderPath());
+			QuarantineCrashSuspects();
+
 			CancelAllTasks();
 
 			Duplicates.Clear();
@@ -634,8 +642,13 @@ namespace VDF.Core {
 		/// </summary>
 		void QuarantineCrashSuspects() {
 			List<ScanCrashJournal.Suspect> suspects = ScanCrashJournal.CollectLeftovers();
-			ApplyCrashQuarantine(DatabaseUtils.Database, suspects,
+			int flagged = ApplyCrashQuarantine(DatabaseUtils.Database, suspects,
 				entry => Logger.Instance.Warn(T("Log.CrashQuarantine", entry.Path)));
+			// The breadcrumbs are deleted on collection, so the flags they produced must hit
+			// disk now: a compare-only run never saves the database on its own, and losing
+			// the flags would re-arm the crash for the following run (#863).
+			if (flagged > 0)
+				DatabaseUtils.SaveDatabase();
 		}
 
 		/// <summary>
@@ -651,6 +664,15 @@ namespace VDF.Core {
 			(!entry.Flags.Has(EntryFlags.AudioFingerprintError) || alwaysRetryFailedSampling) &&
 			!entry.Flags.Has(EntryFlags.SilentAudioTrack) &&
 			entry.AudioFingerprint == null;
+
+		/// <summary>
+		/// Whether the partial-clip visual gate must not decode this pair. ThumbnailError marks
+		/// files whose frame extraction failed - including files quarantined by the crash
+		/// journal after a native decoder crash (#863). Decoding them again would fail again at
+		/// best and take the process down at worst; the audio match alone decides for such pairs.
+		/// </summary>
+		internal static bool PartialVerifyDecodeBlocked(FileEntry source, FileEntry clip) =>
+			source.Flags.Has(EntryFlags.ThumbnailError) || clip.Flags.Has(EntryFlags.ThumbnailError);
 
 		/// <summary>Flags every database entry named by a crash suspect; returns how many were flagged.</summary>
 		internal static int ApplyCrashQuarantine(IEnumerable<FileEntry> entries,
@@ -670,6 +692,9 @@ namespace VDF.Core {
 				if (phase == ScanCrashJournal.PhaseAudio)
 					entry.Flags.Set(EntryFlags.AudioFingerprintError);
 				else
+					// Sampling, image and partial-verify crashes all poison frame decoding.
+					// ThumbnailError also blocks the partial-clip visual gate from decoding
+					// the file again (PartialVerifyDecodeBlocked, #863).
 					entry.Flags.Set(EntryFlags.ThumbnailError);
 				flagged++;
 				onQuarantined?.Invoke(entry);
@@ -681,8 +706,12 @@ namespace VDF.Core {
 
 			DatabaseUtils.LoadDatabase();
 			QuarantineCrashSuspects();
-			if (DatabaseUtils.DbVersion < 2)
+			if (DatabaseUtils.DbVersion < 2) {
+				// Legacy 16x16 gray data cannot produce pHashes — neither the pHash mode
+				// nor the combined mode (#842) can run on it.
 				Settings.UsePHashing = false;
+				Settings.CombineGrayscaleAndPHash = false;
+			}
 
 			int oldFileCount = DatabaseUtils.Database.Count;
 
@@ -1454,7 +1483,10 @@ namespace VDF.Core {
 		}
 
 		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference) =>
-			CheckIfDuplicate(entry, overrideGray, overridePHashes, compItem, out difference, out _);
+			CheckIfDuplicate(entry, overrideGray, overridePHashes, compItem, out difference, out _, out _);
+
+		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference, out bool aiMatched) =>
+			CheckIfDuplicate(entry, overrideGray, overridePHashes, compItem, out difference, out aiMatched, out _);
 
 		/// <summary>
 		/// The pair verdict: the classic gray-bytes/pHash check, unioned with the AI
@@ -1464,10 +1496,12 @@ namespace VDF.Core {
 		/// reports that case so callers can flag it). The AI pass only runs on the
 		/// normal orientation: embeddings are measured flip-robust, so re-running it
 		/// for the flipped comparison would only duplicate work.
+		/// <paramref name="algorithms"/> reports which classic algorithm(s) matched;
+		/// it is only populated by the combined grayscale+pHash mode (#842).
 		/// </summary>
-		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference, out bool aiMatched) {
+		internal bool CheckIfDuplicate(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference, out bool aiMatched, out DuplicateFlags algorithms) {
 			aiMatched = false;
-			if (CheckIfDuplicateClassic(entry, overrideGray, overridePHashes, compItem, out difference))
+			if (CheckIfDuplicateClassic(entry, overrideGray, overridePHashes, compItem, out difference, out algorithms))
 				return true;
 			if (overrideGray != null || !Settings.UseAiMatching)
 				return false;
@@ -1479,53 +1513,100 @@ namespace VDF.Core {
 			return true;
 		}
 
-		bool CheckIfDuplicateClassic(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference) {
+		bool CheckIfDuplicateClassic(FileEntry entry, byte[]?[]? overrideGray, ulong[]? overridePHashes, FileEntry compItem, out float difference, out DuplicateFlags algorithms) {
 			byte[]?[] grayBytes = overrideGray ?? entry.compareGray!;
-			float differenceLimit = 1.0f - Settings.Percent / 100f;
 			bool ignoreBlackPixels = Settings.IgnoreBlackPixels;
 			bool ignoreWhitePixels = Settings.IgnoreWhitePixels;
+			algorithms = DuplicateFlags.None;
 			difference = 1f;
 
 			if (entry.IsImage) {
 				difference = ignoreBlackPixels || ignoreWhitePixels ?
 								GrayBytesUtils.PercentageDifferenceWithoutSpecificPixels(grayBytes[0]!, compItem.compareGray![0]!, ignoreBlackPixels, ignoreWhitePixels) :
 								GrayBytesUtils.PercentageDifference(grayBytes[0]!, compItem.compareGray![0]!);
-				return difference <= differenceLimit;
+				bool isImageDuplicate = difference <= 1.0f - Settings.Percent / 100f;
+				// Images always compare by grayscale (single frame; the pHash quorum has
+				// nothing to vote over) — in combined mode the badge says so honestly.
+				if (isImageDuplicate && Settings.CombineGrayscaleAndPHash)
+					algorithms = DuplicateFlags.GrayscaleMatched;
+				return isImageDuplicate;
 			}
 
-			if (Settings.UsePHashing) {
-				ulong[]? phashes = overrideGray != null ? overridePHashes : entry.comparePHashes;
-				ulong[]? phashesComp = compItem.comparePHashes;
-				if (phashes == null || phashesComp == null)
+			if (Settings.CombineGrayscaleAndPHash) {
+				// #842 combined mode: both classic algorithms judge every pair. Either
+				// match makes the pair a duplicate; the flags record which one(s) found
+				// it, and when both did the better (smaller) difference is reported —
+				// the same rule the flip-vs-normal selection uses.
+				bool grayMatched = TryCompareGrayVideos(grayBytes, compItem, ignoreBlackPixels, ignoreWhitePixels, out float grayDifference);
+				bool pHashMatched = TryComparePHashes(overrideGray != null ? overridePHashes : entry.comparePHashes, compItem.comparePHashes, out float pHashDifference);
+				if (!grayMatched && !pHashMatched)
 					return false;
-
-				int sampleCount = Math.Min(phashes.Length, phashesComp.Length);
-				if (sampleCount == 0)
-					return false;
-				int requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
-					? precomputed
-					: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
-				int maxDifferentBits = (int)Math.Floor((1.0 - Settings.Percent / 100.0) * 64.0);
-				int matches = 0;
-				float pHashDiffSum = 0f;
-
-				for (int j = 0; j < sampleCount; j++) {
-					int differingBits = BitOperations.PopCount(phashes[j] ^ phashesComp[j]);
-					pHashDiffSum += differingBits / 64f;
-					if (differingBits <= maxDifferentBits)
-						matches++;
-					else if (matches + (sampleCount - j - 1) < requiredMatches)
-						return false;
-				}
-				if (matches < requiredMatches)
-					return false;
-
-				difference = pHashDiffSum / sampleCount;
-				return !float.IsNaN(difference);
+				if (grayMatched)
+					algorithms |= DuplicateFlags.GrayscaleMatched;
+				if (pHashMatched)
+					algorithms |= DuplicateFlags.PHashMatched;
+				difference = grayMatched && pHashMatched ? Math.Min(grayDifference, pHashDifference)
+					: grayMatched ? grayDifference : pHashDifference;
+				return true;
 			}
 
+			if (Settings.UsePHashing)
+				return TryComparePHashes(overrideGray != null ? overridePHashes : entry.comparePHashes, compItem.comparePHashes, out difference);
+
+			return TryCompareGrayVideos(grayBytes, compItem, ignoreBlackPixels, ignoreWhitePixels, out difference);
+		}
+
+		bool TryComparePHashes(ulong[]? phashes, ulong[]? phashesComp, out float difference) {
+			difference = 1f;
+			float differenceLimitpHash = Settings.Percent / 100f;
+
+			// Entries with unrecoverable pHash data were dropped during snapshot
+			// building; a null array only occurs on the flip path when the flipped
+			// hashes could not be computed.
+			if (phashes == null || phashesComp == null)
+				return false;
+
+			// A pair is a duplicate when at least PHashRequiredMatchingSampleRatio
+			// of the sampled positions individually pass the similarity threshold.
+			// Comparing only one position made a single coincidental frame (black
+			// intro, title card) enough to report two unrelated videos as
+			// duplicates — and a single divergent frame enough to miss real ones.
+			int sampleCount = Math.Min(phashes.Length, phashesComp.Length);
+			if (sampleCount == 0)
+				return false;
+			// requiredMatches is the same for every pair in a scan; the compare phase
+			// precomputes it (matchingRequiredSampleMatches). Direct/diagnostic callers
+			// leave it null and compute locally.
+			int requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
+				? precomputed
+				: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
+			int matches = 0;
+			// Mean dissimilarity over ALL sampled positions, not just the matching ones:
+			// dividing both orientations by the same sampleCount keeps the normal and
+			// flipped `difference` values comparable for the flip-vs-normal selection in
+			// TryCheckDuplicate, and stops a fully divergent frame from being hidden
+			// behind the high average of the few frames that happened to pass.
+			float pHashDiffSum = 0f;
+
+			for (int j = 0; j < sampleCount; j++) {
+				bool pass = pHash.PHashCompare.IsDuplicateByPercent(phashes[j], phashesComp[j], out float similarity, differenceLimitpHash, strict: true);
+				pHashDiffSum += 1f - similarity;
+				if (pass)
+					matches++;
+				else if (matches + (sampleCount - j - 1) < requiredMatches)
+					return false; // quorum unreachable — skip the remaining samples
+			}
+			if (matches < requiredMatches)
+				return false;
+
+			difference = pHashDiffSum / sampleCount;
+			return !float.IsNaN(difference);
+		}
+
+		bool TryCompareGrayVideos(byte[]?[] grayBytes, FileEntry compItem, bool ignoreBlackPixels, bool ignoreWhitePixels, out float difference) {
+			difference = 1f;
 			byte[]?[] compGray = compItem.compareGray!;
-			differenceLimit *= grayBytes.Length;
+			float differenceLimit = (1.0f - Settings.Percent / 100f) * grayBytes.Length;
 			float diffSum = 0;
 			for (int j = 0; j < grayBytes.Length; j++) {
 				diffSum += ignoreBlackPixels || ignoreWhitePixels ?
@@ -1565,7 +1646,8 @@ namespace VDF.Core {
 			// plain arrays instead of probing Dictionary<double,...> with recomputed keys.
 			// Entries whose stored data is incomplete for the current settings are dropped
 			// here (previously they would have failed mid-comparison on every pair).
-			bool usePHashing = Settings.UsePHashing;
+			// The combined mode (#842) needs the pHash snapshots (and flip hashes) too.
+			bool usePHashing = Settings.UsePHashing || Settings.CombineGrayscaleAndPHash;
 			int droppedSnapshots = 0;
 			{
 				if (Settings.UseAiMatching && unionEmbeddingStore == null) {
@@ -1695,15 +1777,18 @@ namespace VDF.Core {
 			bool TryCheckDuplicate(FileEntry entry, FileEntry compItem, byte[]?[]? flippedGrayBytes, ulong[]? flippedPHashes, out float difference, out DuplicateFlags flags) {
 				flags = DuplicateFlags.None;
 				difference = 0;
-				bool isDuplicate = CheckIfDuplicate(entry, null, null, compItem, out difference, out bool aiMatched);
+				bool isDuplicate = CheckIfDuplicate(entry, null, null, compItem, out difference, out bool aiMatched, out DuplicateFlags algorithms);
+				if (isDuplicate)
+					flags |= algorithms;
 				if (aiMatched)
 					flags |= DuplicateFlags.AiMatched;
 				if (Settings.CompareHorizontallyFlipped &&
-					CheckIfDuplicate(entry, flippedGrayBytes, flippedPHashes, compItem, out float flippedDifference)) {
+					CheckIfDuplicate(entry, flippedGrayBytes, flippedPHashes, compItem, out float flippedDifference, out _, out DuplicateFlags flippedAlgorithms)) {
 					if (!isDuplicate || flippedDifference < difference) {
 						// The flipped pass is classic-only, so a better flipped match
-						// supersedes an AI-only verdict (and its flag) with a classic one.
-						flags = (flags & ~DuplicateFlags.AiMatched) | DuplicateFlags.Flipped;
+						// supersedes an AI-only verdict (and its flag) with a classic one —
+						// and carries its own orientation's algorithm flags (#842).
+						flags = DuplicateFlags.Flipped | flippedAlgorithms;
 						isDuplicate = true;
 						difference = flippedDifference;
 					}
@@ -1933,6 +2018,20 @@ namespace VDF.Core {
 			Duplicates = new HashSet<DuplicateItem>(duplicateDict.Values);
 			SplitDaisyChainGroups();
 
+			// #842 combined mode: report what each algorithm contributed. The counts are
+			// per flagged item (one item of each newly-found pair carries the flags).
+			if (Settings.CombineGrayscaleAndPHash && Duplicates.Count > 0) {
+				int grayOnly = 0, pHashOnly = 0, both = 0;
+				foreach (DuplicateItem item in Duplicates) {
+					bool g = item.Flags.HasFlag(DuplicateFlags.GrayscaleMatched);
+					bool p = item.Flags.HasFlag(DuplicateFlags.PHashMatched);
+					if (g && p) both++;
+					else if (g) grayOnly++;
+					else if (p) pHashOnly++;
+				}
+				Logger.Instance.Info($"Combined matching: {both} match(es) found by both algorithms, {grayOnly} only by grayscale, {pHashOnly} only by pHash");
+			}
+
 			// Release the transient snapshots; the gray-byte arrays themselves remain
 			// owned by entry.grayBytes, only the alignment wrappers are dropped.
 			foreach (FileEntry entry in ScanList) {
@@ -2126,6 +2225,16 @@ namespace VDF.Core {
 					if (!pauseTokenSource.TryWaitWhilePaused(cancelationTokenSource.Token))
 						return; // canceled while paused — the loop's token ends the remaining iterations
 
+					// Files whose frame decoding previously failed - or took the whole process
+					// down (#863: quarantined via the crash journal) - must not be decoded
+					// again. Keep the assignment: exactly like the no-frames case inside
+					// VerifyPartialClipVisually, the audio match alone decides.
+					if (PartialVerifyDecodeBlocked(videos[a.sourceIdx], videos[a.clipIdx])) {
+						verified.Add(a);
+						IncrementProgress(System.IO.Path.GetFileName(videos[a.clipIdx].Path));
+						return;
+					}
+
 					var (pass, visualSim) = verify(videos[a.sourceIdx], videos[a.clipIdx], a.offsetSec);
 					if (pass) {
 						verified.Add(a);
@@ -2190,8 +2299,15 @@ namespace VDF.Core {
 			}
 			if (srcSampleTimes.Count == 0) return true;
 
+			// Breadcrumbs around each decode: if the decoder takes the process down (#863),
+			// the next scan quarantines the file that was in flight instead of dying on it
+			// again. Same mechanism as the sampling phase (#861).
+			ScanCrashJournal.Begin(ScanCrashJournal.PhasePartialVerify, source.Path);
 			byte[]?[] srcFrames = FfmpegEngine.GetGrayFrames(source.Path, srcSampleTimes, Settings.ExtendedFFToolsLogging);
+			ScanCrashJournal.End();
+			ScanCrashJournal.Begin(ScanCrashJournal.PhasePartialVerify, clip.Path);
 			byte[]?[] clipFrames = FfmpegEngine.GetGrayFrames(clip.Path, clipSampleTimes, Settings.ExtendedFFToolsLogging);
+			ScanCrashJournal.End();
 
 			for (int i = 0; i < srcSampleTimes.Count; i++) {
 				byte[]? srcFrame = srcFrames[i];
