@@ -1558,43 +1558,26 @@ namespace VDF.Core {
 
 		bool TryComparePHashes(ulong[]? phashes, ulong[]? phashesComp, out float difference) {
 			difference = 1f;
-			float differenceLimitpHash = Settings.Percent / 100f;
-
-			// Entries with unrecoverable pHash data were dropped during snapshot
-			// building; a null array only occurs on the flip path when the flipped
-			// hashes could not be computed.
 			if (phashes == null || phashesComp == null)
 				return false;
 
-			// A pair is a duplicate when at least PHashRequiredMatchingSampleRatio
-			// of the sampled positions individually pass the similarity threshold.
-			// Comparing only one position made a single coincidental frame (black
-			// intro, title card) enough to report two unrelated videos as
-			// duplicates — and a single divergent frame enough to miss real ones.
 			int sampleCount = Math.Min(phashes.Length, phashesComp.Length);
 			if (sampleCount == 0)
 				return false;
-			// requiredMatches is the same for every pair in a scan; the compare phase
-			// precomputes it (matchingRequiredSampleMatches). Direct/diagnostic callers
-			// leave it null and compute locally.
 			int requiredMatches = matchingRequiredSampleMatches is int precomputed && sampleCount == positionList.Count
 				? precomputed
 				: Math.Max(1, (int)Math.Ceiling(sampleCount * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)));
+			int maxDifferentBits = (int)Math.Floor((1.0 - Settings.Percent / 100.0) * 64.0);
 			int matches = 0;
-			// Mean dissimilarity over ALL sampled positions, not just the matching ones:
-			// dividing both orientations by the same sampleCount keeps the normal and
-			// flipped `difference` values comparable for the flip-vs-normal selection in
-			// TryCheckDuplicate, and stops a fully divergent frame from being hidden
-			// behind the high average of the few frames that happened to pass.
 			float pHashDiffSum = 0f;
 
 			for (int j = 0; j < sampleCount; j++) {
-				bool pass = pHash.PHashCompare.IsDuplicateByPercent(phashes[j], phashesComp[j], out float similarity, differenceLimitpHash, strict: true);
-				pHashDiffSum += 1f - similarity;
-				if (pass)
+				int differingBits = BitOperations.PopCount(phashes[j] ^ phashesComp[j]);
+				pHashDiffSum += differingBits / 64f;
+				if (differingBits <= maxDifferentBits)
 					matches++;
 				else if (matches + (sampleCount - j - 1) < requiredMatches)
-					return false; // quorum unreachable — skip the remaining samples
+					return false;
 			}
 			if (matches < requiredMatches)
 				return false;
