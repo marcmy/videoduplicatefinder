@@ -146,6 +146,29 @@ jobs:
               git add VDF.Core/FFTools/FfmpegEngine.cs
             fi
 
+            if echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs"; then
+              echo "Keeping the perf decoder and applying master's stream-group compatibility property"
+              git checkout --ours -- VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
+
+              python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs")
+          text = path.read_text(encoding="utf-8")
+
+          if "HasStreamGroups" not in text:
+              anchor = "\t\tinternal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;\n"
+              replacement = anchor + "\t\tpublic bool HasStreamGroups => _pFormatContext->nb_stream_groups > 0;\n"
+              if anchor not in text:
+                  raise SystemExit("Could not locate the perf stream metadata anchor")
+              text = text.replace(anchor, replacement, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+              git add VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
+            fi
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo "Unresolved conflicts remain:"
