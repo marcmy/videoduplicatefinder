@@ -22,5 +22,14 @@ namespace VDF.Core.FFTools {
 
 		internal static AVPixelFormat ResolveSourcePixelFormat(int frameFormat, AVPixelFormat openTimeFormat) =>
 			frameFormat >= 0 ? (AVPixelFormat)frameFormat : openTimeFormat;
+
+		// A corrupt/truncated software decode will fail identically through the process fallback,
+		// so avoid paying another timeout. Hardware failures may be driver-specific and still
+		// deserve the out-of-process retry.
+		internal static bool ShouldSkipProcessRetryForCorruptFile(
+			FfmpegErrorCategory category,
+			AVHWDeviceType hardwareDeviceType) =>
+			category == FfmpegErrorCategory.CorruptOrTruncated
+			&& hardwareDeviceType == AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 	}
 }
