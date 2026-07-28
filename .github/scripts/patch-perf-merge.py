@@ -19,6 +19,19 @@ def ensure_rgb224_setting() -> None:
     path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
 
 
+def ensure_stream_group_compatibility() -> None:
+    path = Path("VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs")
+    text = path.read_text(encoding="utf-8")
+    if "HasStreamGroups" in text:
+        return
+
+    needle = "\t\tinternal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;\n"
+    replacement = needle + "\t\tpublic bool HasStreamGroups => _pFormatContext->nb_stream_groups > 0;\n"
+    if needle not in text:
+        raise RuntimeError("Unable to locate VideoStreamDecoder stream metadata insertion point")
+    path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+
+
 def restore_phash_quorum() -> None:
     path = Path("VDF.Core/ScanEngine.cs")
     text = path.read_text(encoding="utf-8")
@@ -64,4 +77,5 @@ def restore_phash_quorum() -> None:
 
 
 ensure_rgb224_setting()
+ensure_stream_group_compatibility()
 restore_phash_quorum()
