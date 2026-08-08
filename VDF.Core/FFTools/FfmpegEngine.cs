@@ -1161,6 +1161,26 @@ namespace VDF.Core.FFTools {
 					hardwarePolicy = "heif-grid-process";
 				}
 			}
+			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
+				byte[]? gridBytes = TryGetTiledHeifGridFrame(
+					settings,
+					isGrayByte,
+					isRgbFrame,
+					graySideLength,
+					expectedGrayBytes,
+					expectedRgbBytes,
+					timeoutMilliseconds,
+					out string gridError);
+				if (!string.IsNullOrWhiteSpace(gridError))
+					ffmpegError = string.IsNullOrWhiteSpace(ffmpegError)
+						? gridError
+						: $"{ffmpegError}{Environment.NewLine}HEIF tile-grid retry:{Environment.NewLine}{gridError}";
+				if (gridBytes != null) {
+					bytes = gridBytes;
+					processAttemptedHardware = false;
+					hardwarePolicy = "heif-grid-process";
+				}
+			}
 			// When a still image was extracted successfully, discard FFmpeg's known-benign
 			// PNG demuxer chatter instead of logging a false warning (#805/#809/#815).
 			if (bytes != null && ffmpegError.Length > 0 && FileUtils.IsImageFile(settings.File))
