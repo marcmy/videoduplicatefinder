@@ -13,6 +13,7 @@ on:
     branches:
       - perf/4.1-native-hwaccel
     paths:
+      - '.github/scripts/reconcile-perf.py'
       - '.github/scripts/patch-perf-merge.py'
       - '.github/scripts/patch-perf-upstream-parity.py'
       - '.github/scripts/patch-perf-upstream-safety.py'
@@ -105,21 +106,15 @@ jobs:
           fi
 
           # Keep the custom performance engine aligned with upstream correctness behavior.
-          # These are the only places source compatibility repairs are applied; release builds
-          # consume committed source verbatim and never patch/commit code themselves.
-          python3 .github/scripts/patch-perf-merge.py
-          python3 .github/scripts/patch-perf-upstream-parity.py
-          python3 .github/scripts/patch-perf-upstream-safety.py
-          python3 .github/scripts/patch-perf-ai-process.py
+          # reconcile-perf.py is the single canonical ordering of the focused patchers.
+          # Release builds consume committed source verbatim and never patch/commit code.
+          python3 .github/scripts/reconcile-perf.py
           git add -A
 
-          # The reconciliation layer must be a fixed point: running it a second time on
-          # its own output is required to be a no-op. This catches patchers that duplicate
+          # The complete reconciliation layer must be a fixed point: running it a second time
+          # on its own output is required to be a no-op. This catches patchers that duplicate
           # assignments/helpers or oscillate source formatting before they can be committed.
-          python3 .github/scripts/patch-perf-merge.py
-          python3 .github/scripts/patch-perf-upstream-parity.py
-          python3 .github/scripts/patch-perf-upstream-safety.py
-          python3 .github/scripts/patch-perf-ai-process.py
+          python3 .github/scripts/reconcile-perf.py
           if ! git diff --quiet; then
             echo "::error::Perf reconciliation is not idempotent; the second pass changed source."
             git diff --stat

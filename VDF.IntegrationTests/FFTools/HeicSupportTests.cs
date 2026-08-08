@@ -15,6 +15,7 @@
 //
 
 using VDF.Core.FFTools;
+using VDF.Core.FFTools.FFmpegNative;
 using VDF.Core.Utils;
 using VDF.IntegrationTests.Fixtures;
 
@@ -73,6 +74,39 @@ public class HeicSupportTests {
 		Assert.Equal(32 * 32, gray!.Length);
 		Assert.Equal(96, width);
 		Assert.Equal(72, height);
+	}
+
+	[SkippableFact]
+	public void TiledHeic_ExternalConformanceFixture_MatchesProcessFallback() {
+		Skip.If(!_fixture.FfmpegCliAvailable, _fixture.FfmpegNotFoundReason);
+		Skip.If(!_fixture.NativeBindingAvailable, "FFmpeg native libraries not available");
+		string? tiledHeic = Environment.GetEnvironmentVariable("VDF_TEST_TILED_HEIC");
+		Skip.If(string.IsNullOrWhiteSpace(tiledHeic) || !File.Exists(tiledHeic),
+			"Set VDF_TEST_TILED_HEIC to a true tiled HEIF/HEIC grid fixture (see fetch-tiled-heic-fixture.ps1).");
+
+		using var guard = new FfmpegStaticStateGuard();
+		FfmpegEngine.HardwareAccelerationMode = FFHardwareAccelerationMode.none;
+		FfmpegEngine.CustomFFArguments = string.Empty;
+
+		// Prove this is the pathology the bridge is meant to handle, not an ordinary HEIC.
+		using (var decoder = new VideoStreamDecoder(tiledHeic!))
+			Assert.True(decoder.HasStreamGroups, "External fixture is not a tiled HEIF stream-group/grid file.");
+
+		FfmpegEngine.UseNativeBinding = true;
+		byte[]? nativeEnabled = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+			File = tiledHeic!, Position = TimeSpan.Zero, GrayScale = 1, SoftwareDecodeOnly = true,
+		}, extendedLogging: true);
+
+		FfmpegEngine.UseNativeBinding = false;
+		byte[]? process = FfmpegEngine.GetThumbnail(new FfmpegSettings {
+			File = tiledHeic!, Position = TimeSpan.Zero, GrayScale = 1, SoftwareDecodeOnly = true,
+		}, extendedLogging: true);
+
+		Assert.NotNull(nativeEnabled);
+		Assert.NotNull(process);
+		Assert.Equal(32 * 32, nativeEnabled!.Length);
+		Assert.Equal(32 * 32, process!.Length);
+		Assert.Equal(process, nativeEnabled); // native-enabled path must route to the same assembled grid.
 	}
 
 	[SkippableFact]

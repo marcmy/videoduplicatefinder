@@ -33,6 +33,10 @@ internal static class Program {
 		if (args.Length > 0 && args[0] == "--probe-regression")
 			return RegressionProbe.Run(args);
 
+		// Full search+compare pipeline probe: discovery -> analysis/hashing -> comparison/finalization.
+		if (args.Length > 0 && args[0] == "--probe-scan-pipeline")
+			return ScanPipelineProbe.Run(args);
+
 		// BenchmarkSwitcher routes CLI args (--filter, --list, --job, --exporters …)
 		// to BDN. With no args, prints the menu of available benchmarks.
 		BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
