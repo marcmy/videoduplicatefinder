@@ -57,8 +57,8 @@ function Invoke-RegressionProbe {
 
     Push-Location $WorkingDirectory
     try {
-        & dotnet @arguments 2>&1 | Tee-Object -FilePath $LogPath
-        return $LASTEXITCODE
+        & dotnet @arguments 2>&1 | Tee-Object -FilePath $LogPath | Out-Host
+        return [int]$LASTEXITCODE
     }
     finally {
         Pop-Location
