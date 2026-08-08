@@ -1,0 +1,47 @@
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directories:
+      - "/FakeDatabaseGenerator"
+      - "/VDF.Benchmarks"
+      - "/VDF.CLI.Tests"
+      - "/VDF.CLI"
+      - "/VDF.Core.Tests"
+      - "/VDF.Core"
+      - "/VDF.GUI.Tests"
+      - "/VDF.GUI"
+      - "/VDF.IntegrationTests"
+      - "/VDF.TestSupport"
+      - "/VDF.Web.Tests"
+      - "/VDF.Web"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "18:00"
+      timezone: "America/New_York"
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/VDF.CLI"
+      - "/VDF.Web"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "18:00"
+      timezone: "America/New_York"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+      time: "18:00"
+      timezone: "America/New_York"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/New_York"
