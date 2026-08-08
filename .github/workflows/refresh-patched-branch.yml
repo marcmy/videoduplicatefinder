@@ -15,6 +15,7 @@ on:
     paths:
       - '.github/scripts/patch-perf-merge.py'
       - '.github/scripts/patch-perf-upstream-parity.py'
+      - '.github/scripts/patch-perf-upstream-safety.py'
       - '.github/workflows/refresh-patched-branch.yml'
       - 'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs'
 
@@ -106,6 +107,7 @@ jobs:
           # consume committed source verbatim and never patch/commit code themselves.
           python3 .github/scripts/patch-perf-merge.py
           python3 .github/scripts/patch-perf-upstream-parity.py
+          python3 .github/scripts/patch-perf-upstream-safety.py
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "perf: reconcile upstream compatibility"
