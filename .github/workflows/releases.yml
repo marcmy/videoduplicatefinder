@@ -9,6 +9,8 @@ on:
       - '.github/workflows/**'
       - 'README.md'
       - 'docs/**'
+      - 'PERF_BRANCH.md'
+      - 'VDF.Benchmarks/README.md'
 
 permissions:
   contents: read
