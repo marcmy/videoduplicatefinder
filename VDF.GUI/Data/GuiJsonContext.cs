@@ -43,9 +43,10 @@ namespace VDF.GUI.Data {
 	[JsonSerializable(typeof(Dictionary<string, ValueTuple<long, int>>), TypeInfoPropertyName = "ThumbPackIndex")]
 	internal partial class GuiJsonFieldsContext : JsonSerializerContext { }
 
-	/// <summary>WriteIndented twin of <see cref="GuiJsonContext"/> (cleanup dry-run reports).</summary>
+	/// <summary>WriteIndented twin of <see cref="GuiJsonContext"/> for human-readable GUI JSON files.</summary>
 	[JsonSourceGenerationOptions(WriteIndented = true)]
 	[JsonSerializable(typeof(CleanupDryRunReport))]
+	[JsonSerializable(typeof(SettingsFile))]
 	internal partial class GuiJsonPrettyContext : JsonSerializerContext { }
 
 	/// <summary>WriteIndented twin of <see cref="GuiJsonFieldsContext"/> (pretty scan-results exports).</summary>
