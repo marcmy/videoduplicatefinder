@@ -34,15 +34,19 @@ The comparator rejects mismatched runtime environments, changed sample counts, m
 
 ## Release performance gate
 
-The `perf/4.1-native-hwaccel` release workflow runs `.github/scripts/perf-regression-gate.ps1` after installing the verified shared FFmpeg build and before the integration/AOT stages. The script checks out `perf/4.1-baseline` as a detached worktree, benchmarks that known-good ref first, then benchmarks the candidate on the same Windows runner with the same FFmpeg binaries and the exact same generated corpus bytes.
+The `perf/4.1-native-hwaccel` release workflow runs `.github/scripts/perf-regression-gate.ps1` after installing the verified shared FFmpeg build and before the integration/AOT stages. The script checks out `perf/4.1-baseline` as a detached worktree while leaving its product code pinned.
 
-The release gate currently measures `process` and `native-cpu` with 9 measured iterations, 2 warmups, and a 15% maximum median-throughput regression per case. GitHub-hosted Windows runners do not expose usable D3D11VA hardware, so D3D11 remains available to the probe for local or GPU-runner measurements but is not part of the hosted release gate.
+To prevent benchmark-harness drift from looking like a product performance change, the script replaces only the baseline worktree's `VDF.Benchmarks` project with the candidate's current benchmark source before compiling either side. Both benchmark projects are fully built before timing begins. Baseline and candidate therefore measure different product revisions through the same harness code, on the same Windows runner, with the same verified FFmpeg binaries and the exact same generated corpus bytes.
 
-Every gate run writes `baseline.json`, `current.json`, and both probe logs under `artifacts/perf-gate`; the release workflow uploads them even when the gate fails.
+The release gate currently measures `process` and `native-cpu` with 9 measured iterations, 2 warmups, and a 15% maximum median-throughput regression per case. If the primary baseline/candidate pair crosses that threshold, the script automatically runs one additional paired measurement. Publication is blocked only when the threshold breach reproduces in both pairs; a one-off breach is retained in the artifacts and treated as hosted-runner noise.
+
+GitHub-hosted Windows runners do not expose usable D3D11VA hardware, so D3D11 remains available to the probe for local or GPU-runner measurements but is not part of the hosted release gate.
+
+Every normal gate run writes `baseline.json`, `current.json`, and both probe logs under `artifacts/perf-gate`. A confirmation run additionally writes `baseline-confirm.json`, `current-confirm.json`, and their logs. The release workflow uploads the directory even when the gate fails.
 
 `perf/4.1-baseline` is deliberately not advanced automatically. A failed candidate therefore cannot become the next baseline simply by being published. Move that branch only after an intentional performance change has been independently verified and accepted.
 
-For an equivalent local same-ref comparison (including D3D11 on a capable Windows GPU), run:
+For an equivalent local comparison (including D3D11 on a capable Windows GPU), run:
 
 ```powershell
 .github\scripts\perf-regression-gate.ps1 `
