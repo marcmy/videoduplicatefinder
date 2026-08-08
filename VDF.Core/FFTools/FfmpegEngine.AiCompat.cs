@@ -38,13 +38,37 @@ namespace VDF.Core.FFTools {
 					initiallyMissingGray.Add(position);
 			}
 
-			if (ShouldUseNativeBinding)
-				TryExtractGrayAndAiNativeBatch(
+			bool skipRemainingAiProcessRetries = false;
+			if (ShouldUseNativeBinding) {
+				bool nativeSucceeded = TryExtractGrayAndAiNativeBatch(
 					videoFile,
 					positions,
 					maxSamplingDurationSeconds,
 					embeddingSink,
-					extendedLogging);
+					extendedLogging,
+					out FfmpegErrorCategory nativeFailureCategory,
+					out AVHWDeviceType nativeFailureHardwareDeviceType);
+				if (!nativeSucceeded &&
+					ShouldSkipProcessRetryForCorruptFile(
+						nativeFailureCategory,
+						nativeFailureHardwareDeviceType)) {
+					bool allGrayAvailable = positions.All(position => {
+						double key = videoFile.GetGrayBytesIndex(
+							position, maxSamplingDurationSeconds);
+						return videoFile.grayBytes.TryGetValue(key, out byte[]? bytes) &&
+							bytes != null;
+					});
+					if (!allGrayAvailable) {
+						videoFile.Flags.Set(EntryFlags.ThumbnailError);
+						Logger.Instance.Info(
+							$"Skipping process-mode retry for '{videoFile.Path}': the native software decode failure indicates a truncated or corrupt file, and required gray samples are still missing.");
+						return false;
+					}
+					// Gray matching remains valid; abstain from missing AI embeddings rather
+					// than grinding the same damaged bitstream through one process per sample.
+					skipRemainingAiProcessRetries = true;
+				}
+			}
 
 			string? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 			string? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
@@ -67,7 +91,8 @@ namespace VDF.Core.FFTools {
 						pHash.PerceptualHash.ComputePHashFromGray32x32(gray);
 				}
 
-				if (embeddingSink.WantsEmbedding(videoFile, position)) {
+				if (!skipRemainingAiProcessRetries &&
+					embeddingSink.WantsEmbedding(videoFile, position)) {
 					byte[]? rgb = GetAiRgb224Cli(
 						videoFile.Path,
 						TimeSpan.FromSeconds(position),
@@ -125,6 +150,8 @@ namespace VDF.Core.FFTools {
 			double maxSamplingDurationSeconds,
 			global::VDF.Core.AI.IEmbeddingFrameSink embeddingSink,
 			bool extendedLogging,
+			out FfmpegErrorCategory failureCategory,
+			out AVHWDeviceType failureHardwareDeviceType,
 			bool forceCpuDecode = false) {
 			List<GrayByteRequest> requests =
 				GetPendingAiNativeRequests(
@@ -138,6 +165,8 @@ namespace VDF.Core.FFTools {
 			string? familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 			string? codecName = GetPrimaryVideoCodecName(videoFile);
 			AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			failureCategory = FfmpegErrorCategory.Unknown;
+			failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 			try {
 				if (!forceCpuDecode &&
 					!ShouldBypassHardwareDecodeForCodec(
@@ -299,6 +328,10 @@ namespace VDF.Core.FFTools {
 				return true;
 			}
 			catch (Exception ex) {
+				string diagnostics = FfmpegLogCapture.GetRecent();
+				failureCategory = FfmpegErrorClassifier.Categorize(
+					diagnostics.Length > 0 ? $"{diagnostics} {ex.Message}" : ex.Message);
+				failureHardwareDeviceType = hardwareDeviceType;
 				if (ex is TiledHeifRequiresProcessException) {
 					Logger.Instance.Info(ex.Message);
 					return false;
@@ -331,6 +364,8 @@ namespace VDF.Core.FFTools {
 						maxSamplingDurationSeconds,
 						embeddingSink,
 						extendedLogging,
+						out failureCategory,
+						out failureHardwareDeviceType,
 						forceCpuDecode: true);
 				}
 

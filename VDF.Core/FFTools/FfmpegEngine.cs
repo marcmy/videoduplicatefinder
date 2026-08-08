@@ -531,12 +531,14 @@ namespace VDF.Core.FFTools {
 			results.Add(CreateGrayByteResult(request, data));
 		}
 
-		static unsafe bool TryGetGrayBytesFromVideoNativeBatch(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, List<GrayByteResult> results, bool allowD3D11GpuScale = true, bool forceCpuDecode = false, string? forcedCpuPolicy = null) {
+		static unsafe bool TryGetGrayBytesFromVideoNativeBatch(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds, bool extendedLogging, List<GrayByteResult> results, out FfmpegErrorCategory failureCategory, out AVHWDeviceType failureHardwareDeviceType, bool allowD3D11GpuScale = true, bool forceCpuDecode = false, string? forcedCpuPolicy = null) {
 			int requestedSamples = 0;
 			string hardwarePolicy = "unresolved";
 			string? familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 			string? codecName = GetPrimaryVideoCodecName(videoFile);
 			AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			failureCategory = FfmpegErrorCategory.Unknown;
+			failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 			try {
 				List<GrayByteRequest> requests = GetMissingGrayByteRequests(videoFile, positions, maxSamplingDurationSeconds);
 				requestedSamples = requests.Count;
@@ -641,7 +643,7 @@ namespace VDF.Core.FFTools {
 						List<GrayByteResult> d3d11Results = new(results);
 						results.Clear();
 						var cpuProbeSw = Stopwatch.StartNew();
-						bool cpuProbeSucceeded = TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "d3d11-adaptive-cpu-probe");
+						bool cpuProbeSucceeded = TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, out _, out _, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "d3d11-adaptive-cpu-probe");
 						long cpuTotalMs = cpuProbeSw.ElapsedMilliseconds;
 						if (cpuProbeSucceeded && cpuTotalMs < d3d11TotalMs) {
 							CompleteD3D11GrayByteCpuProbe(videoFile, probeFamilyKey, d3d11TotalMs, cpuTotalMs);
@@ -657,6 +659,10 @@ namespace VDF.Core.FFTools {
 				return true;
 			}
 			catch (Exception e) {
+				string diagnostics = FfmpegLogCapture.GetRecent();
+				failureCategory = FfmpegErrorClassifier.Categorize(
+					diagnostics.Length > 0 ? $"{diagnostics} {e.Message}" : e.Message);
+				failureHardwareDeviceType = hardwareDeviceType;
 				if (e is TiledHeifRequiresProcessException) {
 					Logger.Instance.Info(e.Message);
 					return false;
@@ -672,7 +678,7 @@ namespace VDF.Core.FFTools {
 						familyKey);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction detected software frames under D3D11 on '{videoFile.Path}', retrying native batch with CPU decode. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
-					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true);
+					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, out failureCategory, out failureHardwareDeviceType, allowD3D11GpuScale: false, forceCpuDecode: true);
 				}
 				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
 				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
@@ -683,7 +689,7 @@ namespace VDF.Core.FFTools {
 						familyKey);
 					Logger.Instance.Info($"Native FFmpeg graybyte extraction hit a hardware decode failure on '{videoFile.Path}', retrying native batch with CPU decode. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
 					results.Clear();
-					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "hardware-decode-failure-cpu-retry");
+					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, out failureCategory, out failureHardwareDeviceType, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "hardware-decode-failure-cpu-retry");
 				}
 				RecordNativeFailure(videoFile.Path, e);
 				Logger.Instance.Info($"Native FFmpeg batched graybyte extraction failed on '{videoFile.Path}', falling back to per-sample path for missing samples. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {e.Message}");
@@ -1096,6 +1102,26 @@ namespace VDF.Core.FFTools {
 					hardwarePolicy = "heif-grid-process";
 				}
 			}
+			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
+				byte[]? gridBytes = TryGetTiledHeifGridFrame(
+					settings,
+					isGrayByte,
+					isRgbFrame,
+					graySideLength,
+					expectedGrayBytes,
+					expectedRgbBytes,
+					timeoutMilliseconds,
+					out string gridError);
+				if (!string.IsNullOrWhiteSpace(gridError))
+					ffmpegError = string.IsNullOrWhiteSpace(ffmpegError)
+						? gridError
+						: $"{ffmpegError}{Environment.NewLine}HEIF tile-grid retry:{Environment.NewLine}{gridError}";
+				if (gridBytes != null) {
+					bytes = gridBytes;
+					processAttemptedHardware = false;
+					hardwarePolicy = "heif-grid-process";
+				}
+			}
 			// When a still image was extracted successfully, discard FFmpeg's known-benign
 			// PNG demuxer chatter instead of logging a false warning (#805/#809/#815).
 			if (bytes != null && ffmpegError.Length > 0 && FileUtils.IsImageFile(settings.File))
@@ -1149,7 +1175,9 @@ namespace VDF.Core.FFTools {
 			int tooDarkCounter = 0;
 			string nativeGrayByteState = DescribeNativeGrayBytePathState();
 			List<GrayByteResult> stagedResults = new(missingPositions);
-			if (nativeGrayByteState == "available" && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults)) {
+			FfmpegErrorCategory nativeFailureCategory = FfmpegErrorCategory.Unknown;
+			AVHWDeviceType nativeFailureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+			if (nativeGrayByteState == "available" && TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, stagedResults, out nativeFailureCategory, out nativeFailureHardwareDeviceType)) {
 				CommitGrayByteResults(videoFile, stagedResults, ref tooDarkCounter);
 				foreach (GrayByteResult _ in stagedResults)
 					ReportCompletedSample();
@@ -1159,6 +1187,15 @@ namespace VDF.Core.FFTools {
 					return false;
 				}
 				return true;
+			}
+			if (nativeGrayByteState == "available" &&
+				ShouldSkipProcessRetryForCorruptFile(
+					nativeFailureCategory,
+					nativeFailureHardwareDeviceType)) {
+				videoFile.Flags.Set(EntryFlags.ThumbnailError);
+				Logger.Instance.Info(
+					$"Skipping process-mode retry for '{videoFile.Path}': the native software decode failure indicates a truncated or corrupt file, and the FFmpeg process would run the same decoder over the same damaged bitstream.");
+				return false;
 			}
 			if (ShouldLogGrayByteScanTelemetry(extendedLogging) && nativeGrayByteState != "available")
 				LogNativeGrayByteBatchSkipped(videoFile.Path, hardwareFamilyKey, nativeGrayByteState, missingPositions);
