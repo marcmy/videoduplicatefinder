@@ -97,7 +97,7 @@ function Invoke-RegressionProbe {
 
 function Invoke-PairedMeasurement {
     param(
-        [Parameter(Mandatory)] [string]$Suffix,
+        [AllowEmptyString()] [string]$Suffix = '',
         [Parameter(Mandatory)] [string]$BaselineSha,
         [Parameter(Mandatory)] [string]$CurrentSha
     )
@@ -167,7 +167,7 @@ try {
     if (Test-Path $corpusCache) { Remove-Item $corpusCache -Recurse -Force }
 
     Write-Host 'Running primary paired performance measurement...'
-    $currentExit = Invoke-PairedMeasurement -Suffix '' -BaselineSha $baselineSha -CurrentSha $currentSha
+    $currentExit = Invoke-PairedMeasurement -BaselineSha $baselineSha -CurrentSha $currentSha
 
     if ($currentExit -eq 2) {
         Write-Warning 'Primary pair crossed the regression threshold; running one confirmation pair before blocking publication.'
