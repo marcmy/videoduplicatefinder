@@ -18,7 +18,7 @@ Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current
 - **PARITY BRIDGE** — upstream correctness/safety behavior adapted to the custom perf engine. Preserve the behavior, but the exact bridge code may be simplified over time.
 - **UPSTREAM-OWNED** — originated in or was influenced by this fork, but upstream now has the canonical implementation. Do not maintain a second fork implementation.
 - **TOOLING** — benchmark, release, sync, test, or maintenance infrastructure specific to this fork.
-- **REVIEW** — remaining delta whose independent value should be re-proven before keeping it long-term.
+- **EXTRA REGRESSION GUARD** — test-only divergence that hardens behavior without claiming runtime ownership.
 
 ## Intentional fork-owned runtime divergences
 
@@ -34,6 +34,7 @@ Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current
 | AI/native compatibility layer | FORK-OWNED + PARITY BRIDGE | `VDF.Core/FFTools/FfmpegEngine.AiCompat.cs`, `FfmpegEngine.AiCompatOverloads.cs` | Keeps AI matching compatible with the custom native engine and its fallbacks. |
 | Hardened combined gray+AI process fallback | FORK-OWNED + PARITY BRIDGE | `VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs` | Uses upstream's one-decode concept while adding bounded process I/O, tiled-HEIF handling, H.264 reference-warning detection, accurate-seek recovery, and safe fallback to the established separate paths. |
 | Native-library discovery/load safety | FORK-OWNED DELTA | `VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs` | The perf branch keeps stronger Windows DLL-set discovery/load safeguards around the native engine. |
+| pHash pair hot loop | FORK-OWNED MICRO-OPT | `VDF.Core/ScanEngine.cs` | Preserves upstream quorum/all-sample semantics but precomputes the strict Hamming-bit threshold once per pair and performs direct `PopCount` comparisons instead of recomputing the percentage-to-bit threshold for every sampled position. Upstream's canonical quorum tests remain the semantic contract. |
 
 ## Upstream correctness carried into the custom engine
 
@@ -57,7 +58,7 @@ These no longer justify a fork implementation. The perf branch should inherit th
 
 | Feature/fix | Upstream status |
 | --- | --- |
-| Multi-position pHash quorum / required matching-sample ratio | Upstream adopted it from this fork and subsequently refined snapshot construction, all-sample difference averaging, quorum precomputation, CLI handling, and tests. |
+| Multi-position pHash quorum / required matching-sample ratio | Upstream adopted it from this fork and subsequently refined snapshot construction, all-sample difference averaging, quorum precomputation, CLI handling, and tests. The perf branch retains only a semantically equivalent hot-loop micro-optimization, not a separate quorum design. |
 | Separate CPU-bound matching parallelism | Upstream adopted it from this fork as `MatchingMaxDegreeOfParallelism`. Old fork matching-concurrency implementation has been removed. |
 | Comparer zoom/pan/swipe, dual-mode loading, and stale async thumbnail completion fixes | Upstream adopted the fork work and owns the implementation now. |
 | Anamorphic/SAR-correct display thumbnails | Upstream adopted the fork work and owns the general implementation now. |
@@ -74,28 +75,35 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 - `c8edaf3` — reverse-proxy/auth hardening.
 - `721e77e` — comparer zoom/pan/swipe/mode fixes.
 
-## Tooling that intentionally differs from upstream
+## Tooling and regression guards that intentionally differ from upstream
 
-| Area | Status | Files |
+| Area | Status | Files / reason |
 | --- | --- | --- |
 | Upstream sync / perf refresh | TOOLING | `.github/workflows/sync-master.yml`, `.github/workflows/refresh-patched-branch.yml` |
 | Upstream parity reconciliation | TOOLING | `.github/scripts/patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py` |
 | Windows x64 GUI-only Native AOT release | TOOLING | `.github/workflows/releases.yml` |
 | Performance regression probe | TOOLING | `VDF.Benchmarks/Scenarios/RegressionProbe.cs`, `VDF.Benchmarks/README.md` |
 | Perf-specific FFmpeg regression coverage | TOOLING | `VDF.Core.Tests/FFTools/*`, `VDF.IntegrationTests/FFTools/*` where the test exercises a fork-only path |
+| Comparer mode regression | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/ThumbnailComparerModeTests.cs` pins the upstream-owned selection-vs-bitmap-load behavior, for which upstream currently has no equivalent dedicated test file. |
+| Folder-count cancellation race | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/FolderCountingServiceTests.cs` issues cancellation from the first worker progress callback so an unusually fast directory walk cannot finish before the test thread gets scheduled. Runtime code is unchanged. |
+| D3D11 dependency | FORK-OWNED SUPPORT | `VDF.Core/VDF.Core.csproj` adds `Vortice.Direct3D11` for the two fork-owned D3D11 gray-byte paths. |
 
-## Review candidates / cleanup queue
+The normal Windows PR workflow is intentionally kept at upstream test coverage (Core, CLI, GUI, Web, integration). The perf release workflow adds its own stricter GUI/FFmpeg/Native-AOT gates on top; it should not weaken upstream coverage merely because only the GUI artifact is released.
 
-These files are still different from `master`, but their independent value should be checked before treating them as permanent fork ownership:
+## Completed cleanup from the 2026-08-08 audit
 
-1. `VDF.Core.Tests/PHashSampleQuorumTests.cs` — likely overlaps upstream's canonical `PHashQuorumTests`. Compare assertions and remove the fork copy if it adds no perf-specific coverage.
-2. `VDF.GUI.Tests/ThumbnailComparerModeTests.cs` — the underlying comparer behavior is upstream-owned now. Keep only assertions that cover a perf-specific interaction not covered upstream.
-3. Small non-engine deltas in `VDF.Core/ViewModels/DuplicateItem.cs` and `VDF.GUI/ViewModels/MainWindowVM.cs` — identify whether they still enable a perf-specific behavior; otherwise converge to upstream.
-4. Test-only deltas in `PauseTokenSourceTests.cs` and `FolderCountingServiceTests.cs` — verify whether they are environment/Native-AOT accommodations or historical merge residue.
-5. The four reconciliation scripts — consolidate where practical and give the patch layer explicit idempotence tests. The desired end state is fewer textual source transformations and more stable source partials.
-6. `FfmpegEngine.UpstreamCompat.cs` — periodically shrink it when a bridge can move into the permanent owning partial without making future upstream merges harder.
+- Removed `ScanEngine.MatchingConcurrency.cs` and its duplicate tests after upstream absorbed the matching-parallelism implementation.
+- Removed the fork's old `PHashSampleQuorumTests.cs`; upstream `PHashQuorumTests` is a strict superset and directly exercises the current implementation without reflection.
+- Removed an extra `MainWindowVM.SyncCoreSettings` pHash-ratio assignment; upstream already assigns it later in the same method.
+- Removed unused `DuplicateItem.ThumbnailDisplayAspectCorrected` state left from the pre-upstream SAR implementation.
+- Reverted a test-only async rewrite of `PauseTokenSourceTests.cs` to upstream because it added no fork-specific coverage.
+- Restored upstream GUI and Web tests in `.github/workflows/dotnetcore.yml` instead of carrying a weaker PR gate.
 
-Do not remove a review candidate merely because upstream has a similar filename or test. First prove that the fork delta adds no unique behavior or regression coverage.
+## Remaining maintenance cleanup
+
+1. Consolidate the four reconciliation scripts where practical and add explicit idempotence tests. The desired end state is fewer textual source transformations and more stable source partials.
+2. Periodically shrink `FfmpegEngine.UpstreamCompat.cs` when a bridge can move into the permanent owning partial without making future upstream merges harder. Some helpers intentionally remain only to preserve upstream test/source compatibility even when the perf production path has a richer policy.
+3. Re-audit `ScanEngine.cs` whenever upstream changes pHash threshold semantics. The fork's direct `PopCount` loop is allowed only while it is exactly equivalent to upstream `PHashCompare.IsDuplicateByPercent(..., strict: true)` semantics.
 
 ## Maintenance rules
 
@@ -110,8 +118,8 @@ Do not remove a review candidate merely because upstream has a similar filename 
 
 ## Next audit targets
 
-- Complete the review-candidate cleanup above.
-- Add explicit idempotence tests for each reconciliation script.
+- Add explicit idempotence tests for each reconciliation script, then consolidate the scripts where safe.
 - Build a small evil-media corpus covering tiled HEIF, corrupt/truncated streams, H.264 random-access recovery, 10-bit HEVC, VP9, odd dimensions, SAR/rotation, VFR, very short clips, and mid-stream layout changes.
 - Promote the regression probe into a repeatable workflow/baseline process; GPU comparisons require a stable hardware runner.
 - Profile the full scanner after the native extraction optimizations to find the new end-to-end bottleneck rather than assuming FFmpeg extraction remains dominant.
+- Consider precomputing the pHash strict Hamming threshold once per compare phase (as already done for required quorum matches) if profiling shows the pHash pair loop is significant.
