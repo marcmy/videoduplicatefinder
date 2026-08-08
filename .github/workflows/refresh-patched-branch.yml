@@ -20,6 +20,7 @@ on:
       - '.github/scripts/patch-perf-upstream-safety.py'
       - '.github/scripts/patch-perf-ai-process.py'
       - '.github/workflows/refresh-patched-branch.yml'
+      - '.github/workflows/sync-master.yml'
       - 'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs'
       - 'VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs'
 
