@@ -709,9 +709,7 @@ namespace VDF.Core.FFTools {
 			const int N = 32;
 			var frames = new byte[]?[positionsSeconds.Count];
 			if (ShouldUseNativeBinding) {
-				AVHWDeviceType hardwareDeviceType = ShouldBypassHardwareDecodeForCodec(hardwareCodecName, out _)
-					? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE
-					: GetConfiguredHardwareDeviceType();
+				AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 				try {
 					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
@@ -727,7 +725,7 @@ namespace VDF.Core.FFTools {
 							Size sourceSize = new(
 								srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,
 								srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
-							AVPixelFormat srcPixFmt = vsd.IsHardwareDecode ? (AVPixelFormat)srcFrame.format : vsd.PixelFormat;
+							AVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);
 							if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB ||
 								sourceSize.Width <= 0 || sourceSize.Height <= 0)
 								continue;
@@ -773,7 +771,8 @@ namespace VDF.Core.FFTools {
 					File = filePath,
 					Position = TimeSpan.FromSeconds(positionsSeconds[i]),
 					GrayScale = 1,
-					HardwareCodecName = hardwareCodecName
+					HardwareCodecName = hardwareCodecName,
+					SoftwareDecodeOnly = true
 				}, extendedLogging);
 			}
 			return frames;
@@ -1082,6 +1081,26 @@ namespace VDF.Core.FFTools {
 				bytes = null;
 			}
 			string ffmpegError = errOut.ToString();
+			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
+				byte[]? gridBytes = TryGetTiledHeifGridFrame(
+					settings,
+					isGrayByte,
+					isRgbFrame,
+					graySideLength,
+					expectedGrayBytes,
+					expectedRgbBytes,
+					timeoutMilliseconds,
+					out string gridError);
+				if (!string.IsNullOrWhiteSpace(gridError))
+					ffmpegError = string.IsNullOrWhiteSpace(ffmpegError)
+						? gridError
+						: $"{ffmpegError}{Environment.NewLine}HEIF tile-grid retry:{Environment.NewLine}{gridError}";
+				if (gridBytes != null) {
+					bytes = gridBytes;
+					processAttemptedHardware = false;
+					hardwarePolicy = "heif-grid-process";
+				}
+			}
 			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
 				byte[]? gridBytes = TryGetTiledHeifGridFrame(
 					settings,
