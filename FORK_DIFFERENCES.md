@@ -1,68 +1,96 @@
 # Fork differences: `perf/4.1-native-hwaccel`
 
-This file is the maintenance map for the actively maintained performance branch. It documents which divergences from upstream are intentional, which behaviors are compatibility bridges for upstream correctness fixes, and which older fork changes are now upstream-owned.
+This is the maintenance map for the actively maintained performance branch. It documents what the fork still owns, which upstream correctness behaviors are adapted around the custom engine, and which historical fork features are now upstream-owned.
 
-Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind) and keeps its custom Windows/native performance engine on top.
+Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind). The master-to-perf comparison contains 40 changed files; every current delta is accounted for below.
 
 ## Branch contract
 
 - `master` is the upstream-tracking branch and should remain an upstream mirror apart from fork automation.
 - `perf/4.1-native-hwaccel` is the product/performance branch.
 - Upstream `master` is merged into the perf branch by the refresh workflow.
-- When `FfmpegEngine.cs` or `VideoStreamDecoder.cs` conflict, the perf implementation is retained and the parity/safety reconciliation scripts reapply upstream behavior that the custom engine must preserve.
-- Release builds consume committed source verbatim. They must not rewrite source code during release packaging.
+- When `FfmpegEngine.cs` or `VideoStreamDecoder.cs` conflict, the perf implementation is retained and the reconciliation scripts reapply upstream behavior that the custom engine must preserve.
+- The reconciliation layer is run twice; pass #2 must be a no-op.
+- Release builds consume committed source verbatim. They must not rewrite application source during packaging.
 
 ## Status vocabulary
 
-- **FORK-OWNED** — intentional implementation that provides functionality/performance not present in upstream. Preserve unless upstream gains an equivalent or better implementation.
-- **PARITY BRIDGE** — upstream correctness/safety behavior adapted to the custom perf engine. Preserve the behavior, but the exact bridge code may be simplified over time.
-- **UPSTREAM-OWNED** — originated in or was influenced by this fork, but upstream now has the canonical implementation. Do not maintain a second fork implementation.
+- **FORK-OWNED** — intentional runtime implementation that provides functionality/performance not present upstream.
+- **PARITY BRIDGE** — upstream correctness/safety behavior adapted to the custom perf engine.
+- **PARITY TEST SHIM** — a small API/helper retained so inherited upstream tests can pin an upstream contract even when perf production code uses a richer/different policy.
+- **UPSTREAM-OWNED** — historically fork-originated/influenced work for which upstream now owns the canonical implementation.
 - **TOOLING** — benchmark, release, sync, test, or maintenance infrastructure specific to this fork.
 - **EXTRA REGRESSION GUARD** — test-only divergence that hardens behavior without claiming runtime ownership.
+
+## Current delta inventory
+
+The current 40-file master-to-perf surface is explainable as follows:
+
+- **Native/performance runtime:** custom decoder, D3D11 scalers, gray extractor, FFmpeg engine partials, native-library loading delta, pHash hot-loop micro-optimization, and D3D11 support dependency.
+- **Parity/source compatibility:** upstream decoder-safety behavior, tiled-HEIF handling, corrupt-file fast fail, AI call-shape overloads, and inherited-test helper seams.
+- **Tests/benchmarks:** fork-only engine tests, evil-media fixtures, native FFmpeg integration coverage, parity tests, and the performance regression probe.
+- **Maintenance/release:** sync/refresh/reconciliation scripts, release gate, rolling tag handling, and documentation.
+
+No unexplained runtime divergence remains from this audit. Historical commits that no longer affect the final tree are not treated as current features merely because they remain in branch history.
 
 ## Intentional fork-owned runtime divergences
 
 | Area | Status | Primary files | Why it remains fork-owned |
 | --- | --- | --- | --- |
-| Batched/multi-position native decode | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs`, `VDF.Core/FFTools/FfmpegEngine.cs` | Reuses one decoder across requested positions and can decode clustered positions sequentially instead of paying a complete seek/open path for every sample. |
-| D3D11 32x32 gray-byte filter scaler | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/D3D11GrayByteScaler.cs` | Scales hardware frames to the tiny matching image on the GPU before transfer to CPU memory. |
-| D3D11 VideoProcessor gray-byte path | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/D3D11VideoProcessorGrayByteScaler.cs` | Alternative direct D3D11 VideoProcessor route for producing a tiny NV12/P010 result before staging/download. |
+| Batched/multi-position native decode | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs`, `VDF.Core/FFTools/FfmpegEngine.cs` | Reuses one decoder across requested positions and can walk clustered samples without paying a complete open/seek path for every sample. |
+| D3D11 32x32 gray-byte filter scaler | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/D3D11GrayByteScaler.cs` | Scales hardware frames to the tiny matching image on GPU before transfer to CPU memory. |
+| D3D11 VideoProcessor gray-byte path | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/D3D11VideoProcessorGrayByteScaler.cs` | Alternative direct D3D11 VideoProcessor route for producing a tiny result before staging/download. |
 | Gray-byte extraction helper | FORK-OWNED | `VDF.Core/FFTools/FFmpegNative/Gray32FrameExtractor.cs` | Specialized low-overhead extraction used by the perf paths. |
-| Capability-scoped hardware policy | FORK-OWNED | `VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs` | Tracks failures/success by codec/family rather than globally poisoning otherwise-working hardware decode; includes adaptive D3D11 gray-byte decisions. |
-| Native health state | FORK-OWNED | `VDF.Core/FFTools/FfmpegEngine.NativeHealth.cs` | Adds perf-engine-specific native binding/fallback health management. |
+| Capability-scoped hardware policy | FORK-OWNED | `VDF.Core/FFTools/FfmpegEngine.HardwarePolicy.cs` | Tracks failures/success by codec/family rather than globally poisoning working hardware decode; includes adaptive D3D11 gray-byte concurrency/policy. |
+| Native health state | FORK-OWNED | `VDF.Core/FFTools/FfmpegEngine.NativeHealth.cs` | Disables native binding globally only for binding/ABI infrastructure failures; media/decode failures remain operation-local. |
 | Extraction telemetry | FORK-OWNED | `VDF.Core/FFTools/FfmpegEngine.Telemetry.cs` | Measures native/D3D11 behavior without changing upstream's public scan model. |
-| AI/native compatibility layer | FORK-OWNED + PARITY BRIDGE | `VDF.Core/FFTools/FfmpegEngine.AiCompat.cs`, `FfmpegEngine.AiCompatOverloads.cs` | Keeps AI matching compatible with the custom native engine and its fallbacks. |
-| Hardened combined gray+AI process fallback | FORK-OWNED + PARITY BRIDGE | `VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs` | Uses upstream's one-decode concept while adding bounded process I/O, tiled-HEIF handling, H.264 reference-warning detection, accurate-seek recovery, and safe fallback to the established separate paths. |
-| Native-library discovery/load safety | FORK-OWNED DELTA | `VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs` | The perf branch keeps stronger Windows DLL-set discovery/load safeguards around the native engine. |
-| pHash pair hot loop | FORK-OWNED MICRO-OPT | `VDF.Core/ScanEngine.cs` | Preserves upstream quorum/all-sample semantics but precomputes the strict Hamming-bit threshold once per pair and performs direct `PopCount` comparisons instead of recomputing the percentage-to-bit threshold for every sampled position. Upstream's canonical quorum tests remain the semantic contract. |
+| AI/native extraction | FORK-OWNED + PARITY BRIDGE | `FfmpegEngine.AiCompat.cs`, `FfmpegEngine.AiCompatOverloads.cs` | Keeps AI matching on the custom native engine while preserving current upstream call shapes. The overload file is actively exercised by integration tests and is not dead compatibility residue. |
+| Hardened combined gray+AI process fallback | FORK-OWNED + PARITY BRIDGE | `FfmpegEngine.AiProcessCombined.cs` | Uses upstream's one-decode idea but adds bounded process I/O, tiled-HEIF handling, H.264 warning detection, accurate-seek recovery, and safe fallback to established separate paths. |
+| Native-library discovery/load safety | FORK-OWNED DELTA | `FFmpegNative/FFmpegHelper.cs` | Keeps stronger Windows DLL-set discovery/load safeguards around the native engine. |
+| pHash pair hot loop | FORK-OWNED MICRO-OPT | `VDF.Core/ScanEngine.cs` | Uses upstream quorum/all-sample semantics but precomputes the strict Hamming threshold once per pair and performs direct `BitOperations.PopCount` comparisons. |
 
 ## Upstream correctness carried into the custom engine
 
-These behaviors are **not optional fork features**. They are upstream correctness/safety semantics that must remain true even though the perf branch owns the surrounding decoder implementation.
+These are not optional fork features. They are upstream contracts that must remain true even though perf owns the surrounding decoder implementation.
 
-| Upstream behavior | Status in perf branch | Bridge |
+| Upstream behavior | Status in perf | Bridge |
 | --- | --- | --- |
-| Native timeout budget is re-armed per decoded position; software fallback frames are not passed through hardware-frame transfer | PARITY BRIDGE | Custom `VideoStreamDecoder` implementation + reconciliation. |
-| Decoded-frame dimensions/pixel format are trusted over stale open-time metadata before conversion | PARITY BRIDGE | Custom conversion sites and upstream safety reconciliation. |
-| Partial-clip visual verification uses software decoding to avoid fatal in-process GPU-driver faults for a tiny verification workload | PARITY BRIDGE | Perf `GetGrayFrames`/fallback behavior. |
-| Corrupt/truncated software-decode failures can skip the redundant process retry ladder | PARITY BRIDGE | `ShouldSkipProcessRetryForCorruptFile` and its production call sites. |
-| Tiled Apple HEIF/HEIC stream groups are refused by the single-stream native decoder and routed through FFmpeg's assembled `[0:g:0]` process graph | PARITY BRIDGE | `FfmpegEngine.UpstreamCompat.cs`, native refusal call sites, and AI/process handling. |
+| Native timeout budget is re-armed per decoded position; software fallback frames are not sent through hardware-frame transfer | PARITY BRIDGE | Custom `VideoStreamDecoder` + reconciliation. |
+| Decoded-frame dimensions/pixel format are authoritative over stale open-time metadata | PARITY BRIDGE | Custom conversion sites + upstream safety reconciliation. |
+| Partial-clip visual verification uses software decode to avoid fatal in-process GPU-driver faults for a tiny workload | PARITY BRIDGE | Perf `GetGrayFrames` and process fallback. |
+| Corrupt/truncated software decode can skip a redundant process retry | PARITY BRIDGE | `ShouldSkipProcessRetryForCorruptFile` + production call sites. |
+| Tiled Apple HEIF/HEIC stream groups are refused by the single-stream native decoder and routed through FFmpeg's assembled `[0:g:0]` graph | PARITY BRIDGE | `FfmpegEngine.UpstreamCompat.cs`, native refusal sites, AI/process handling. |
 | Gray + AI process fallback can derive both outputs from one decode | PARITY BRIDGE, HARDENED | `FfmpegEngine.AiProcessCombined.cs`. |
-| Anamorphic/SAR metadata survives hardware-frame transfer and display thumbnails use display aspect | UPSTREAM-OWNED semantics | Inherited from upstream plus preserved by the custom decoder. |
+| Anamorphic/SAR metadata survives hardware transfer and display thumbnails use display aspect | UPSTREAM-OWNED semantics | Inherited from upstream and preserved by custom decoder paths. |
 
-The compatibility partials and scripts exist because retaining the perf decoder during an upstream conflict can otherwise copy an API/property without copying the behavior that made upstream add it. Any new upstream correctness commit touching the owned FFmpeg files should therefore be audited semantically, not resolved only until the branch compiles.
+`FfmpegEngine.UpstreamCompat.cs` intentionally contains two pure helper seams whose production equivalents differ in perf:
 
-## Features that are now upstream-owned
+- `ResolveSourcePixelFormat` is retained because inherited upstream #861 tests pin the frame-format-over-open-time-format rule.
+- `GetNativeFailureLogMode` is retained because inherited upstream #861 tests pin upstream's logging-tier policy. Perf production native health intentionally uses a different infrastructure-failure policy, so this helper is a **PARITY TEST SHIM**, not perf runtime policy.
 
-These no longer justify a fork implementation. The perf branch should inherit their canonical implementation from `master`.
+The compatibility layer exists because preserving the custom decoder during a merge can otherwise copy a new property/signature without copying the behavior that motivated upstream's change.
 
-| Feature/fix | Upstream status |
-| --- | --- |
-| Multi-position pHash quorum / required matching-sample ratio | Upstream adopted it from this fork and subsequently refined snapshot construction, all-sample difference averaging, quorum precomputation, CLI handling, and tests. The perf branch retains only a semantically equivalent hot-loop micro-optimization, not a separate quorum design. |
-| Separate CPU-bound matching parallelism | Upstream adopted it from this fork as `MatchingMaxDegreeOfParallelism`. Old fork matching-concurrency implementation has been removed. |
-| Comparer zoom/pan/swipe, dual-mode loading, and stale async thumbnail completion fixes | Upstream adopted the fork work and owns the implementation now. |
-| Anamorphic/SAR-correct display thumbnails | Upstream adopted the fork work and owns the general implementation now. |
-| Reverse-proxy scheme trust / Secure auth cookie / password logging hardening | Upstream adopted and reworked the fork work; Web behavior should come from upstream. |
+## Historical commit disposition
+
+The useful way to read branch history is by feature family, not by raw commit count. Refresh merges, CI repair iterations, and upstream commits merged into the branch are historical mechanics rather than independent fork features.
+
+| Fork commit / family | Original purpose | Current disposition |
+| --- | --- | --- |
+| `a8f906f` | Seed 4.1 native FFmpeg decoder layer | **FORK-OWNED, EVOLVED.** Ancestor of the current custom `VideoStreamDecoder`/native decoder path. |
+| `b1d4828` | Integrate native FFmpeg extraction engine | **FORK-OWNED, EVOLVED.** Core reason the perf branch still exists. |
+| `e93ca19` and nearby native-regression restoration commits | Restore native FFmpeg regression coverage | **EXTRA REGRESSION GUARD, EVOLVED.** Superseded/expanded by current Core + native-enabled integration/evil-media coverage. |
+| `ae42461`, `5123643`, `8219f8a`, `e54ce6a`, `6d32c53` | Port/reserve CPU headroom during duplicate matching | **UPSTREAM-OWNED.** Canonical upstream implementation is `MatchingMaxDegreeOfParallelism` from `99ddb67`; old fork matching-concurrency implementation/tests were removed. |
+| Early pHash quorum work | Require multiple sampled positions to match | **UPSTREAM-OWNED.** Upstream `f55f25d` adopted it and `10b5fa1` refined averaging, precomputation, CLI handling, and tests. Perf retains only a semantically equivalent hot-loop micro-optimization. |
+| Early comparer fixes | Zoom/pan/swipe/mode selection and stale async extraction | **UPSTREAM-OWNED.** Canonical upstream implementation is `721e77e`. |
+| Early anamorphic thumbnail work | Respect SAR/display aspect | **UPSTREAM-OWNED.** Canonical upstream implementation is `3aced4b`. |
+| Early Web proxy/auth hardening | Proxy scheme trust, Secure cookie, password-log safety | **UPSTREAM-OWNED.** Canonical upstream implementation is `c8edaf3`. |
+| Native timeout/software-frame guard work | Per-position timeout and safe software fallback frame handling | **PARTIALLY UPSTREAMED / PARITY BRIDGE.** Upstream `2761177` owns the correctness rule; perf keeps it inside a larger custom decoder. |
+| `57d583a` | Add regression harness and split FFmpeg engine | **FORK-OWNED + TOOLING.** Evolved into the current partial architecture and pinned release performance gate. |
+| `d1e77c` | Resolve conflicts after upstream adopted 4.1 performance work | **HISTORICAL RECONCILIATION.** Important milestone, not a separate runtime feature. |
+| `3796131`, `f155568`, `f5a4e82`, `40c3000` and related AI compatibility follow-ups | Keep upstream AI features working against the retained perf engine | **FORK-OWNED + PARITY BRIDGE, EVOLVED.** Current form is `FfmpegEngine.AiCompat*` plus hardened combined process fallback. |
+| Later #861/#863/#867/#869 ports | Carry upstream crash/corrupt-file/HEIF safety into custom paths | **PARITY BRIDGE.** Upstream owns the rules; perf owns their integration into the specialized engine. |
+| 2026-08-08 evil-media/native-CI work | Make pathological media and native bindings release-blocking | **TOOLING / EXTRA REGRESSION GUARD.** Current and intentional. |
+| 2026-08-08 performance baseline/gate work | Compare candidate against pinned known-good product code on the same runner | **TOOLING.** Current and intentional. |
 
 ### Explicit upstream provenance
 
@@ -75,37 +103,43 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 - `c8edaf3` — reverse-proxy/auth hardening.
 - `721e77e` — comparer zoom/pan/swipe/mode fixes.
 
-## Tooling and regression guards that intentionally differ from upstream
+## Tooling and regression guards that intentionally differ
 
 | Area | Status | Files / reason |
 | --- | --- | --- |
 | Upstream sync / perf refresh | TOOLING | `.github/workflows/sync-master.yml`, `.github/workflows/refresh-patched-branch.yml` |
-| Upstream parity reconciliation | TOOLING | `.github/scripts/patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py`; refresh runs the complete layer twice and rejects any second-pass diff. |
-| Windows x64 GUI-only Native AOT release | TOOLING | `.github/workflows/releases.yml` |
-| Performance regression probe | TOOLING | `VDF.Benchmarks/Scenarios/RegressionProbe.cs`, `VDF.Benchmarks/README.md` |
-| Perf-specific FFmpeg regression coverage | TOOLING | `VDF.Core.Tests/FFTools/*`, `VDF.IntegrationTests/FFTools/*` where the test exercises a fork-only path |
-| Comparer mode regression | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/ThumbnailComparerModeTests.cs` pins the upstream-owned selection-vs-bitmap-load behavior, for which upstream currently has no equivalent dedicated test file. |
-| Folder-count cancellation race | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/FolderCountingServiceTests.cs` issues cancellation from the first worker progress callback so an unusually fast directory walk cannot finish before the test thread gets scheduled. Runtime code is unchanged. |
-| D3D11 dependency | FORK-OWNED SUPPORT | `VDF.Core/VDF.Core.csproj` adds `Vortice.Direct3D11` for the two fork-owned D3D11 gray-byte paths. |
-
-The normal Windows PR workflow is intentionally kept at upstream test coverage (Core, CLI, GUI, Web, integration). The perf release workflow adds its own stricter GUI/FFmpeg/Native-AOT gates on top; it should not weaken upstream coverage merely because only the GUI artifact is released.
+| Upstream parity reconciliation | TOOLING | `patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py`; complete layer is run twice and second pass must be a no-op. |
+| Windows x64 GUI-only Native AOT release | TOOLING | `.github/workflows/releases.yml`; actual rolling `4.1.x` Git tag is force-moved before release asset replacement. |
+| Performance regression gate | TOOLING | `RegressionProbe.cs`, `perf-regression-gate.ps1`, pinned `perf/4.1-baseline`. Hosted gate uses process/native-CPU, same harness, same FFmpeg/corpus/runner, p50 throughput, 9 iterations + 2 warmups, 15% threshold, and confirmation pair on a breach. |
+| Native FFmpeg CI | TOOLING / REGRESSION GUARD | Release CI installs checksum-verified BtbN GPL shared FFmpeg 8.1 so native-binding tests execute instead of skipping. |
+| Evil-media corpus | EXTRA REGRESSION GUARD | Generated long-GOP, VFR, odd-size, ultra-short, rotation, truncation, and mid-stream resolution-change fixtures plus existing HEVC10/VP9/SAR/corrupt/HEIC coverage. |
+| Comparer mode regression | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/ThumbnailComparerModeTests.cs` pins an upstream-owned behavior not otherwise dedicated in upstream tests. |
+| Folder-count cancellation race | EXTRA REGRESSION GUARD | `FolderCountingServiceTests.cs` makes cancellation deterministic under very fast walks; runtime code is unchanged. |
+| D3D11 dependency | FORK-OWNED SUPPORT | `VDF.Core.csproj` adds `Vortice.Direct3D11`; `InternalsVisibleTo` for benchmarks supports the perf harness. |
 
 ## Completed cleanup from the 2026-08-08 audit
 
-- Removed `ScanEngine.MatchingConcurrency.cs` and its duplicate tests after upstream absorbed the matching-parallelism implementation.
-- Removed the fork's old `PHashSampleQuorumTests.cs`; upstream `PHashQuorumTests` is a strict superset and directly exercises the current implementation without reflection.
-- Removed an extra `MainWindowVM.SyncCoreSettings` pHash-ratio assignment; upstream already assigns it later in the same method.
-- Removed unused `DuplicateItem.ThumbnailDisplayAspectCorrected` state left from the pre-upstream SAR implementation.
-- Reverted a test-only async rewrite of `PauseTokenSourceTests.cs` to upstream because it added no fork-specific coverage.
-- Restored upstream GUI and Web tests in `.github/workflows/dotnetcore.yml` instead of carrying a weaker PR gate.
-- Added a reconciliation fixed-point gate: all four patchers run a second time after staging and the refresh fails if pass #2 changes any source.
-- The first fixed-point run caught a whitespace-sensitive HEIF retry marker that would have duplicated the process fallback block on later refreshes; the marker was changed to recognize the semantic block and the next live refresh completed with no source diff.
+- Removed `ScanEngine.MatchingConcurrency.cs` and duplicate tests after upstream absorbed matching parallelism.
+- Removed the old fork `PHashSampleQuorumTests.cs`; upstream's quorum suite is stronger and exercises the current implementation directly.
+- Removed the duplicate `MainWindowVM.SyncCoreSettings` pHash-ratio assignment.
+- Removed unused `DuplicateItem.ThumbnailDisplayAspectCorrected` state from the pre-upstream SAR implementation.
+- Reverted a test-only `PauseTokenSourceTests` rewrite that added no fork-specific coverage.
+- Restored upstream GUI and Web tests in the normal Windows CI gate.
+- Added reconciliation fixed-point validation; its first live run caught and fixed a HEIF marker that could have duplicated a fallback block on later refreshes.
+- Added the generated evil-media suite and made real shared/native FFmpeg coverage release-blocking.
+- Added a pinned same-run performance regression gate and stabilized it against harness drift/build noise.
+- Fixed the rolling release so the real `4.1.x` Git tag moves with the validated build instead of only changing release metadata.
+- Reclassified `AiCompatOverloads.cs` as an active source-compatibility bridge after verifying current integration tests call both overloads.
+- Reclassified upstream #861 log-throttle/source-format helpers as **PARITY TEST SHIMS** after verifying inherited upstream tests call them; they are intentionally not perf production policy.
+- Rewrote `docs/4.1-perf-port.md` as historical provenance so it no longer claims upstream-owned matching/pHash/comparer work as current fork-owned features.
 
-## Remaining maintenance cleanup
+## Remaining maintenance work
 
-1. Consolidate the four reconciliation scripts where practical. The fixed-point gate now protects their idempotence; the desired end state is fewer textual source transformations and more stable source partials.
-2. Periodically shrink `FfmpegEngine.UpstreamCompat.cs` when a bridge can move into the permanent owning partial without making future upstream merges harder. Some helpers intentionally remain only to preserve upstream test/source compatibility even when the perf production path has a richer policy.
-3. Re-audit `ScanEngine.cs` whenever upstream changes pHash threshold semantics. The fork's direct `PopCount` loop is allowed only while it is exactly equivalent to upstream `PHashCompare.IsDuplicateByPercent(..., strict: true)` semantics.
+1. Consolidate reconciliation scripts where practical. The fixed-point gate now protects their idempotence; prefer fewer textual transformations and more stable owning partials when that does not make upstream merges harder to reason about.
+2. Profile the full scanner end-to-end. Native extraction is no longer automatically the dominant bottleneck; measure discovery, probing, extraction, pHash, AI, matching, DB work, and result construction before choosing the next optimization.
+3. Periodically shrink `FfmpegEngine.UpstreamCompat.cs` only when a bridge/test seam can move or disappear without weakening inherited upstream contracts.
+4. Re-audit the `ScanEngine` pHash micro-optimization whenever upstream changes strict threshold semantics.
+5. Add a redistributable true tiled-Apple-HEIC fixture if one with clear provenance becomes available; the test is already opt-in through `VDF_TEST_TILED_HEIC`.
 
 ## Maintenance rules
 
@@ -113,15 +147,8 @@ The normal Windows PR workflow is intentionally kept at upstream test coverage (
 2. Merge current `master` into `perf/4.1-native-hwaccel`, then run reconciliation immediately.
 3. On conflicts in fork-owned FFmpeg files, compare **behavior**, not just signatures/build errors.
 4. Every upstream commit touching native decode, image/video conversion, FFmpeg process fallback, AI frame extraction, or partial-clip verification gets a parity review against the perf engine.
-5. When upstream absorbs a fork feature, remove the duplicate fork implementation after proving the inherited implementation and tests cover it.
-6. Release only committed source after Core, GUI, FFmpeg integration, Native AOT publish, and archive-validation gates pass.
-7. Use the regression probe on the same machine/driver/corpus when evaluating performance changes; do not compare GPU numbers across unlike environments.
-8. Prefer correctness and bounded fallback behavior over preserving a fast path for pathological media. Mainline scanning can be aggressive; tiny verification paths should stay conservative.
-
-## Next audit targets
-
-- Consolidate the reconciliation scripts where doing so reduces brittle textual patching without obscuring ownership boundaries.
-- Build a small evil-media corpus covering tiled HEIF, corrupt/truncated streams, H.264 random-access recovery, 10-bit HEVC, VP9, odd dimensions, SAR/rotation, VFR, very short clips, and mid-stream layout changes.
-- Promote the regression probe into a repeatable workflow/baseline process; GPU comparisons require a stable hardware runner.
-- Profile the full scanner after the native extraction optimizations to find the new end-to-end bottleneck rather than assuming FFmpeg extraction remains dominant.
-- Consider precomputing the pHash strict Hamming threshold once per compare phase (as already done for required quorum matches) if profiling shows the pHash pair loop is significant.
+5. When upstream absorbs a fork feature, remove the duplicate fork implementation after proving inherited implementation/tests cover it.
+6. Release only committed source after structural checks, Core/GUI tests, performance gate, shared/native FFmpeg integration tests, Native AOT publish, and archive validation pass.
+7. Keep `perf/4.1-baseline` pinned until an intentional performance change is independently accepted; never auto-promote the latest release into the baseline.
+8. Compare GPU performance only on the same adapter/driver/power environment. Hosted runners are not a D3D11 performance oracle.
+9. Prefer correctness and bounded fallback behavior over preserving a fast path for pathological media.
