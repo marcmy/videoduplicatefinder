@@ -46,7 +46,7 @@ public sealed class EvilMediaFixture : IDisposable {
 
 		string ffmpegPath = FfmpegEngine.FFmpegPath;
 		FfmpegCliAvailable = !string.IsNullOrEmpty(ffmpegPath) && File.Exists(ffmpegPath);
-		NativeBindingAvailable = FFmpegHelper.DoFFmpegLibraryFilesExist;
+		NativeBindingAvailable = FFmpegHelper.CanLoadNativeLibraries;
 		if (!FfmpegCliAvailable) {
 			FfmpegNotFoundReason = "FFmpeg not found; evil-media integration tests require ffmpeg.exe in PATH.";
 			if (Environment.GetEnvironmentVariable("CI") != null)
