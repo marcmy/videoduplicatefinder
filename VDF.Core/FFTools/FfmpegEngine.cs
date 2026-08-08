@@ -851,6 +851,12 @@ namespace VDF.Core.FFTools {
 					transferMs = frameTiming.TransferMs;
 					hardwareTransfers = frameTiming.HardwareTransfers;
 
+					// #861: frame metadata wins over the open-time codec context. A
+					// corrupt or dynamically changing stream can report different decoded
+					// dimensions; configure swscale from the frame that will actually be read.
+					sourceSize = new Size(
+						srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,
+						srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
 					AVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);
 					if (!IsValidPixelFormat(srcPixFmt)) throw new Exception($"Invalid source pixel format {srcPixFmt}");
 					if (sourceSize.Width <= 0 || sourceSize.Height <= 0) throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
@@ -1081,6 +1087,26 @@ namespace VDF.Core.FFTools {
 				bytes = null;
 			}
 			string ffmpegError = errOut.ToString();
+			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
+				byte[]? gridBytes = TryGetTiledHeifGridFrame(
+					settings,
+					isGrayByte,
+					isRgbFrame,
+					graySideLength,
+					expectedGrayBytes,
+					expectedRgbBytes,
+					timeoutMilliseconds,
+					out string gridError);
+				if (!string.IsNullOrWhiteSpace(gridError))
+					ffmpegError = string.IsNullOrWhiteSpace(ffmpegError)
+						? gridError
+						: $"{ffmpegError}{Environment.NewLine}HEIF tile-grid retry:{Environment.NewLine}{gridError}";
+				if (gridBytes != null) {
+					bytes = gridBytes;
+					processAttemptedHardware = false;
+					hardwarePolicy = "heif-grid-process";
+				}
+			}
 			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
 				byte[]? gridBytes = TryGetTiledHeifGridFrame(
 					settings,
