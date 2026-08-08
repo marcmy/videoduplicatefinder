@@ -161,17 +161,21 @@ public static class EvilMediaGenerator {
 		}
 	}
 
+	static string FfconcatPath(string path) =>
+		Path.GetFullPath(path).Replace('\\', '/').Replace("'", "'\\''");
+
 	/// <summary>
-	/// Concatenates two independently encoded H.264 elementary streams with different SPS
-	/// dimensions, then wraps the stream in MPEG-TS. A sequential decoder must reconfigure
-	/// from 320x240 to 640x360 without using stale converter metadata.
+	/// Concatenates two independently encoded H.264 Matroska segments with different SPS
+	/// dimensions. The concat demuxer gives the joined stream continuous timestamps while
+	/// repeat-headers preserves the second segment's new SPS/PPS. A sequential decoder must
+	/// reconfigure from 320x240 to 640x360 without using stale converter metadata.
 	/// </summary>
 	public static bool GenerateResolutionChangingH264(string ffmpegPath, string outputPath) {
 		string directory = Path.GetDirectoryName(outputPath)!;
 		string stem = Path.GetFileNameWithoutExtension(outputPath);
-		string segmentA = Path.Combine(directory, stem + ".320x240.h264");
-		string segmentB = Path.Combine(directory, stem + ".640x360.h264");
-		string elementary = Path.Combine(directory, stem + ".joined.h264");
+		string segmentA = Path.Combine(directory, stem + ".320x240.mkv");
+		string segmentB = Path.Combine(directory, stem + ".640x360.mkv");
+		string concatList = Path.Combine(directory, stem + ".ffconcat");
 
 		try {
 			bool a = RunFfmpeg(ffmpegPath, [
@@ -183,7 +187,6 @@ public static class EvilMediaGenerator {
 				"-crf", "23",
 				"-pix_fmt", "yuv420p",
 				"-x264-params", "keyint=25:min-keyint=25:scenecut=0:repeat-headers=1",
-				"-f", "h264",
 				segmentA,
 			]);
 			bool b = RunFfmpeg(ffmpegPath, [
@@ -195,26 +198,24 @@ public static class EvilMediaGenerator {
 				"-crf", "23",
 				"-pix_fmt", "yuv420p",
 				"-x264-params", "keyint=25:min-keyint=25:scenecut=0:repeat-headers=1",
-				"-f", "h264",
 				segmentB,
 			]);
 			if (!a || !b)
 				return false;
 
-			using (var destination = File.Create(elementary)) {
-				using var first = File.OpenRead(segmentA);
-				first.CopyTo(destination);
-				using var second = File.OpenRead(segmentB);
-				second.CopyTo(destination);
-			}
+			File.WriteAllText(
+				concatList,
+				$"ffconcat version 1.0{Environment.NewLine}" +
+				$"file '{FfconcatPath(segmentA)}'{Environment.NewLine}" +
+				$"file '{FfconcatPath(segmentB)}'{Environment.NewLine}");
 
 			return RunFfmpeg(ffmpegPath, [
 				"-y",
-				"-fflags", "+genpts",
-				"-r", "25",
-				"-i", elementary,
+				"-f", "concat",
+				"-safe", "0",
+				"-i", concatList,
 				"-c", "copy",
-				"-f", "mpegts",
+				"-f", "matroska",
 				outputPath,
 			]);
 		}
@@ -222,7 +223,7 @@ public static class EvilMediaGenerator {
 			return false;
 		}
 		finally {
-			foreach (string path in new[] { segmentA, segmentB, elementary }) {
+			foreach (string path in new[] { segmentA, segmentB, concatList }) {
 				try { File.Delete(path); } catch { }
 			}
 		}
