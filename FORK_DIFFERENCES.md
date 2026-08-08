@@ -2,7 +2,7 @@
 
 This is the maintenance map for the actively maintained performance branch. It documents what the fork still owns, which upstream correctness behaviors are adapted around the custom engine, and which historical fork features are now upstream-owned.
 
-Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind). The master-to-perf comparison contains 40 changed files; every current delta is accounted for below.
+Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind). The master-to-perf comparison contains 43 changed files; every current delta is accounted for below.
 
 ## Branch contract
 
@@ -24,9 +24,10 @@ Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current
 
 ## Current delta inventory
 
-The current 40-file master-to-perf surface is explainable as follows:
+The current 43-file master-to-perf surface is explainable as follows:
 
 - **Native/performance runtime:** custom decoder, D3D11 scalers, gray extractor, FFmpeg engine partials, native-library loading delta, pHash hot-loop micro-optimization, and D3D11 support dependency.
+- **GUI persistence:** human-readable indented `Settings.json` serialization using the existing source-generated pretty JSON context, plus a regression test that parses the saved file back as valid JSON.
 - **Parity/source compatibility:** upstream decoder-safety behavior, tiled-HEIF handling, corrupt-file fast fail, AI call-shape overloads, and inherited-test helper seams.
 - **Tests/benchmarks:** fork-only engine tests, evil-media fixtures, native FFmpeg integration coverage, parity tests, and the performance regression probe.
 - **Maintenance/release:** sync/refresh/reconciliation scripts, release gate, rolling tag handling, and documentation.
@@ -48,6 +49,7 @@ No unexplained runtime divergence remains from this audit. Historical commits th
 | Hardened combined gray+AI process fallback | FORK-OWNED + PARITY BRIDGE | `FfmpegEngine.AiProcessCombined.cs` | Uses upstream's one-decode idea but adds bounded process I/O, tiled-HEIF handling, H.264 warning detection, accurate-seek recovery, and safe fallback to established separate paths. |
 | Native-library discovery/load safety | FORK-OWNED DELTA | `FFmpegNative/FFmpegHelper.cs` | Keeps stronger Windows DLL-set discovery/load safeguards around the native engine. |
 | pHash pair hot loop | FORK-OWNED MICRO-OPT | `VDF.Core/ScanEngine.cs` | Uses upstream quorum/all-sample semantics but precomputes the strict Hamming threshold once per pair and performs direct `BitOperations.PopCount` comparisons. |
+| Human-readable settings persistence | FORK-OWNED | `VDF.GUI/Data/SettingsFile.cs`, `VDF.GUI/Data/GuiJsonContext.cs` | Saves `Settings.json` with the source-generated `WriteIndented` context so power-user settings such as `DriveTypeOverrides` remain practical to inspect and edit after the application rewrites the file. `SettingsLoadRecoveryTests` pins the formatting and JSON validity. |
 
 ## Upstream correctness carried into the custom engine
 
@@ -91,6 +93,7 @@ The useful way to read branch history is by feature family, not by raw commit co
 | Later #861/#863/#867/#869 ports | Carry upstream crash/corrupt-file/HEIF safety into custom paths | **PARITY BRIDGE.** Upstream owns the rules; perf owns their integration into the specialized engine. |
 | 2026-08-08 evil-media/native-CI work | Make pathological media and native bindings release-blocking | **TOOLING / EXTRA REGRESSION GUARD.** Current and intentional. |
 | 2026-08-08 performance baseline/gate work | Compare candidate against pinned known-good product code on the same runner | **TOOLING.** Current and intentional. |
+| 2026-08-08 readable settings persistence | Keep manually editable `Settings.json` readable after application saves | **FORK-OWNED.** Uses the existing source-generated pretty context; GUI regression coverage pins indentation and valid round-trip JSON. |
 
 ### Explicit upstream provenance
 
