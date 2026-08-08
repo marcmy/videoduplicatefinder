@@ -17,7 +17,7 @@ videos whose provenance or exact encoding parameters are hard to reconstruct.
 | `h264_120ms.mp4` | ~120 ms H.264 | Very short media must still yield a sample without over-seeking past EOF. |
 | `h264_rotation_90.mp4` | H.264 remux with a real 90-degree display matrix | Rotation side data must not crash either extraction path. |
 | `h264_faststart_truncated.mp4` | Valid fast-start MP4 with the media tail physically removed | Late native extraction must fail/recover within a bounded time rather than entering a long retry ladder. |
-| `h264_resolution_change.ts` | Concatenated H.264 SPS change, 320x240 -> 640x360 | Sequential native sampling must reconfigure from decoded-frame metadata instead of stale open-time dimensions. |
+| `h264_resolution_change.mkv` | Two independently encoded H.264 Matroska segments concatenated losslessly, 320x240 -> 640x360, with continuous timestamps | Sequential native sampling must reconfigure from decoded-frame metadata instead of stale open-time dimensions; normal process seeking must also remain valid. |
 
 `EvilMediaRegressionTests` checks process/native survivability, targeted parity where frame
 selection is deterministic, bounded corrupt handling, and the mid-stream resolution-change
