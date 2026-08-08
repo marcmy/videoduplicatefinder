@@ -212,6 +212,7 @@ namespace VDF.Core.FFTools {
 					if (rgb.Length != rgbExpectedBytes) {
 						error = $"{error}{Environment.NewLine}AI frame length != {rgbExpectedBytes} (got {rgb.Length})";
 						rgb = null;
+					}
 				}
 				else {
 					error = $"{error}{Environment.NewLine}AI frame output file was not produced";
