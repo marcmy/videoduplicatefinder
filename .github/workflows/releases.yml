@@ -149,6 +149,49 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Profile full ScanEngine pipeline
+        id: scan_pipeline_profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path artifacts/scan-pipeline -Force | Out-Null
+
+          dotnet run -c Release --project VDF.Benchmarks -- `
+            --probe-scan-pipeline `
+            --mode process `
+            --copies-per-codec 2 `
+            --thumbnails 3 `
+            --timeout-minutes 10 `
+            --output artifacts/scan-pipeline/process.json 2>&1 |
+            Tee-Object -FilePath artifacts/scan-pipeline/process.log
+          if ($LASTEXITCODE -ne 0) { throw "Process scan-pipeline probe failed with exit code $LASTEXITCODE" }
+
+          dotnet run -c Release --project VDF.Benchmarks -- `
+            --probe-scan-pipeline `
+            --mode native-cpu `
+            --copies-per-codec 2 `
+            --thumbnails 3 `
+            --timeout-minutes 10 `
+            --output artifacts/scan-pipeline/native-cpu.json 2>&1 |
+            Tee-Object -FilePath artifacts/scan-pipeline/native-cpu.log
+          if ($LASTEXITCODE -ne 0) { throw "Native-CPU scan-pipeline probe failed with exit code $LASTEXITCODE" }
+
+      - name: Upload full-pipeline profiles
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: scan-pipeline-profiles-${{ github.run_attempt }}
+          path: artifacts/scan-pipeline
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Run tiled HEIC conformance test
+        shell: pwsh
+        run: |
+          & .github/scripts/fetch-tiled-heic-fixture.ps1 `
+            -Destination artifacts/test-media/C007.heic `
+            -RunTests
+
       - name: Run FFmpeg integration tests
         id: ffmpeg_integration_tests
         shell: pwsh
