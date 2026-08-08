@@ -112,6 +112,21 @@ jobs:
           python3 .github/scripts/patch-perf-upstream-safety.py
           python3 .github/scripts/patch-perf-ai-process.py
           git add -A
+
+          # The reconciliation layer must be a fixed point: running it a second time on
+          # its own output is required to be a no-op. This catches patchers that duplicate
+          # assignments/helpers or oscillate source formatting before they can be committed.
+          python3 .github/scripts/patch-perf-merge.py
+          python3 .github/scripts/patch-perf-upstream-parity.py
+          python3 .github/scripts/patch-perf-upstream-safety.py
+          python3 .github/scripts/patch-perf-ai-process.py
+          if ! git diff --quiet; then
+            echo "::error::Perf reconciliation is not idempotent; the second pass changed source."
+            git diff --stat
+            git diff
+            exit 1
+          fi
+
           if ! git diff --cached --quiet; then
             git commit -m "perf: reconcile upstream compatibility"
           fi
