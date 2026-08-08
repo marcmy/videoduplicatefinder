@@ -32,7 +32,7 @@ def patch_ai_process_fallback() -> None:
     if loop_start < 0 or loop_end < 0:
         raise RuntimeError("Unable to locate AI process fallback loop")
 
-    replacement = r'''\t\t\tstring? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
+    replacement = '''\t\t\tstring? hardwareFamilyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 \t\t\tstring? hardwareCodecName = GetPrimaryVideoCodecName(videoFile);
 \t\t\tfor (int i = 0; i < positions.Count; i++) {
 \t\t\t\tdouble position = videoFile.GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
@@ -109,7 +109,7 @@ def patch_ai_process_fallback() -> None:
 \t\t\t\t}
 
 \t\t\t\tonSampleComplete?.Invoke(i + 1);
-\t\t\t}'''.encode('utf-8').decode('unicode_escape')
+\t\t\t}'''
 
     method = method[:loop_start] + replacement + method[loop_end:]
     text = text[:method_start] + method + text[method_end:]
@@ -120,8 +120,11 @@ def patch_ai_process_fallback() -> None:
     )
     if compat_start < 0:
         raise RuntimeError("Unable to locate GetGrayAndRgb224Cli compatibility method")
-    compat_end = find_method_end(text, compat_start)
-    compat_replacement = '''\t\tinternal static (byte[]? GrayBytes, byte[]? Rgb224) GetGrayAndRgb224Cli(
+
+    delegated = "GetGrayAndRgb224CliBounded(" in text[compat_start:compat_start + 700]
+    if not delegated:
+        compat_end = find_method_end(text, compat_start)
+        compat_replacement = '''\t\tinternal static (byte[]? GrayBytes, byte[]? Rgb224) GetGrayAndRgb224Cli(
 \t\t\tstring file,
 \t\t\tTimeSpan position,
 \t\t\tbool softwareDecodeOnly,
@@ -131,7 +134,7 @@ def patch_ai_process_fallback() -> None:
 \t\t\t\tposition,
 \t\t\t\tsoftwareDecodeOnly,
 \t\t\t\textendedLogging);'''
-    text = text[:compat_start] + compat_replacement + text[compat_end:]
+        text = text[:compat_start] + compat_replacement + text[compat_end:]
 
     path.write_text(text, encoding="utf-8")
 
