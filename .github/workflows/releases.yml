@@ -236,12 +236,22 @@ jobs:
             exit 1
           fi
 
+      - name: Move rolling 4.1.x tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/4.1.x" \
+            -f sha="${GITHUB_SHA}" \
+            -F force=true
+
       - name: Publish fork 4.1.x release
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ github.token }}
           tag_name: 4.1.x
-          target_commitish: ${{ github.sha }}
           files: release-assets/GUI-win-x64.zip
           fail_on_unmatched_files: true
           body: |
