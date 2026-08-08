@@ -14,6 +14,7 @@ on:
       - perf/4.1-native-hwaccel
     paths:
       - '.github/scripts/patch-perf-merge.py'
+      - '.github/scripts/patch-perf-upstream-parity.py'
       - '.github/workflows/refresh-patched-branch.yml'
       - 'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs'
 
@@ -101,9 +102,10 @@ jobs:
           fi
 
           # Keep the custom performance engine aligned with upstream correctness behavior.
-          # This is the only place source compatibility repairs are applied; release builds
+          # These are the only places source compatibility repairs are applied; release builds
           # consume committed source verbatim and never patch/commit code themselves.
           python3 .github/scripts/patch-perf-merge.py
+          python3 .github/scripts/patch-perf-upstream-parity.py
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "perf: reconcile upstream compatibility"
