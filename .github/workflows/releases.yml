@@ -126,6 +126,26 @@ jobs:
           "VDF_TEST_SHARED_FFMPEG_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using verified shared FFmpeg from $bin"
 
+      - name: Guard against performance regressions
+        id: performance_regression
+        shell: pwsh
+        run: |
+          & .github/scripts/perf-regression-gate.ps1 `
+            -BaselineRef 'perf/4.1-baseline' `
+            -Modes 'process,native-cpu' `
+            -Iterations 9 `
+            -WarmupIterations 2 `
+            -MaxRegressionPercent 15
+
+      - name: Upload performance regression reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-regression-${{ github.run_attempt }}
+          path: artifacts/perf-gate
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Run FFmpeg integration tests
         id: ffmpeg_integration_tests
         shell: pwsh
