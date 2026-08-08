@@ -41,6 +41,19 @@ public class SettingsLoadRecoveryTests : IDisposable {
 	}
 
 	[Fact]
+	public void SaveSettings_WritesHumanReadableIndentedJson() {
+		string path = Path.Combine(dir, "pretty.json");
+		_ = SettingsFile.Instance;
+
+		SettingsFile.SaveSettings(path);
+
+		string json = File.ReadAllText(path);
+		Assert.Contains("\n  \"", json);
+		using JsonDocument document = JsonDocument.Parse(json);
+		Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+	}
+
+	[Fact]
 	public void StartupLoad_TruncatedSettingsFile_DoesNotThrowAndKeepsCorruptCopy() {
 		// Round-trip real settings, then truncate to simulate a torn write.
 		string path = Path.Combine(dir, "Settings.json");
