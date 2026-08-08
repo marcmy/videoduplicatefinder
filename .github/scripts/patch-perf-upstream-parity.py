@@ -235,23 +235,20 @@ def patch_ai_corrupt_fast_fail() -> None:
         "AI native batch signature",
     )
 
-    init_old = (
-        "\t\t\tAVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n"
-        "\t\t\ttry {"
+    assignment_pair = (
+        "\n\t\t\tfailureCategory = FfmpegErrorCategory.Unknown;\n"
+        "\t\t\tfailureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;"
     )
-    init_new = (
-        "\t\t\tAVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n"
-        "\t\t\tfailureCategory = FfmpegErrorCategory.Unknown;\n"
-        "\t\t\tfailureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;\n"
-        "\t\t\ttry {"
-    )
-    block = replace_once_if_missing(
-        block,
-        "failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;",
-        init_old,
-        init_new,
-        "AI native batch failure initialization",
-    )
+    immediate_marker = sig_new + assignment_pair
+    if immediate_marker not in block:
+        if assignment_pair in block:
+            block = block.replace(assignment_pair, "", 1)
+        block = replace_once(
+            block,
+            sig_new,
+            immediate_marker,
+            "AI native batch early output initialization",
+        )
 
     catch_old = "\t\t\tcatch (Exception ex) {\n\t\t\t\tif (ex is TiledHeifRequiresProcessException) {"
     catch_new = (
