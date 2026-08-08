@@ -8,7 +8,8 @@ on:
     types:
       - completed
   # Re-run compatibility reconciliation when the perf-owned refresh machinery changes.
-  # The reconciliation commit touches source files, not these paths, so it does not loop.
+  # Once this branch is the repository default, this is also the authoritative
+  # workflow_run definition used after each scheduled upstream sync.
   push:
     branches:
       - perf/4.1-native-hwaccel
@@ -33,11 +34,11 @@ concurrency:
 jobs:
   refresh:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout perf branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: perf/4.1-native-hwaccel
           fetch-depth: 0
@@ -57,7 +58,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git checkout perf/4.1-native-hwaccel
+          branch='perf/4.1-native-hwaccel'
+          git checkout "$branch"
           before="$(git rev-parse HEAD)"
 
           set +e
@@ -65,38 +67,53 @@ jobs:
           merge_status=$?
           set -e
 
-          # The perf branch intentionally owns its workflow definitions. Restore them
-          # before committing so upstream workflow churn never replaces release/refresh policy.
+          # The perf branch owns its workflow definitions. Keep them across upstream
+          # refreshes so master remains only the upstream intake/staging branch.
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
           if [ "$merge_status" -ne 0 ]; then
-            echo "Merge reported conflicts. Auto-resolving only known perf-owned boundaries."
+            echo 'Merge reported conflicts. Auto-resolving only known perf-owned boundaries.'
             conflicted_files="$(git diff --name-only --diff-filter=U)"
             echo "$conflicted_files"
 
-            if echo "$conflicted_files" | grep -Fxq "README.md"; then
-              echo "Keeping origin/master version of README.md"
+            if grep -Fxq 'README.md' <<< "$conflicted_files"; then
+              echo 'Keeping origin/master README.md'
               git checkout --theirs -- README.md
               git add README.md
             fi
 
-            if echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FfmpegEngine.cs"; then
-              echo "Keeping the perf FFmpeg implementation; compatibility patches run below"
+            # These shells contain no perf acceleration logic; master is authoritative.
+            for file in \
+              'VDF.GUI/ViewModels/MainWindowVM_FfmpegDownloader.cs' \
+              'VDF.Web/Services/FFmpegSetupService.cs'; do
+              if grep -Fxq "$file" <<< "$conflicted_files"; then
+                echo "Taking origin/master shared-downloader shell for $file"
+                git checkout --theirs -- "$file"
+                git add "$file"
+              fi
+            done
+
+            if grep -Fxq 'VDF.Core/FFTools/FfmpegEngine.cs' <<< "$conflicted_files"; then
+              echo 'Keeping perf FfmpegEngine.cs; compatibility partials/reconciliation carry upstream contracts'
               git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
               git add VDF.Core/FFTools/FfmpegEngine.cs
             fi
 
-            if echo "$conflicted_files" | grep -Fxq "VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs"; then
-              echo "Keeping the perf decoder; compatibility patches run below"
+            if grep -Fxq 'VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs' <<< "$conflicted_files"; then
+              echo 'Keeping perf VideoStreamDecoder.cs; reconciliation carries upstream decoder contracts'
               git checkout --ours -- VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
               git add VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
             fi
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
-              echo "Unresolved non-owned conflicts remain:"
+              echo 'Unresolved source conflicts remain and require review:'
               echo "$remaining_conflicts"
+              printf '%s\n' "$remaining_conflicts" > perf-merge-conflicts.txt
+              while IFS= read -r file; do
+                [ -z "$file" ] || echo "::error file=$file::Unresolved perf refresh merge conflict"
+              done <<< "$remaining_conflicts"
               exit 1
             fi
           fi
@@ -105,25 +122,30 @@ jobs:
             git commit --no-edit
           fi
 
-          # Keep the custom performance engine aligned with upstream correctness behavior.
-          # reconcile-perf.py is the single canonical ordering of the focused patchers.
-          # Release builds consume committed source verbatim and never patch/commit code.
-          python3 .github/scripts/reconcile-perf.py
+          # Use the single canonical ordering of the focused compatibility patchers.
+          python .github/scripts/reconcile-perf.py
           git add -A
 
-          # The complete reconciliation layer must be a fixed point: running it a second time
-          # on its own output is required to be a no-op. This catches patchers that duplicate
-          # assignments/helpers or oscillate source formatting before they can be committed.
-          python3 .github/scripts/reconcile-perf.py
+          # The complete reconciliation layer must be a fixed point. A second pass
+          # changing source means a patcher is duplicating or oscillating behavior.
+          python .github/scripts/reconcile-perf.py
           if ! git diff --quiet; then
-            echo "::error::Perf reconciliation is not idempotent; the second pass changed source."
+            echo '::error::Perf reconciliation is not idempotent; the second pass changed source.'
             git diff --stat
             git diff
             exit 1
           fi
 
           if ! git diff --cached --quiet; then
-            git commit -m "perf: reconcile upstream compatibility"
+            git commit -m 'perf: reconcile upstream compatibility'
+          fi
+
+          # Explicit dependency-closure guard for the dense-AI compatibility seam.
+          if [ -f VDF.Core/FFTools/FfmpegEngine.DenseAiCompat.cs ] \
+             && grep -q 'AI\.FramePool' VDF.Core/FFTools/FfmpegEngine.DenseAiCompat.cs \
+             && [ ! -f VDF.Core/AI/FramePool.cs ]; then
+            echo '::error file=VDF.Core/FFTools/FfmpegEngine.DenseAiCompat.cs::Dense AI compatibility requires VDF.Core/AI/FramePool.cs, but the dependency is missing.'
+            exit 1
           fi
 
           after="$(git rev-parse HEAD)"
@@ -131,9 +153,9 @@ jobs:
           echo "after=$after" >> "$GITHUB_OUTPUT"
 
           if [ "$before" = "$after" ]; then
-            echo "merge_changed=false" >> "$GITHUB_OUTPUT"
-            echo "meaningful_changed=false" >> "$GITHUB_OUTPUT"
-            echo "Perf branch is already current and reconciled."
+            echo 'merge_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Perf branch is already current and reconciled.'
             exit 0
           fi
 
@@ -141,29 +163,91 @@ jobs:
           meaningful_changes="$(printf '%s\n' "$changed_files" | grep -Ev '^(README\.md|docs/|\.github/workflows/|\.github/scripts/)' || true)"
 
           {
-            echo "changed_files<<EOF"
+            echo 'changed_files<<EOF'
             echo "$changed_files"
-            echo "EOF"
-            echo "meaningful_changes<<EOF"
+            echo 'EOF'
+            echo 'meaningful_changes<<EOF'
             echo "$meaningful_changes"
-            echo "EOF"
+            echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-          echo "merge_changed=true" >> "$GITHUB_OUTPUT"
+          echo 'merge_changed=true' >> "$GITHUB_OUTPUT"
           if [ -n "$meaningful_changes" ]; then
-            echo "meaningful_changed=true" >> "$GITHUB_OUTPUT"
-            echo "Meaningful changes detected:"
+            echo 'meaningful_changed=true' >> "$GITHUB_OUTPUT"
+            echo 'Meaningful changes detected:'
             echo "$meaningful_changes"
           else
-            echo "meaningful_changed=false" >> "$GITHUB_OUTPUT"
-            echo "Only workflow/docs/refresh machinery changed; release build will not be dispatched."
+            echo 'meaningful_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Only workflow/docs/refresh machinery changed; release build will not be dispatched.'
           fi
 
-      - name: Push updated branch
+      - name: Upload merge conflict report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-merge-conflicts
+          path: perf-merge-conflicts.txt
+          if-no-files-found: ignore
+
+      - name: Setup .NET
+        if: steps.merge.outputs.merge_changed == 'true' || github.event_name == 'push'
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Validate perf branch
+        if: steps.merge.outputs.merge_changed == 'true' || github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee perf-validation.log) 2>&1
+
+          dotnet build VDF.GUI/VDF.GUI.csproj -c Release -v q
+          dotnet build VDF.CLI/VDF.CLI.csproj -c Release -v q
+          dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release --logger 'console;verbosity=detailed'
+
+          # GUI contains a few real-time/timer assertions. Retry once before blocking
+          # a correct upstream merge on a transient hosted-runner scheduler stall.
+          if ! dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q; then
+            echo '::warning::GUI tests failed once during refresh validation; retrying once to distinguish a timing flake from a reproducible failure.'
+            sleep 2
+            dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+          fi
+
+          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+
+      - name: Upload validation failure state
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-validation-state
+          path: |
+            perf-validation.log
+            VDF.Core/ScanEngine.cs
+            .github/scripts/reconcile-perf.py
+            .github/scripts/patch-perf-merge.py
+            .github/scripts/patch-perf-upstream-parity.py
+            .github/scripts/patch-perf-upstream-safety.py
+            .github/scripts/patch-perf-ai-process.py
+          if-no-files-found: ignore
+
+      - name: Verify perf branch did not advance during validation
+        if: steps.merge.outputs.merge_changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin perf/4.1-native-hwaccel
+          remote_tip="$(git rev-parse origin/perf/4.1-native-hwaccel)"
+          if [ "$remote_tip" != '${{ steps.merge.outputs.before }}' ]; then
+            echo "::error::Perf branch advanced during refresh validation (${{ steps.merge.outputs.before }} -> $remote_tip). Refusing a stale push; rerun refresh against the new tip."
+            exit 1
+          fi
+
+      - name: Push updated perf branch
         if: steps.merge.outputs.merge_changed == 'true'
         run: git push origin perf/4.1-native-hwaccel
 
-      - name: Trigger Build releases
+      - name: Trigger 4.1 performance release
         if: steps.merge.outputs.meaningful_changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
