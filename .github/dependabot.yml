@@ -19,6 +19,14 @@ updates:
       day: "thursday"
       time: "18:00"
       timezone: "America/New_York"
+    # ONNX Runtime 1.24+ no longer ships osx-x86_64 release archives.
+    # VDF still targets Intel macOS, and AiComponents downloads those archives
+    # directly, so keep the managed wrapper and test runtime on the 1.23.x line.
+    ignore:
+      - dependency-name: "Microsoft.ML.OnnxRuntime"
+        versions: ["[1.24.0,)"]
+      - dependency-name: "Microsoft.ML.OnnxRuntime.Managed"
+        versions: ["[1.24.0,)"]
 
   - package-ecosystem: "docker"
     directories:
