@@ -464,7 +464,7 @@ namespace VDF.GUI.Data {
 
 		public static void SaveSettings(string? path = null) {
 			path = ResolveSettingsPath(path);
-			File.WriteAllText(path, JsonSerializer.Serialize(instance, GuiJsonContext.Default.SettingsFile));
+			File.WriteAllText(path, JsonSerializer.Serialize(instance, GuiJsonPrettyContext.Default.SettingsFile));
 		}
 
 		bool _UseMica = false;
