@@ -19,7 +19,12 @@ if ($MaxRegressionPercent -lt 0) { throw 'MaxRegressionPercent cannot be negativ
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $artifactRoot = Join-Path $repoRoot $ArtifactsDir
-$baselineWorktree = Join-Path $env:RUNNER_TEMP 'vdf-perf-baseline-worktree'
+$workingTemp = if (![string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    $env:RUNNER_TEMP
+} else {
+    [IO.Path]::GetTempPath()
+}
+$baselineWorktree = Join-Path $workingTemp 'vdf-perf-baseline-worktree'
 $originalGithubSha = $env:GITHUB_SHA
 
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
