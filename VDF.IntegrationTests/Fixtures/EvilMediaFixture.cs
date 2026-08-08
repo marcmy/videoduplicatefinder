@@ -84,7 +84,7 @@ public sealed class EvilMediaFixture : IDisposable {
 				TruncatedH264 = truncated;
 		}
 
-		string resolutionChange = Path.Combine(TempDir, "h264_resolution_change.ts");
+		string resolutionChange = Path.Combine(TempDir, "h264_resolution_change.mkv");
 		if (EvilMediaGenerator.GenerateResolutionChangingH264(ffmpegPath, resolutionChange))
 			ResolutionChangeH264 = resolutionChange;
 	}
