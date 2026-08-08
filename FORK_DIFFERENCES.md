@@ -2,7 +2,7 @@
 
 This is the maintenance map for the actively maintained performance branch. It documents what the fork still owns, which upstream correctness behaviors are adapted around the custom engine, and which historical fork features are now upstream-owned.
 
-Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind). The master-to-perf comparison contains 43 changed files; every current delta is accounted for below.
+Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current `master` (0 commits behind). The master-to-perf surface is intentionally larger than upstream, but every current divergence is classified below rather than inferred from raw commit count.
 
 ## Branch contract
 
@@ -10,7 +10,8 @@ Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current
 - `perf/4.1-native-hwaccel` is the product/performance branch.
 - Upstream `master` is merged into the perf branch by the refresh workflow.
 - When `FfmpegEngine.cs` or `VideoStreamDecoder.cs` conflict, the perf implementation is retained and the reconciliation scripts reapply upstream behavior that the custom engine must preserve.
-- The reconciliation layer is run twice; pass #2 must be a no-op.
+- `.github/scripts/reconcile-perf.py` is the canonical ordering/entrypoint for the focused reconciliation patchers.
+- The complete reconciliation layer is run twice; pass #2 must be a no-op.
 - Release builds consume committed source verbatim. They must not rewrite application source during packaging.
 
 ## Status vocabulary
@@ -24,13 +25,13 @@ Snapshot: 2026-08-08. At this snapshot the perf branch is fully based on current
 
 ## Current delta inventory
 
-The current 43-file master-to-perf surface is explainable as follows:
+The current master-to-perf surface is explainable as follows:
 
 - **Native/performance runtime:** custom decoder, D3D11 scalers, gray extractor, FFmpeg engine partials, native-library loading delta, pHash hot-loop micro-optimization, and D3D11 support dependency.
 - **GUI persistence:** human-readable indented `Settings.json` serialization using the existing source-generated pretty JSON context, plus a regression test that parses the saved file back as valid JSON.
 - **Parity/source compatibility:** upstream decoder-safety behavior, tiled-HEIF handling, corrupt-file fast fail, AI call-shape overloads, and inherited-test helper seams.
-- **Tests/benchmarks:** fork-only engine tests, evil-media fixtures, native FFmpeg integration coverage, parity tests, and the performance regression probe.
-- **Maintenance/release:** sync/refresh/reconciliation scripts, release gate, rolling tag handling, and documentation.
+- **Tests/benchmarks:** fork-only engine tests, evil-media fixtures, native FFmpeg integration coverage, parity tests, extraction regression probe, full ScanEngine pipeline profiler, and local GPU profiling wrapper.
+- **Maintenance/release:** sync/refresh/reconciliation scripts, performance/release gates, rolling tag handling, and documentation.
 
 No unexplained runtime divergence remains from this audit. Historical commits that no longer affect the final tree are not treated as current features merely because they remain in branch history.
 
@@ -94,6 +95,8 @@ The useful way to read branch history is by feature family, not by raw commit co
 | 2026-08-08 evil-media/native-CI work | Make pathological media and native bindings release-blocking | **TOOLING / EXTRA REGRESSION GUARD.** Current and intentional. |
 | 2026-08-08 performance baseline/gate work | Compare candidate against pinned known-good product code on the same runner | **TOOLING.** Current and intentional. |
 | 2026-08-08 readable settings persistence | Keep manually editable `Settings.json` readable after application saves | **FORK-OWNED.** Uses the existing source-generated pretty context; GUI regression coverage pins indentation and valid round-trip JSON. |
+| 2026-08-08 pipeline/GPU profiling work | Attribute full-scan bottlenecks and make stable-machine D3D11 comparisons repeatable | **TOOLING.** `ScanPipelineProbe` measures real ScanEngine phase boundaries; `gpu-perf-local.ps1` records hardware/driver/power metadata and runs D3D11 extraction + full-pipeline probes. |
+| 2026-08-08 reconciliation orchestration | Keep focused patchers but make their execution order canonical | **TOOLING.** `reconcile-perf.py` is the one orchestration entrypoint; fixed-point validation still runs the complete stack twice. |
 
 ### Explicit upstream provenance
 
@@ -111,16 +114,19 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 | Area | Status | Files / reason |
 | --- | --- | --- |
 | Upstream sync / perf refresh | TOOLING | `.github/workflows/sync-master.yml`, `.github/workflows/refresh-patched-branch.yml` |
-| Upstream parity reconciliation | TOOLING | `patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py`; complete layer is run twice and second pass must be a no-op. |
+| Upstream parity reconciliation | TOOLING | `.github/scripts/reconcile-perf.py` owns the canonical order for `patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, and `patch-perf-ai-process.py`; the complete layer is run twice and the second pass must be a no-op. |
 | Windows x64 GUI-only Native AOT release | TOOLING | `.github/workflows/releases.yml`; actual rolling `4.1.x` Git tag is force-moved before release asset replacement. |
-| Performance regression gate | TOOLING | `RegressionProbe.cs`, `perf-regression-gate.ps1`, pinned `perf/4.1-baseline`. Hosted gate uses process/native-CPU, same harness, same FFmpeg/corpus/runner, p50 throughput, 9 iterations + 2 warmups, 15% threshold, and confirmation pair on a breach. |
+| Extraction performance regression gate | TOOLING | `RegressionProbe.cs`, `perf-regression-gate.ps1`, pinned `perf/4.1-baseline`. Hosted gate uses process/native-CPU, same harness, same FFmpeg/corpus/runner, p50 throughput, 9 iterations + 2 warmups, 15% threshold, and confirmation pair on a breach. |
+| Full ScanEngine pipeline profiler | TOOLING | `ScanPipelineProbe.cs` runs real discovery/search/hash/compare/finalization against an isolated database and emits JSON phase boundaries plus FFmpeg telemetry. Release CI runs small process/native-CPU profiles and retains the reports. |
+| Stable-machine GPU profiler | TOOLING | `gpu-perf-local.ps1` runs process/native-CPU/D3D11 extraction comparison plus a D3D11 full-pipeline scan, recording GPU/driver, CPU, OS, power plan, `nvidia-smi`, .NET and revision metadata beside the reports. |
 | Native FFmpeg CI | TOOLING / REGRESSION GUARD | Release CI installs checksum-verified BtbN GPL shared FFmpeg 8.1 so native-binding tests execute instead of skipping. |
 | Evil-media corpus | EXTRA REGRESSION GUARD | Generated long-GOP, VFR, odd-size, ultra-short, rotation, truncation, and mid-stream resolution-change fixtures plus existing HEVC10/VP9/SAR/corrupt/HEIC coverage. |
+| True tiled HEIC grid | EXTRA REGRESSION GUARD | `fetch-tiled-heic-fixture.ps1` fetches Nokia HEIF-conformance `C007.heic` from an immutable source commit, verifies its exact Git blob identity, sets `VDF_TEST_TILED_HEIC`, and can run the stream-group/grid parity test without vendoring uncertain-redistribution binary data into this repository. Release CI exercises it. |
 | Comparer mode regression | EXTRA REGRESSION GUARD | `VDF.GUI.Tests/ThumbnailComparerModeTests.cs` pins an upstream-owned behavior not otherwise dedicated in upstream tests. |
 | Folder-count cancellation race | EXTRA REGRESSION GUARD | `FolderCountingServiceTests.cs` makes cancellation deterministic under very fast walks; runtime code is unchanged. |
 | D3D11 dependency | FORK-OWNED SUPPORT | `VDF.Core.csproj` adds `Vortice.Direct3D11`; `InternalsVisibleTo` for benchmarks supports the perf harness. |
 
-## Completed cleanup from the 2026-08-08 audit
+## Completed cleanup / hardening from the 2026-08-08 audit
 
 - Removed `ScanEngine.MatchingConcurrency.cs` and duplicate tests after upstream absorbed matching parallelism.
 - Removed the old fork `PHashSampleQuorumTests.cs`; upstream's quorum suite is stronger and exercises the current implementation directly.
@@ -135,14 +141,18 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 - Reclassified `AiCompatOverloads.cs` as an active source-compatibility bridge after verifying current integration tests call both overloads.
 - Reclassified upstream #861 log-throttle/source-format helpers as **PARITY TEST SHIMS** after verifying inherited upstream tests call them; they are intentionally not perf production policy.
 - Rewrote `docs/4.1-perf-port.md` as historical provenance so it no longer claims upstream-owned matching/pHash/comparer work as current fork-owned features.
+- Consolidated reconciliation execution behind `reconcile-perf.py` without collapsing the focused patchers into one difficult-to-review transformation script.
+- Added full ScanEngine phase profiling and made small process/native-CPU pipeline reports a release artifact.
+- Added the stable-machine D3D11/GPU wrapper with environment capture for meaningful repeat comparisons.
+- Added pinned, integrity-verified on-demand true tiled-HEIC coverage and made the conformance test release-blocking without vendoring the external binary.
 
 ## Remaining maintenance work
 
-1. Consolidate reconciliation scripts where practical. The fixed-point gate now protects their idempotence; prefer fewer textual transformations and more stable owning partials when that does not make upstream merges harder to reason about.
-2. Profile the full scanner end-to-end. Native extraction is no longer automatically the dominant bottleneck; measure discovery, probing, extraction, pHash, AI, matching, DB work, and result construction before choosing the next optimization.
+1. Use the full-pipeline reports to choose optimizations by measured bottleneck rather than assuming native extraction is still dominant. For GPU-specific decisions, run `gpu-perf-local.ps1` on a stable adapter/driver/power environment and preferably a representative fixed media corpus.
+2. Continue moving stable reconciliation behavior into owning partials/helpers when that reduces textual transformation risk; keep the focused patchers independently reviewable and preserve `reconcile-perf.py` as the canonical orchestration point.
 3. Periodically shrink `FfmpegEngine.UpstreamCompat.cs` only when a bridge/test seam can move or disappear without weakening inherited upstream contracts.
 4. Re-audit the `ScanEngine` pHash micro-optimization whenever upstream changes strict threshold semantics.
-5. Add a redistributable true tiled-Apple-HEIC fixture if one with clear provenance becomes available; the test is already opt-in through `VDF_TEST_TILED_HEIC`.
+5. Keep the Nokia `C007.heic` fixture fetched on demand unless redistribution terms for that binary are explicit enough to justify vendoring it; the pinned fetch+integrity check already provides repeatable coverage.
 
 ## Maintenance rules
 
@@ -151,7 +161,7 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 3. On conflicts in fork-owned FFmpeg files, compare **behavior**, not just signatures/build errors.
 4. Every upstream commit touching native decode, image/video conversion, FFmpeg process fallback, AI frame extraction, or partial-clip verification gets a parity review against the perf engine.
 5. When upstream absorbs a fork feature, remove the duplicate fork implementation after proving inherited implementation/tests cover it.
-6. Release only committed source after structural checks, Core/GUI tests, performance gate, shared/native FFmpeg integration tests, Native AOT publish, and archive validation pass.
+6. Release only committed source after structural checks, Core/GUI tests, extraction performance gate, full-pipeline smoke/profile runs, true tiled-HEIC conformance, shared/native FFmpeg integration tests, Native AOT publish, and archive validation pass.
 7. Keep `perf/4.1-baseline` pinned until an intentional performance change is independently accepted; never auto-promote the latest release into the baseline.
 8. Compare GPU performance only on the same adapter/driver/power environment. Hosted runners are not a D3D11 performance oracle.
 9. Prefer correctness and bounded fallback behavior over preserving a fast path for pathological media.
