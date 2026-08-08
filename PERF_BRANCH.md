@@ -6,7 +6,9 @@ It receives upstream updates from `master` and publishes the GUI-only Windows x6
 
 The release intentionally contains only `GUI-win-x64.zip`; CLI, Web, bundles, symbols, and the retired full package are not produced.
 
-Before FFmpeg integration and Native AOT packaging, the release workflow runs the end-to-end extraction performance probe against the pinned known-good `perf/4.1-baseline` branch on the same Windows runner. The baseline and candidate reuse the exact same generated H.264, HEVC 10-bit, and VP9 corpus bytes and the same verified shared FFmpeg build. Publication is blocked when any hosted `process` or `native-cpu` case loses more than 15% median throughput. Baseline/current JSON reports and logs are retained for 14 days.
+Before FFmpeg integration and Native AOT packaging, the release workflow runs the end-to-end extraction performance probe against the pinned known-good `perf/4.1-baseline` branch on the same Windows runner. The baseline product tree stays pinned, but its `VDF.Benchmarks` project is replaced at runtime with the candidate's current benchmark harness so measurement-code drift cannot masquerade as a product performance change. Both harnesses are prebuilt before timing, and baseline/candidate reuse the exact same generated H.264, HEVC 10-bit, and VP9 corpus bytes plus the same verified shared FFmpeg build.
+
+Hosted `process` and `native-cpu` cases use 9 measured iterations, 2 warmups, and a 15% median-throughput threshold. A primary threshold breach automatically gets one same-run confirmation pair; publication is blocked only when the breach reproduces in both pairs. Baseline/current JSON reports and logs are retained for 14 days, including confirmation reports when a second pair is needed.
 
 `perf/4.1-baseline` is advanced only after an intentional performance change has been separately verified and accepted. It is not moved automatically by a successful or failed release run, so a regression cannot silently become the next baseline.
 
