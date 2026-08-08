@@ -16,8 +16,10 @@ on:
       - '.github/scripts/patch-perf-merge.py'
       - '.github/scripts/patch-perf-upstream-parity.py'
       - '.github/scripts/patch-perf-upstream-safety.py'
+      - '.github/scripts/patch-perf-ai-process.py'
       - '.github/workflows/refresh-patched-branch.yml'
       - 'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs'
+      - 'VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs'
 
 permissions:
   contents: write
@@ -108,6 +110,7 @@ jobs:
           python3 .github/scripts/patch-perf-merge.py
           python3 .github/scripts/patch-perf-upstream-parity.py
           python3 .github/scripts/patch-perf-upstream-safety.py
+          python3 .github/scripts/patch-perf-ai-process.py
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "perf: reconcile upstream compatibility"
