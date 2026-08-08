@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout 4.1 perf branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: perf/4.1-native-hwaccel
           fetch-depth: 0
