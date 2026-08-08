@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: perf/4.1-native-hwaccel
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup .NET
