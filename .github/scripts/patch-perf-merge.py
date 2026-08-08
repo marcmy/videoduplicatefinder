@@ -173,7 +173,7 @@ def ensure_tiled_heif_native_refusal() -> None:
 def ensure_tiled_heif_process_retry() -> None:
     path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
     text = path.read_text(encoding="utf-8")
-    marker = "TryGetTiledHeifGridFrame(\n\t\t\t\tsettings,"
+    marker = "byte[]? gridBytes = TryGetTiledHeifGridFrame("
     if marker in text:
         return
 
