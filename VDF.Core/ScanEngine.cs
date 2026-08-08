@@ -116,7 +116,7 @@ namespace VDF.Core {
 		// candidate it's compared against (thousands of lines from a handful of files).
 		readonly ConcurrentDictionary<string, byte> missingPHashFiles = new(
 			CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-		DateTime lastCheckpointTime = DateTime.MinValue;
+		internal DateTime lastCheckpointTime = DateTime.MinValue;
 		readonly object checkpointLock = new();
 		// Per-drive done/total accounting; non-null only while GatherInfos runs, so progress
 		// events of every other phase carry Drives = null and the UI hides the drive rows.
@@ -128,7 +128,7 @@ namespace VDF.Core {
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
 
-		internal void InitProgress(int count) {
+		internal void InitProgress(int count, string stage) {
 			startTime = DateTime.UtcNow;
 			scanProgressMaxValue = count;
 			processedFiles = 0;
@@ -137,16 +137,9 @@ namespace VDF.Core {
 			// Publish the new phase's zeroed counters at once. A phase whose first item takes minutes
 			// (the visual gate decodes frames off disk) would otherwise leave the previous phase's
 			// finished-looking numbers on screen, and leave the heartbeat with nothing to refresh.
-			// Callers set currentStageLabel before calling, so the label switches with the counters.
-			PushProgress(new ScanProgressChangedEventArgs {
-				CurrentPosition = 0,
-				CurrentFile = string.Empty,
-				Elapsed = ElapsedTimer.Elapsed,
-				Remaining = TimeSpan.Zero,
-				MaxPosition = scanProgressMaxValue,
-				CurrentStage = currentStageLabel,
-			});
-			// After the push, so the phase's first completed item reports without waiting out the throttle.
+			currentStageLabel = stage;
+			ReportProgress("", stage, remaining: TimeSpan.Zero, ignoreInterval: true);
+			// Reset after the push, so the phase's first completed item reports without waiting out the throttle.
 			lastProgressUpdate = DateTime.MinValue;
 		}
 		void ResetExcludedLogging() {
@@ -214,16 +207,6 @@ namespace VDF.Core {
 				Logger.Instance.Warn(T("Log.ExcludedFilesSummaryItem", reason.Key, reason.Value, suppressionText));
 			}
 		}
-		/// <summary>
-		/// Raises <see cref="Progress"/> and keeps the snapshot the heartbeat re-sends.
-		/// </summary>
-		void PushProgress(ScanProgressChangedEventArgs args) {
-			lock (progressSnapshotLock) {
-				lastProgressSnapshot = args;
-				hasProgressSnapshot = true;
-			}
-			Progress?.Invoke(this, args);
-		}
 
 		/// <summary>
 		/// Linear extrapolation of the current phase's remaining time from what it has spent so far.
@@ -276,43 +259,44 @@ namespace VDF.Core {
 			Progress?.Invoke(this, snapshot);
 		}
 
-		internal void IncrementProgress(string path) {
-			// Atomic: workers of all concurrent drive groups increment this counter, and a
-			// torn increment would lose the processedFiles == scanProgressMaxValue final push.
-			int processed = Interlocked.Increment(ref processedFiles);
-			var pushUpdate = processed == scanProgressMaxValue ||
-								lastProgressUpdate + progressUpdateIntervall < DateTime.UtcNow;
-			if (!pushUpdate) return;
-			lastProgressUpdate = DateTime.UtcNow;
-			PushProgress(new ScanProgressChangedEventArgs {
-				CurrentPosition = processed,
-				CurrentFile = path,
-				Elapsed = ElapsedTimer.Elapsed,
-				Remaining = EstimateRemaining(processed, scanProgressMaxValue),
-				MaxPosition = scanProgressMaxValue,
-				CurrentStage = currentStageLabel,
-				Drives = driveProgressTracker?.Snapshot(),
-			});
-			TryDatabaseCheckpoint();
-		}
-
-		// Reports what's happening to a file mid-processing without advancing the file counter.
-		// Throttled to the same cadence as IncrementProgress so a stuck file's last-reported
+		// Used by IncrementProgress and to report what's happening to a file
+		// mid-processing without advancing the file counter.
+		// Throttled to the same cadence for both so a stuck file's last-reported
 		// stage (e.g. "sampling frame 2/5") hints at where it froze.
-		void ReportStage(string path, string stage, int stageCurrent = 0, int stageMax = 0) {
-			if (lastProgressUpdate + progressUpdateIntervall > DateTime.UtcNow) return;
+		internal void ReportProgress(string path, string stage, int stageCurrent = 0, int stageMax = 0, TimeSpan? remaining = null, bool ignoreInterval = false) {
+			if (!ignoreInterval && lastProgressUpdate + progressUpdateIntervall > DateTime.UtcNow) {
+				return;
+			}
+
 			lastProgressUpdate = DateTime.UtcNow;
-			PushProgress(new ScanProgressChangedEventArgs {
+
+			var args = new ScanProgressChangedEventArgs {
 				CurrentPosition = processedFiles,
 				CurrentFile = path,
 				Elapsed = ElapsedTimer.Elapsed,
-				Remaining = EstimateRemaining(processedFiles, scanProgressMaxValue),
+				Remaining = remaining ?? EstimateRemaining(processedFiles, scanProgressMaxValue),
 				MaxPosition = scanProgressMaxValue,
 				CurrentStage = stage,
 				StageCurrent = stageCurrent,
 				StageMax = stageMax,
 				Drives = driveProgressTracker?.Snapshot(),
-			});
+			};
+
+			lock (progressSnapshotLock) {
+				lastProgressSnapshot = args;
+				hasProgressSnapshot = true;
+			}
+			Progress?.Invoke(this, args);
+
+			TryDatabaseCheckpoint();
+		}
+
+		internal void IncrementProgress(string path) {
+			// Atomic: workers of all concurrent drive groups increment this counter, and a
+			// torn increment would lose the processedFiles == scanProgressMaxValue final push.
+			int processed = Interlocked.Increment(ref processedFiles);
+			var ignoreInterval = processed == scanProgressMaxValue;
+			ReportProgress(path, currentStageLabel, ignoreInterval: ignoreInterval);
 		}
 
 		void TryDatabaseCheckpoint() {
@@ -387,8 +371,7 @@ namespace VDF.Core {
 					if (aiEmbeddingPipeline != null) {
 						// The bounded queue keeps this drain short, but on a slow CPU a few
 						// hundred frames can still be pending — give the wait its own stage.
-						currentStageLabel = T("Scan.Stage.AiEmbedding");
-						InitProgress(1);
+						InitProgress(1, T("Scan.Stage.AiEmbedding"));
 						await aiEmbeddingPipeline.CompleteAsync();
 						IncrementProgress(string.Empty);
 						Logger.Instance.Info($"AI embeddings computed for this scan: {aiEmbeddingPipeline.EmbeddedCount}");
@@ -1030,8 +1013,8 @@ namespace VDF.Core {
 
 		async Task GatherInfos() {
 			try {
-				currentStageLabel = string.Empty; // per-file analysis reports its own sub-stages
-				InitProgress(DatabaseUtils.Database.Count);
+				// per-file analysis reports its own sub-stages
+				InitProgress(DatabaseUtils.Database.Count, "");
 				// Only in-scope entries count toward a drive's done/total — out-of-scope ones
 				// are skipped in microseconds and would otherwise dilute the drive bars.
 				bool CountsTowardDriveProgress(FileEntry entry) =>
@@ -1083,11 +1066,11 @@ namespace VDF.Core {
 							entry.OsHash = OsHashUtils.TryCompute(entry.Path);
 
 						if (Settings.IncludeMissingFiles && entry.grayBytes?.Count > 0) {
-							bool hasAllInformation = entry.IsImage;
-							if (!hasAllInformation) {
+							bool hasAllInformation = entry.IsImage && HasUsableCachedGray(entry, 0);
+							if (!entry.IsImage) {
 								hasAllInformation = true;
 								for (int i = 0; i < positionList.Count; i++) {
-									if (entry.grayBytes.ContainsKey(GetGrayBytesIndex(entry, positionList[i])))
+									if (HasUsableCachedGray(entry, GetGrayBytesIndex(entry, positionList[i])))
 										continue;
 									hasAllInformation = false;
 									break;
@@ -1110,11 +1093,11 @@ namespace VDF.Core {
 								if (NeedsAudioFingerprint(entry, Settings.EnablePartialClipDetection, Settings.AlwaysRetryFailedSampling)) {
 									string cachedAudioPath = entry.Path;
 									string audioStageLabel = T("Scan.Stage.AudioFingerprint");
-									ReportStage(cachedAudioPath, audioStageLabel);
+									ReportProgress(cachedAudioPath, audioStageLabel);
 									ScanCrashJournal.Begin(ScanCrashJournal.PhaseAudio, cachedAudioPath);
 									try {
 										ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
-											onProgress: p => ReportStage(cachedAudioPath, audioStageLabel, (int)(p * 100), 100));
+											onProgress: p => ReportProgress(cachedAudioPath, audioStageLabel, (int)(p * 100), 100));
 									}
 									finally {
 										ScanCrashJournal.End();
@@ -1137,7 +1120,7 @@ namespace VDF.Core {
 						}
 
 						if (entry.mediaInfo == null && !entry.IsImage) {
-							ReportStage(entry.Path, T("Scan.Stage.Probing"));
+							ReportProgress(entry.Path, T("Scan.Stage.Probing"));
 							MediaInfo? info = FFProbeEngine.GetMediaInfo(entry.Path, Settings.ExtendedFFToolsLogging);
 							if (info == null) {
 								entry.invalid = true;
@@ -1153,6 +1136,9 @@ namespace VDF.Core {
 						entry.grayBytes ??= new Dictionary<double, byte[]?>();
 						entry.PHashes ??= new Dictionary<double, ulong?>();
 
+						// Before the samplers consult their "already sampled" gates: discard
+						// legacy-sized cached frames so those positions get re-extracted (#881).
+						HealLegacyGrayBytes(entry);
 
 						if (entry.IsImage) {
 							ScanCrashJournal.Begin(ScanCrashJournal.PhaseImage, entry.Path);
@@ -1178,7 +1164,7 @@ namespace VDF.Core {
 							try {
 								if (!FfmpegEngine.GetGrayBytesFromVideo(entry, positionList, Settings.MaxSamplingDurationSeconds,
 										Settings.ExtendedFFToolsLogging,
-										onSampleComplete: (done) => ReportStage(entryPath, samplingLabel, done, totalSamples),
+										onSampleComplete: (done) => ReportProgress(entryPath, samplingLabel, done, totalSamples),
 										embeddingSink: aiEmbeddingPipeline))
 									entry.invalid = true;
 							}
@@ -1192,11 +1178,11 @@ namespace VDF.Core {
 						if (NeedsAudioFingerprint(entry, Settings.EnablePartialClipDetection, Settings.AlwaysRetryFailedSampling)) {
 							string audioPath = entry.Path;
 							string audioLabel = T("Scan.Stage.AudioFingerprint");
-							ReportStage(audioPath, audioLabel);
+							ReportProgress(audioPath, audioLabel);
 							ScanCrashJournal.Begin(ScanCrashJournal.PhaseAudio, audioPath);
 							try {
 								ExtractAudioFingerprint(entry, cancelationTokenSource.Token,
-									onProgress: p => ReportStage(audioPath, audioLabel, (int)(p * 100), 100));
+									onProgress: p => ReportProgress(audioPath, audioLabel, (int)(p * 100), 100));
 							}
 							finally {
 								ScanCrashJournal.End();
@@ -1264,7 +1250,7 @@ namespace VDF.Core {
 			}
 		}
 
-	
+
 	internal static void ExtractAudioFingerprint(FileEntry entry, CancellationToken ct = default, Action<double>? onProgress = null) {
 		uint[]? fp = FFTools.ChromaprintEngine.ExtractFingerprint(entry.Path, false, ct, onProgress);
 		if (fp == null && ct.IsCancellationRequested) {
@@ -1364,6 +1350,18 @@ namespace VDF.Core {
 		return true;
 	}
 
+		/// <summary>
+		/// Whether a pair of files is allowed to match under the configured folder match
+		/// mode. Every comparison pass must apply this - the partial clip passes (audio
+		/// and AI) used to skip it and grouped same-folder clips under DifferentFolderOnly (#870).
+		/// </summary>
+		internal bool PassesFolderMatchGate(FileEntry a, FileEntry b) =>
+			Settings.FolderMatchMode switch {
+				FolderMatchMode.SameFolderOnly => SameFolderAtDepth(a.Folder, b.Folder, Settings.SameFolderDepth),
+				FolderMatchMode.DifferentFolderOnly => !SameFolderAtDepth(a.Folder, b.Folder, Settings.SameFolderDepth),
+				_ => true,
+			};
+
 	void LogMissingPHash(string path) {
 			if (missingPHashFiles.TryAdd(path, 0))
 				Logger.Instance.Warn($"Missing pHash data for '{path}' — file will be skipped in pHash comparisons. Re-scan to repopulate.");
@@ -1379,9 +1377,42 @@ namespace VDF.Core {
 		/// those entries are excluded from the comparison instead of failing on every
 		/// pair.
 		/// </summary>
+		/// <summary>
+		/// A cached gray frame is usable when it exists and, if it holds data, that data has
+		/// the current pipeline's 32x32 size. A stored null means "sampled and failed" and
+		/// stays usable here — the retry policy elsewhere owns that decision. Only wrong-sized
+		/// frames (legacy 16x16 data migrated from an old database, #881) disqualify the cache.
+		/// </summary>
+		internal static bool HasUsableCachedGray(FileEntry entry, double idx) =>
+			entry.grayBytes.TryGetValue(idx, out byte[]? cached) &&
+			(cached == null || cached.Length == GrayBytesUtils.Side * GrayBytesUtils.Side);
+
+		/// <summary>
+		/// #881: databases migrated from the 16x16 era carry 256-byte gray frames verbatim,
+		/// and every "already sampled" gate keys on position presence — so they were reused
+		/// forever, and with pHash disabled nothing checked their size until
+		/// <see cref="GrayBytesUtils.PercentageDifference"/> read past the end of the shorter
+		/// buffer and aborted the scan. Removing them (with their stale pHashes) makes the
+		/// affected positions resample like missing ones, healing the database in place.
+		/// </summary>
+		internal static void HealLegacyGrayBytes(FileEntry entry) {
+			if (!(entry.grayBytes?.Count > 0)) return;
+			List<double>? stale = null;
+			foreach (var frame in entry.grayBytes)
+				if (frame.Value != null && frame.Value.Length != GrayBytesUtils.Side * GrayBytesUtils.Side)
+					(stale ??= new()).Add(frame.Key);
+			if (stale == null) return;
+			foreach (double key in stale) {
+				entry.grayBytes.Remove(key);
+				entry.PHashes?.Remove(key);
+			}
+			Logger.Instance.Info($"Resampling '{entry.Path}': {stale.Count} cached frame(s) had a legacy size and were discarded.");
+		}
+
 		internal bool TryBuildCompareSnapshot(FileEntry entry, bool usePHashing) {
 			if (entry.IsImage) {
-				if (!entry.grayBytes.TryGetValue(0, out byte[]? imageGray) || imageGray == null)
+				if (!entry.grayBytes.TryGetValue(0, out byte[]? imageGray) || imageGray == null
+					|| imageGray.Length != GrayBytesUtils.Side * GrayBytesUtils.Side)
 					return false;
 				entry.compareGray = new[] { imageGray };
 				if (Settings.UseAiMatching)
@@ -1397,6 +1428,12 @@ namespace VDF.Core {
 					positionKeys[j] = idx;
 				if (!entry.grayBytes.TryGetValue(idx, out byte[]? data) || data == null)
 					return false;
+				// Legacy 16x16 data from a migrated database: comparing it against a modern
+				// 32x32 frame crashed the whole scan inside PercentageDifference (#881).
+				// GatherInfos heals these by resampling; anything still wrong-sized here
+				// (e.g. a missing file that cannot be resampled) is excluded instead.
+				if (data.Length != GrayBytesUtils.Side * GrayBytesUtils.Side)
+					return false;
 				gray[j] = data;
 			}
 
@@ -1408,15 +1445,7 @@ namespace VDF.Core {
 						phashes[j] = cached.Value;
 						continue;
 					}
-					if (gray[j]!.Length != GrayBytesUtils.Side * GrayBytesUtils.Side) {
-						// Legacy 16x16 data slipped past the DbVersion gate (mixed database).
-						// Return before assigning compareGray so a dropped entry leaves no
-						// dangling snapshot behind (the end-of-phase cleanup only visits the
-						// validated ScanList).
-						LogMissingPHash(entry.Path);
-						return false;
-					}
-					phashes[j] = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[j]);
+					phashes[j] = pHash.PerceptualHash.ComputePHashFromGray32x32(gray[j]!);
 					entry.PHashes[idx] = phashes[j]; // cache for future quick rescans; also heals stored nulls
 				}
 				entry.comparePHashes = phashes;
@@ -1672,7 +1701,7 @@ namespace VDF.Core {
 				unionEmbeddingStore = null;
 			}
 			if (droppedSnapshots > 0)
-				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing gray bytes for the current thumbnail positions). Rescan to repopulate.");
+				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing or wrong-sized gray bytes for the current thumbnail positions). Rescan to repopulate.");
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
 			// Precompute the pHash quorum threshold once for the whole phase (see field note).
@@ -1682,8 +1711,7 @@ namespace VDF.Core {
 			int matchingParallelism = MatchingParallelDegree;
 			Logger.Instance.Info($"Matching concurrency: {matchingParallelism} worker(s) on {Environment.ProcessorCount} logical processor(s) (configured: matching={Settings.MatchingMaxDegreeOfParallelism}, media reads={Settings.MaxDegreeOfParallelism})");
 
-			currentStageLabel = T("Scan.Stage.ComparingDuplicates");
-			InitProgress(ScanList.Count);
+			InitProgress(ScanList.Count, T("Scan.Stage.ComparingDuplicates"));
 
 			// Duration buckets are keyed by whole seconds to keep percent-based tolerance intact.
 			const int bucketSizeSeconds = 1;
@@ -1835,11 +1863,7 @@ namespace VDF.Core {
 								continue;
 						}
 
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
-							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (!PassesFolderMatchGate(entry, compItem))
 							continue;
 
 						isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
@@ -1870,11 +1894,7 @@ namespace VDF.Core {
 						var compItem = imageEntries[n];
 						float difference = 0;
 						DuplicateFlags flags;
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
-							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (!PassesFolderMatchGate(entry, compItem))
 							continue;
 						// Images never take the pHash branch, so no flipped pHash is needed.
 						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, null, out difference, out flags);
@@ -1933,11 +1953,7 @@ namespace VDF.Core {
 						if (diffSeconds > allowedSeconds)
 							continue;
 
-						if (Settings.FolderMatchMode == FolderMatchMode.SameFolderOnly &&
-							!SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
-							continue;
-						if (Settings.FolderMatchMode == FolderMatchMode.DifferentFolderOnly &&
-							SameFolderAtDepth(entry.Folder, compItem.Folder, Settings.SameFolderDepth))
+						if (!PassesFolderMatchGate(entry, compItem))
 							continue;
 
 						bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out difference, out flags);
@@ -2074,10 +2090,9 @@ namespace VDF.Core {
 			Logger.Instance.Info($"Partial clip detection: comparing {videos.Count} video(s) (fingerprint blocks: min={videos.Min(e => e.AudioFingerprint!.Length)}, max={videos.Max(e => e.AudioFingerprint!.Length)})...");
 
 			float simThreshold = (float)Settings.PartialClipSimilarityThreshold;
-			currentStageLabel = T("Scan.Stage.PartialCompare");
-			InitProgress(videos.Count - 1);
+			InitProgress(videos.Count - 1, T("Scan.Stage.PartialCompare"));
 
-			(var matches, int pairsChecked) = CollectPartialMatchCandidates(videos,
+			(var matches, long pairsChecked) = CollectPartialMatchCandidates(videos,
 				pairPrefilter: (i, j) => {
 					if ((videos[j].mediaInfo?.Duration ?? TimeSpan.Zero).TotalSeconds < 1.0)
 						return false;
@@ -2130,13 +2145,13 @@ namespace VDF.Core {
 		/// <paramref name="pairPrefilter"/> runs before a pair counts as checked;
 		/// <paramref name="tryMatchPair"/> returns similarity+offset for a match, null otherwise.
 		/// </summary>
-		(ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)> Matches, int PairsChecked)
+		(ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)> Matches, long PairsChecked)
 			CollectPartialMatchCandidates(
 				List<FileEntry> videos,
 				Func<int, int, bool>? pairPrefilter,
 				Func<int, int, (float sim, int offsetSec)?> tryMatchPair) {
 			var matches = new ConcurrentBag<(int sourceIdx, int clipIdx, float sim, int offsetSec)>();
-			int pairsChecked = 0;
+			long pairsChecked = 0; // long: 162k videos are ~13 billion pairs - an int wrapped negative in the summary log (#865)
 			try {
 				Parallel.For(0, videos.Count - 1,
 					new ParallelOptions {
@@ -2155,6 +2170,8 @@ namespace VDF.Core {
 								double ratio = clipSec / sourceSec;
 								if (ratio >= 0.95) continue;
 								if (ratio < Settings.PartialClipMinRatio) break;
+								// Centrally, so the audio AND the AI partial pass honor it (#870).
+								if (!PassesFolderMatchGate(videos[i], videos[j])) continue;
 								if (pairPrefilter != null && !pairPrefilter(i, j)) continue;
 								Interlocked.Increment(ref pairsChecked);
 								if (tryMatchPair(i, j) is { } match)
@@ -2207,8 +2224,7 @@ namespace VDF.Core {
 			List<(int sourceIdx, int clipIdx, float sim, int offsetSec, Guid groupId)> assignments,
 			Func<FileEntry, FileEntry, int, (bool pass, float visualSim)> verify) {
 
-			currentStageLabel = T("Scan.Stage.PartialVisualVerify");
-			InitProgress(assignments.Count);
+			InitProgress(assignments.Count, T("Scan.Stage.PartialVisualVerify"));
 
 			int beforeCount = assignments.Count;
 			int dropped = 0;
