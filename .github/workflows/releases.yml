@@ -82,13 +82,57 @@ jobs:
       - name: Run GUI tests
         run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
 
-      - name: Install FFmpeg
-        run: choco install ffmpeg -y --no-progress
+      - name: Install shared FFmpeg 8.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '8.1'
+          $archive = "ffmpeg-n$version-latest-win64-gpl-shared-$version.zip"
+          $baseUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest'
+          $zipPath = Join-Path $env:RUNNER_TEMP $archive
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'vdf-ffmpeg-shared'
+          $checksumPath = Join-Path $env:RUNNER_TEMP 'ffmpeg-checksums.sha256'
+
+          curl.exe --fail --location --retry 3 --retry-delay 2 "$baseUrl/$archive" --output $zipPath
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download $archive" }
+          curl.exe --fail --location --retry 3 --retry-delay 2 "$baseUrl/checksums.sha256" --output $checksumPath
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download BtbN checksums.sha256' }
+
+          $checksumLine = Get-Content $checksumPath |
+            Where-Object { $_ -match "\s+$([Regex]::Escape($archive))\s*$" } |
+            Select-Object -First 1
+          if (!$checksumLine) { throw "No checksum entry found for $archive" }
+          $expected = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "FFmpeg archive checksum mismatch: expected $expected, got $actual"
+          }
+
+          if (Test-Path $extractRoot) { Remove-Item $extractRoot -Recurse -Force }
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+          $ffmpeg = Get-ChildItem $extractRoot -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem $extractRoot -Filter ffprobe.exe -File -Recurse | Select-Object -First 1
+          if (!$ffmpeg -or !$ffprobe) { throw 'Shared archive did not contain ffmpeg.exe and ffprobe.exe' }
+          if ($ffmpeg.DirectoryName -ne $ffprobe.DirectoryName) { throw 'ffmpeg.exe and ffprobe.exe were not co-located' }
+
+          $bin = $ffmpeg.DirectoryName
+          foreach ($dll in @('avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll')) {
+            if (!(Test-Path (Join-Path $bin $dll) -PathType Leaf)) {
+              throw "Shared FFmpeg build is missing required native library: $dll"
+            }
+          }
+
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VDF_TEST_SHARED_FFMPEG_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using verified shared FFmpeg from $bin"
 
       - name: Run FFmpeg integration tests
         id: ffmpeg_integration_tests
         shell: pwsh
         run: |
+          Write-Host "ffmpeg: $((Get-Command ffmpeg).Source)"
+          Write-Host "ffprobe: $((Get-Command ffprobe).Source)"
+          Get-ChildItem $env:VDF_TEST_SHARED_FFMPEG_BIN -Filter '*.dll' | Select-Object -ExpandProperty Name
           dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal --logger "trx;LogFileName=integration.trx" 2>&1 |
             Tee-Object -FilePath integration-test.log
           exit $LASTEXITCODE
