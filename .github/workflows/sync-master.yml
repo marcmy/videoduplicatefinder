@@ -18,10 +18,11 @@ jobs:
 
     steps:
       - name: Checkout master
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: master
           fetch-depth: 0
+          token: ${{ github.token }}
 
       - name: Configure git
         run: |
@@ -35,36 +36,42 @@ jobs:
           git fetch upstream
 
       - name: Merge upstream/master into master
+        shell: bash
         run: |
+          set -euo pipefail
           git checkout master
+          before="$(git rev-parse HEAD)"
 
           set +e
-          git merge --no-edit upstream/master
+          git merge --no-edit --no-commit --no-ff upstream/master
           merge_status=$?
           set -e
 
+          # This fork owns its workflow definitions. Restore the exact pre-merge
+          # workflow tree even when upstream adds, removes, or cleanly changes files.
+          git rm -r -f --ignore-unmatch .github/workflows
+          git checkout "$before" -- .github/workflows
+          git add .github/workflows
+
           if [ "$merge_status" -ne 0 ]; then
-            echo "Merge reported conflicts. Preserving fork-owned workflow files, then checking for remaining conflicts."
+            echo "Merge reported conflicts. Fork-owned workflows were restored; checking for remaining source conflicts."
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
 
-            conflicted_files=$(git diff --name-only --diff-filter=U)
-            echo "$conflicted_files"
-
-            echo "$conflicted_files" | while IFS= read -r file; do
-              if [ -n "$file" ] && [[ "$file" == .github/workflows/* ]]; then
-                echo "Keeping fork version of $file"
-                git checkout --ours -- "$file"
-                git add "$file"
-              fi
-            done
-
-            remaining_conflicts=$(git diff --name-only --diff-filter=U)
             if [ -n "$remaining_conflicts" ]; then
               echo "Unresolved non-workflow conflicts remain:"
               echo "$remaining_conflicts"
               exit 1
             fi
+          fi
 
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             git commit --no-edit
+          fi
+
+          if ! git diff --quiet "$before" HEAD -- .github/workflows; then
+            echo "::error::.github/workflows changed during upstream sync"
+            git diff --stat "$before" HEAD -- .github/workflows
+            exit 1
           fi
 
       - name: Push master
