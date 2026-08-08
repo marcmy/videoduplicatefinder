@@ -153,6 +153,8 @@ namespace VDF.Core.FFTools {
 			out FfmpegErrorCategory failureCategory,
 			out AVHWDeviceType failureHardwareDeviceType,
 			bool forceCpuDecode = false) {
+			failureCategory = FfmpegErrorCategory.Unknown;
+			failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 			List<GrayByteRequest> requests =
 				GetPendingAiNativeRequests(
 					videoFile,
@@ -165,8 +167,6 @@ namespace VDF.Core.FFTools {
 			string? familyKey = GetD3D11GrayByteAdaptiveFamilyKey(videoFile);
 			string? codecName = GetPrimaryVideoCodecName(videoFile);
 			AVHWDeviceType hardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
-			failureCategory = FfmpegErrorCategory.Unknown;
-			failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 			try {
 				if (!forceCpuDecode &&
 					!ShouldBypassHardwareDecodeForCodec(
