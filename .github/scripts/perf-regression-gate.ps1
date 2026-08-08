@@ -146,11 +146,15 @@ try {
 
     # Benchmark methodology must not drift between refs. Replace only the baseline
     # worktree's benchmark project with the candidate's current harness source;
-    # VDF.Core and the rest of the baseline product tree remain pinned.
+    # VDF.Core and the rest of the baseline product tree remain pinned. Exclude
+    # local build outputs so a developer's existing bin/obj cannot contaminate it.
     $currentHarness = Join-Path $repoRoot 'VDF.Benchmarks'
     $baselineHarness = Join-Path $baselineWorktree 'VDF.Benchmarks'
     if (Test-Path $baselineHarness) { Remove-Item $baselineHarness -Recurse -Force }
-    Copy-Item -LiteralPath $currentHarness -Destination $baselineHarness -Recurse -Force
+    New-Item -ItemType Directory -Path $baselineHarness -Force | Out-Null
+    Get-ChildItem -LiteralPath $currentHarness -Force |
+        Where-Object { $_.Name -notin @('bin', 'obj') } |
+        Copy-Item -Destination $baselineHarness -Recurse -Force
     Write-Host 'Synchronized current benchmark harness source into the baseline worktree.'
 
     # Build both refs before any timing starts. This keeps restore/compiler/Defender
