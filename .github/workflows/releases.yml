@@ -39,7 +39,8 @@ jobs:
             'VDF.Core/FFTools/FFmpegNative/Gray32FrameExtractor.cs',
             'VDF.Core/FFTools/FFmpegNative/D3D11GrayByteScaler.cs',
             'VDF.Core/FFTools/FFmpegNative/D3D11VideoProcessorGrayByteScaler.cs',
-            'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs'
+            'VDF.Core/FFTools/FfmpegEngine.UpstreamCompat.cs',
+            'VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs'
           )
           foreach ($path in $requiredFiles) {
             if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -62,9 +63,16 @@ jobs:
           }
 
           $aiCompat = Get-Content VDF.Core/FFTools/FfmpegEngine.AiCompat.cs -Raw
-          foreach ($marker in @('TryGetTiledHeifGridAiRgb224(', 'ThrowIfTiledHeifRequiresProcess(')) {
+          foreach ($marker in @('TryGetTiledHeifGridAiRgb224(', 'ThrowIfTiledHeifRequiresProcess(', 'GetGrayAndRgb224CliBounded(')) {
             if (!$aiCompat.Contains($marker)) {
-              throw "Required tiled-HEIF compatibility marker is missing from FfmpegEngine.AiCompat.cs: $marker"
+              throw "Required AI compatibility/performance marker is missing from FfmpegEngine.AiCompat.cs: $marker"
+            }
+          }
+
+          $combinedAi = Get-Content VDF.Core/FFTools/FfmpegEngine.AiProcessCombined.cs -Raw
+          foreach ($marker in @('GetGrayAndRgb224CliBounded(', 'ContainsH264ReferenceRecoveryWarning(', 'Task.WhenAll(')) {
+            if (!$combinedAi.Contains($marker)) {
+              throw "Required combined AI process marker is missing: $marker"
             }
           }
 
@@ -173,7 +181,7 @@ jobs:
           body: |
             Daily Windows x64 GUI-only Native AOT performance build from perf/4.1-native-hwaccel.
 
-            Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, and reserved CPU headroom during duplicate matching.
+            Includes the upstream 4.1 interface and drive-aware scanner plus native batched FFmpeg extraction, D3D11 gray-byte acceleration, capability-scoped hardware fallback, multi-sample pHash matching, comparer correctness fixes, upstream decoder-safety parity, and combined gray+AI process fallback.
 
             This release intentionally publishes only GUI-win-x64.zip. CLI, Web, bundles, symbols, and the retired full Scoop package are not produced.
 
