@@ -106,6 +106,7 @@ public static class RegressionProbe {
 				report.Cases.Add(result);
 				Console.WriteLine(
 					$"{result.Key}: mean={result.MeanBatchMs:0.00} ms, " +
+					$"p50={result.P50BatchMs:0.00} ms, " +
 					$"p95={result.P95BatchMs:0.00} ms, " +
 					$"throughput={result.SamplesPerSecond:0.00} samples/s, " +
 					$"failures={result.FailedIterations}");
@@ -118,8 +119,22 @@ public static class RegressionProbe {
 		File.WriteAllText(options.OutputPath, JsonSerializer.Serialize(report, JsonOptions()));
 		Console.WriteLine($"Report written to {Path.GetFullPath(options.OutputPath)}");
 
-		if (report.Cases.Count == 0 || report.Cases.Any(result => result.SuccessfulIterations == 0))
+		HashSet<string> executedModes = report.Cases
+			.Select(result => result.Mode)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		List<string> missingModes = options.Modes
+			.Where(mode => !executedModes.Contains(mode))
+			.ToList();
+		if (missingModes.Count > 0) {
+			Console.Error.WriteLine($"Requested benchmark mode(s) did not run: {string.Join(", ", missingModes)}");
 			return 1;
+		}
+
+		if (report.Cases.Count == 0 || report.Cases.Any(result =>
+				result.SuccessfulIterations != options.Iterations || result.FailedIterations != 0)) {
+			Console.Error.WriteLine("One or more benchmark cases did not complete every measured iteration.");
+			return 1;
+		}
 		if (options.BaselinePath == null)
 			return 0;
 		return CompareBaseline(report, options) ? 0 : 2;
@@ -240,22 +255,89 @@ public static class RegressionProbe {
 		if (baseline == null)
 			throw new InvalidDataException("Baseline report could not be parsed.");
 
-		var baselineByKey = baseline.Cases.ToDictionary(result => result.Key);
 		bool passed = true;
+		if (!string.Equals(baseline.Os, current.Os, StringComparison.Ordinal) ||
+			!string.Equals(baseline.Framework, current.Framework, StringComparison.Ordinal) ||
+			!string.Equals(baseline.Architecture, current.Architecture, StringComparison.Ordinal) ||
+			baseline.ProcessorCount != current.ProcessorCount) {
+			passed = false;
+			Console.Error.WriteLine("REGRESSION GATE INVALID: baseline and current reports were produced on different runtime environments.");
+			Console.Error.WriteLine($"  baseline: {baseline.Os}; {baseline.Framework}; {baseline.Architecture}; CPUs={baseline.ProcessorCount}");
+			Console.Error.WriteLine($"  current:  {current.Os}; {current.Framework}; {current.Architecture}; CPUs={current.ProcessorCount}");
+		}
+
+		if (baseline.Iterations != current.Iterations || baseline.WarmupIterations != current.WarmupIterations) {
+			passed = false;
+			Console.Error.WriteLine(
+				$"REGRESSION GATE INVALID: measurement counts differ " +
+				$"(baseline {baseline.Iterations}/{baseline.WarmupIterations}, " +
+				$"current {current.Iterations}/{current.WarmupIterations}).");
+		}
+
+		var baselineByKey = baseline.Cases.ToDictionary(result => result.Key);
+		var currentByKey = current.Cases.ToDictionary(result => result.Key);
+		List<string> missingCurrent = baselineByKey.Keys
+			.Except(currentByKey.Keys, StringComparer.Ordinal)
+			.OrderBy(key => key, StringComparer.Ordinal)
+			.ToList();
+		foreach (string key in missingCurrent) {
+			passed = false;
+			Console.Error.WriteLine($"REGRESSION GATE INVALID: baseline case is missing from current run: {key}");
+		}
+
+		List<string> currentOnly = currentByKey.Keys
+			.Except(baselineByKey.Keys, StringComparer.Ordinal)
+			.OrderBy(key => key, StringComparer.Ordinal)
+			.ToList();
+		foreach (string key in currentOnly)
+			Console.WriteLine($"Not baseline-gated yet (new case): {key}");
+
+		int matched = 0;
 		foreach (CaseResult result in current.Cases) {
-			if (!baselineByKey.TryGetValue(result.Key, out CaseResult? previous) ||
-				previous.SamplesPerSecond <= 0d || result.SamplesPerSecond <= 0d)
+			if (!baselineByKey.TryGetValue(result.Key, out CaseResult? previous))
 				continue;
-			double regression =
-				(previous.SamplesPerSecond - result.SamplesPerSecond) /
-				previous.SamplesPerSecond * 100d;
-			Console.WriteLine($"{result.Key}: throughput delta={-regression:+0.00;-0.00;0.00}%");
-			if (regression > options.MaxRegressionPercent) {
+			matched++;
+
+			if (previous.SamplesPerIteration != result.SamplesPerIteration ||
+				previous.SamplesPerIteration <= 0) {
 				passed = false;
 				Console.Error.WriteLine(
-					$"REGRESSION: {result.Key} slowed by {regression:0.00}% " +
+					$"REGRESSION GATE INVALID: {result.Key} samples-per-iteration changed " +
+					$"from {previous.SamplesPerIteration} to {result.SamplesPerIteration}.");
+				continue;
+			}
+			if (previous.P50BatchMs <= 0d || result.P50BatchMs <= 0d ||
+				previous.SamplesPerSecond <= 0d || result.SamplesPerSecond <= 0d) {
+				passed = false;
+				Console.Error.WriteLine($"REGRESSION GATE INVALID: {result.Key} has non-positive timing/throughput data.");
+				continue;
+			}
+
+			double baselineMedianThroughput =
+				previous.SamplesPerIteration / (previous.P50BatchMs / 1000d);
+			double currentMedianThroughput =
+				result.SamplesPerIteration / (result.P50BatchMs / 1000d);
+			double medianRegression =
+				(baselineMedianThroughput - currentMedianThroughput) /
+				baselineMedianThroughput * 100d;
+			double meanRegression =
+				(previous.SamplesPerSecond - result.SamplesPerSecond) /
+				previous.SamplesPerSecond * 100d;
+
+			Console.WriteLine(
+				$"{result.Key}: median throughput delta={-medianRegression:+0.00;-0.00;0.00}%, " +
+				$"mean delta={-meanRegression:+0.00;-0.00;0.00}%");
+			if (medianRegression > options.MaxRegressionPercent) {
+				passed = false;
+				Console.Error.WriteLine(
+					$"REGRESSION: {result.Key} median throughput slowed by {medianRegression:0.00}% " +
 					$"(allowed {options.MaxRegressionPercent:0.00}%).");
 			}
+		}
+
+		if (matched == 0) {
+			Console.Error.WriteLine("REGRESSION GATE INVALID: baseline and current reports have no matching cases.");
+			return false;
 		}
 		return passed;
 	}
@@ -356,7 +438,7 @@ public static class RegressionProbe {
 		Console.WriteLine("  --iterations <n>                 Measured batches per case (default: 5).");
 		Console.WriteLine("  --warmup <n>                     Warmup batches per case (default: 1).");
 		Console.WriteLine("  --output <json>                  Current report path.");
-		Console.WriteLine("  --baseline <json>                Compare throughput against a prior report.");
-		Console.WriteLine("  --max-regression-percent <n>     Allowed slowdown before exit code 2 (default: 15).");
+		Console.WriteLine("  --baseline <json>                Compare median throughput against a prior report.");
+		Console.WriteLine("  --max-regression-percent <n>     Allowed median slowdown before exit code 2 (default: 15).");
 	}
 }
