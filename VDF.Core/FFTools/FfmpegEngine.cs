@@ -568,6 +568,7 @@ namespace VDF.Core.FFTools {
 			var openSw = Stopwatch.StartNew();
 				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
+				ThrowIfTiledHeifRequiresProcess(vsd, videoFile.Path);
 				NativeGrayByteTiming nativeTiming = new() { QueueMs = queueMs, OpenMs = openSw.ElapsedMilliseconds };
 				VideoFrameConverter? converter = null;
 				D3D11VideoProcessorGrayByteScaler? d3d11Scaler = null;
@@ -656,6 +657,10 @@ namespace VDF.Core.FFTools {
 				return true;
 			}
 			catch (Exception e) {
+				if (e is TiledHeifRequiresProcessException) {
+					Logger.Instance.Info(e.Message);
+					return false;
+				}
 				if (IsNativeBindingLoadFailure(e)) {
 					RecordNativeFailure(videoFile.Path, e);
 					return false;
@@ -704,6 +709,7 @@ namespace VDF.Core.FFTools {
 				try {
 					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(filePath, hardwareDeviceType);
+					ThrowIfTiledHeifRequiresProcess(vsd, filePath);
 					VideoFrameConverter? converter = null;
 					Size converterSourceSize = default;
 					AVPixelFormat converterSrcFmt = AVPixelFormat.AV_PIX_FMT_NONE;
@@ -741,7 +747,9 @@ namespace VDF.Core.FFTools {
 					RecordNativeSuccess();
 				}
 				catch (Exception e) {
-					if (IsNativeBindingLoadFailure(e))
+					if (e is TiledHeifRequiresProcessException)
+						Logger.Instance.Info(e.Message);
+					else if (IsNativeBindingLoadFailure(e))
 						RecordNativeFailure(filePath, e);
 					else if (hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
 						string failureText = $"{hardwareDeviceType} {e}";
@@ -826,6 +834,7 @@ namespace VDF.Core.FFTools {
 						hardwarePolicy = settings.SoftwareDecodeOnly ? "software-decode-only" : GetHardwarePolicy(nativeHardwareDeviceType, enableHardwareAcceleration);
 					FfmpegLogCapture.Reset();
 					using var vsd = new VideoStreamDecoder(settings.File, nativeHardwareDeviceType);
+					ThrowIfTiledHeifRequiresProcess(vsd, settings.File);
 					openMs = phaseSw.ElapsedMilliseconds;
 
 					Size sourceSize = vsd.FrameSize;
@@ -1067,6 +1076,26 @@ namespace VDF.Core.FFTools {
 				bytes = null;
 			}
 			string ffmpegError = errOut.ToString();
+			if (bytes == null && FileUtils.IsHeifImageFile(settings.File)) {
+				byte[]? gridBytes = TryGetTiledHeifGridFrame(
+					settings,
+					isGrayByte,
+					isRgbFrame,
+					graySideLength,
+					expectedGrayBytes,
+					expectedRgbBytes,
+					timeoutMilliseconds,
+					out string gridError);
+				if (!string.IsNullOrWhiteSpace(gridError))
+					ffmpegError = string.IsNullOrWhiteSpace(ffmpegError)
+						? gridError
+						: $"{ffmpegError}{Environment.NewLine}HEIF tile-grid retry:{Environment.NewLine}{gridError}";
+				if (gridBytes != null) {
+					bytes = gridBytes;
+					processAttemptedHardware = false;
+					hardwarePolicy = "heif-grid-process";
+				}
+			}
 			// When a still image was extracted successfully, discard FFmpeg's known-benign
 			// PNG demuxer chatter instead of logging a false warning (#805/#809/#815).
 			if (bytes != null && ffmpegError.Length > 0 && FileUtils.IsImageFile(settings.File))
@@ -1407,6 +1436,7 @@ namespace VDF.Core.FFTools {
 				// Stills never benefit from HW decoders (and some HW paths reject them).
 				FfmpegLogCapture.Reset();
 				using var vsd = new VideoStreamDecoder(path);
+				ThrowIfTiledHeifRequiresProcess(vsd, path);
 				if (!vsd.TryDecodeFrame(out var srcFrame, TimeSpan.Zero))
 					throw new Exception($"TryDecodeFrame failed for image '{path}'");
 

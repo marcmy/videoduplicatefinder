@@ -116,7 +116,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public bool IsHardwareDecode { get; }
 		internal AVRational StreamTimeBase => _pFormatContext->streams[_streamIndex]->time_base;
 		internal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;
-		public bool HasStreamGroups => _pFormatContext->nb_stream_groups > 0;
+		public bool HasStreamGroups => _pFormatContext != null && _pFormatContext->nb_stream_groups > 0;
 
 		void ResetTimeout() {
 			_deadlineTicks = Stopwatch.GetTimestamp() + (long)(_timeoutMs / 1000.0 * Stopwatch.Frequency);

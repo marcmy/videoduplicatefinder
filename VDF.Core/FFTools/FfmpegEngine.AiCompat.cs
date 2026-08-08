@@ -149,6 +149,7 @@ namespace VDF.Core.FFTools {
 				FfmpegLogCapture.Reset();
 				using var vsd =
 					new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
+				ThrowIfTiledHeifRequiresProcess(vsd, videoFile.Path);
 				VideoFrameConverter? grayConverter = null;
 				VideoFrameConverter? rgbConverter = null;
 				Size converterSourceSize = default;
@@ -298,6 +299,10 @@ namespace VDF.Core.FFTools {
 				return true;
 			}
 			catch (Exception ex) {
+				if (ex is TiledHeifRequiresProcessException) {
+					Logger.Instance.Info(ex.Message);
+					return false;
+				}
 				if (IsNativeBindingLoadFailure(ex)) {
 					RecordNativeFailure(videoFile.Path, ex);
 					return false;
@@ -539,10 +544,23 @@ namespace VDF.Core.FFTools {
 				return accurate.Data;
 			}
 
+			string tiledHeifError = string.Empty;
+			if (FileUtils.IsHeifImageFile(file)) {
+				byte[]? tiledHeif = TryGetTiledHeifGridAiRgb224(
+					file,
+					TimeoutDuration,
+					out tiledHeifError);
+				if (tiledHeif != null) {
+					if (extendedLogging && !string.IsNullOrWhiteSpace(tiledHeifError))
+						Logger.Instance.Info($"FFmpeg tiled-HEIF AI extraction for '{file}': {tiledHeifError}");
+					return tiledHeif;
+				}
+			}
+
 			string error =
 				string.Join(
 					Environment.NewLine,
-					new[] { fast.Error, accurate.Error }
+					new[] { fast.Error, accurate.Error, tiledHeifError }
 						.Where(value =>
 							!string.IsNullOrWhiteSpace(value)));
 			if (!string.IsNullOrWhiteSpace(error))
