@@ -140,6 +140,10 @@ try {
 
     $baselineSha = (git -C $baselineWorktree rev-parse HEAD).Trim()
     $currentSha = (git -C $repoRoot rev-parse HEAD).Trim()
+    if ($originalGithubSha -and
+        ![string]::Equals($currentSha, $originalGithubSha, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Performance gate checkout mismatch: current HEAD is $currentSha but GITHUB_SHA is $originalGithubSha. Refusing to benchmark or publish mismatched source."
+    }
     Write-Host "Baseline product code: $baselineSha"
     Write-Host "Current product code:  $currentSha"
     Write-Host "Modes: $Modes; iterations=$Iterations; warmup=$WarmupIterations; max regression=$MaxRegressionPercent%"
