@@ -1659,7 +1659,6 @@ Non-Windows setup:
 			Scanner.Settings.ExcludeHardLinks = SettingsFile.Instance.ExcludeHardLinks;
 			Scanner.Settings.HardwareAccelerationMode = SettingsFile.Instance.HardwareAccelerationMode;
 			Scanner.Settings.Percent = SettingsFile.Instance.Percent;
-			Scanner.Settings.PHashRequiredMatchingSampleRatio = SettingsFile.Instance.PHashSampleRatioPercent / 100f;
 			Scanner.Settings.PercentDurationDifference = SettingsFile.Instance.PercentDurationDifference;
 			Scanner.Settings.DurationDifferenceMinSeconds = SettingsFile.Instance.DurationDifferenceMinSeconds;
 			Scanner.Settings.DurationDifferenceMaxSeconds = SettingsFile.Instance.DurationDifferenceMaxSeconds;

@@ -104,11 +104,6 @@ namespace VDF.Core.ViewModels {
 		/// re-extract when the user has since raised the setting (issue #777).
 		/// </summary>
 		public int ThumbnailWidth { get; set; }
-		/// <summary>
-		/// True when the stored preview JPEGs were rendered using the video's display
-		/// aspect ratio rather than its coded raster dimensions. Older backups default false.
-		/// </summary>
-		public bool ThumbnailDisplayAspectCorrected { get; set; }
 		[JsonInclude]
 		public List<TimeSpan> ThumbnailTimestamps { get; set; } = new List<TimeSpan>();
 		string _Path = string.Empty;
