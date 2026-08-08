@@ -83,4 +83,54 @@ def patch_partial_verify_decode_safety() -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def patch_native_thumbnail_frame_dimensions() -> None:
+    path = Path("VDF.Core/FFTools/FfmpegEngine.cs")
+    text = path.read_text(encoding="utf-8")
+
+    start = text.find("\t\tpublic static unsafe byte[]? GetThumbnail(")
+    end = text.find("\n\t\tprivate static List<string> TokenizeArgs(", start)
+    if start < 0 or end < 0:
+        raise RuntimeError("Unable to locate GetThumbnail")
+    block = text[start:end]
+
+    marker = (
+        "sourceSize = new Size(\n"
+        "\t\t\t\t\t\tsrcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,"
+    )
+    if marker not in block:
+        anchor = (
+            "\t\t\t\t\tseekMs = frameTiming.SeekMs;\n"
+            "\t\t\t\t\tdecodeMs = frameTiming.DecodeMs;\n"
+            "\t\t\t\t\ttransferMs = frameTiming.TransferMs;\n"
+            "\t\t\t\t\thardwareTransfers = frameTiming.HardwareTransfers;\n\n"
+            "\t\t\t\t\tAVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);"
+        )
+        replacement = (
+            "\t\t\t\t\tseekMs = frameTiming.SeekMs;\n"
+            "\t\t\t\t\tdecodeMs = frameTiming.DecodeMs;\n"
+            "\t\t\t\t\ttransferMs = frameTiming.TransferMs;\n"
+            "\t\t\t\t\thardwareTransfers = frameTiming.HardwareTransfers;\n\n"
+            "\t\t\t\t\t// #861: frame metadata wins over the open-time codec context. A\n"
+            "\t\t\t\t\t// corrupt or dynamically changing stream can report different decoded\n"
+            "\t\t\t\t\t// dimensions; configure swscale from the frame that will actually be read.\n"
+            "\t\t\t\t\tsourceSize = new Size(\n"
+            "\t\t\t\t\t\tsrcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,\n"
+            "\t\t\t\t\t\tsrcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);\n"
+            "\t\t\t\t\tAVPixelFormat srcPixFmt = GetConvertiblePixelFormat(vsd, srcFrame);"
+        )
+        block = replace_once(
+            block,
+            anchor,
+            replacement,
+            "GetThumbnail decoded-frame dimension",
+        )
+
+    if marker not in block:
+        raise RuntimeError("GetThumbnail decoded-frame dimension marker missing after patch")
+
+    text = text[:start] + block + text[end:]
+    path.write_text(text, encoding="utf-8")
+
+
 patch_partial_verify_decode_safety()
+patch_native_thumbnail_frame_dimensions()
