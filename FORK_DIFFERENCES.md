@@ -80,7 +80,7 @@ Upstream commits that explicitly credit `marcmy/videoduplicatefinder (perf/4.1-n
 | Area | Status | Files / reason |
 | --- | --- | --- |
 | Upstream sync / perf refresh | TOOLING | `.github/workflows/sync-master.yml`, `.github/workflows/refresh-patched-branch.yml` |
-| Upstream parity reconciliation | TOOLING | `.github/scripts/patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py` |
+| Upstream parity reconciliation | TOOLING | `.github/scripts/patch-perf-merge.py`, `patch-perf-upstream-parity.py`, `patch-perf-upstream-safety.py`, `patch-perf-ai-process.py`; refresh runs the complete layer twice and rejects any second-pass diff. |
 | Windows x64 GUI-only Native AOT release | TOOLING | `.github/workflows/releases.yml` |
 | Performance regression probe | TOOLING | `VDF.Benchmarks/Scenarios/RegressionProbe.cs`, `VDF.Benchmarks/README.md` |
 | Perf-specific FFmpeg regression coverage | TOOLING | `VDF.Core.Tests/FFTools/*`, `VDF.IntegrationTests/FFTools/*` where the test exercises a fork-only path |
@@ -98,10 +98,12 @@ The normal Windows PR workflow is intentionally kept at upstream test coverage (
 - Removed unused `DuplicateItem.ThumbnailDisplayAspectCorrected` state left from the pre-upstream SAR implementation.
 - Reverted a test-only async rewrite of `PauseTokenSourceTests.cs` to upstream because it added no fork-specific coverage.
 - Restored upstream GUI and Web tests in `.github/workflows/dotnetcore.yml` instead of carrying a weaker PR gate.
+- Added a reconciliation fixed-point gate: all four patchers run a second time after staging and the refresh fails if pass #2 changes any source.
+- The first fixed-point run caught a whitespace-sensitive HEIF retry marker that would have duplicated the process fallback block on later refreshes; the marker was changed to recognize the semantic block and the next live refresh completed with no source diff.
 
 ## Remaining maintenance cleanup
 
-1. Consolidate the four reconciliation scripts where practical and add explicit idempotence tests. The desired end state is fewer textual source transformations and more stable source partials.
+1. Consolidate the four reconciliation scripts where practical. The fixed-point gate now protects their idempotence; the desired end state is fewer textual source transformations and more stable source partials.
 2. Periodically shrink `FfmpegEngine.UpstreamCompat.cs` when a bridge can move into the permanent owning partial without making future upstream merges harder. Some helpers intentionally remain only to preserve upstream test/source compatibility even when the perf production path has a richer policy.
 3. Re-audit `ScanEngine.cs` whenever upstream changes pHash threshold semantics. The fork's direct `PopCount` loop is allowed only while it is exactly equivalent to upstream `PHashCompare.IsDuplicateByPercent(..., strict: true)` semantics.
 
@@ -118,7 +120,7 @@ The normal Windows PR workflow is intentionally kept at upstream test coverage (
 
 ## Next audit targets
 
-- Add explicit idempotence tests for each reconciliation script, then consolidate the scripts where safe.
+- Consolidate the reconciliation scripts where doing so reduces brittle textual patching without obscuring ownership boundaries.
 - Build a small evil-media corpus covering tiled HEIF, corrupt/truncated streams, H.264 random-access recovery, 10-bit HEVC, VP9, odd dimensions, SAR/rotation, VFR, very short clips, and mid-stream layout changes.
 - Promote the regression probe into a repeatable workflow/baseline process; GPU comparisons require a stable hardware runner.
 - Profile the full scanner after the native extraction optimizations to find the new end-to-end bottleneck rather than assuming FFmpeg extraction remains dominant.
