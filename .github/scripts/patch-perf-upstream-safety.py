@@ -88,7 +88,16 @@ def patch_native_thumbnail_frame_dimensions() -> None:
     text = path.read_text(encoding="utf-8")
 
     start = text.find("\t\tpublic static unsafe byte[]? GetThumbnail(")
+    if start < 0:
+        start = text.find("\t\tstatic unsafe byte[]? GetThumbnail(")
+
+    # Upstream removed redundant private modifiers in its style cleanup. Accept both
+    # forms so reconciliation remains tied to the TokenizeArgs method boundary rather
+    # than a cosmetic access-modifier choice.
     end = text.find("\n\t\tprivate static List<string> TokenizeArgs(", start)
+    if end < 0:
+        end = text.find("\n\t\tstatic List<string> TokenizeArgs(", start)
+
     if start < 0 or end < 0:
         raise RuntimeError("Unable to locate GetThumbnail")
     block = text[start:end]
