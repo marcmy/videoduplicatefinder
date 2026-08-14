@@ -860,8 +860,7 @@ namespace VDF.Core {
 				reason = "file is marked as too dark";
 				return true;
 			}
-			if (!Settings.IncludeMissingFiles && !File.Exists(entry.Path))
-			{
+			if (!Settings.IncludeMissingFiles && !File.Exists(entry.Path)) {
 				reason = "file does not exist";
 				return true;
 			}
@@ -988,7 +987,7 @@ namespace VDF.Core {
 			}
 			// Wildcard pattern without path separators: match against each individual segment of folderPath
 			bool hasSeparator = blacklistEntry.Contains(Path.DirectorySeparatorChar) ||
-			                    blacklistEntry.Contains(Path.AltDirectorySeparatorChar);
+								blacklistEntry.Contains(Path.AltDirectorySeparatorChar);
 			if (!hasSeparator) {
 				string[] segments = folderPath.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
 					StringSplitOptions.RemoveEmptyEntries);
@@ -1232,7 +1231,8 @@ namespace VDF.Core {
 					DriveScanPlanner.ClassifyGroups(driveGroups, Settings.DriveTypeOverrides,
 						DriveScanPlanner.IsNetworkRoot,
 						group => DriveScanPlanner.ProbeSeekLatencyMs(
-							group.Entries.Where(CountsTowardDriveProgress)));
+							group.Entries.Where(CountsTowardDriveProgress)),
+						DriveScanPlanner.QueryHasSeekPenalty);
 					DriveScanPlanner.AssignParallelism(driveGroups, Settings.MaxDegreeOfParallelism, Settings.HddMaxDegreeOfParallelism, Environment.ProcessorCount);
 					driveProgressTracker = new DriveProgressTracker(driveGroups, CountsTowardDriveProgress, classified: true);
 					var driveTasks = new List<Task>(driveGroups.Count);
@@ -1690,6 +1690,11 @@ namespace VDF.Core {
 				Logger.Instance.Warn($"Excluded {droppedSnapshots} file(s) with incomplete cached scan data (missing or wrong-sized gray bytes for the current thumbnail positions). Rescan to repopulate.");
 
 			Logger.Instance.Info($"Scanning for duplicates in {ScanList.Count:N0} files");
+			// The effective matching configuration, so "setting X seems to do nothing"
+			// reports (#893) are answerable from the log alone. GUI profile cards may
+			// have overwritten what the user believes they configured.
+			string matchingAlgorithm = Settings.CombineGrayscaleAndPHash ? "grayscale+pHash" : Settings.UsePHashing ? "pHash" : "grayscale";
+			Logger.Instance.Info($"Matching settings: algorithm={matchingAlgorithm}, threshold={Settings.Percent}%, ignore black pixels={(Settings.IgnoreBlackPixels ? "on" : "off")}, ignore white pixels={(Settings.IgnoreWhitePixels ? "on" : "off")}, flipped compare={(Settings.CompareHorizontallyFlipped ? "on" : "off")}, AI matching={(Settings.UseAiMatching ? "on" : "off")}");
 			// Precompute the pHash quorum threshold once for the whole phase (see field note).
 			matchingRequiredSampleMatches = usePHashing
 				? Math.Max(1, (int)Math.Ceiling(positionList.Count * Math.Clamp(Settings.PHashRequiredMatchingSampleRatio, 0.01f, 1f)))
