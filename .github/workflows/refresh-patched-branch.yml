@@ -107,6 +107,16 @@ jobs:
               git add VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs
             fi
 
+            # The perf branch intentionally owns FFmpeg native-loader behavior here:
+            # it avoids partial Windows DLL residency and carries additional native
+            # compatibility probes used by the accelerated path. Upstream style/
+            # resolver changes can conflict textually without superseding that logic.
+            if grep -Fxq 'VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs' <<< "$conflicted_files"; then
+              echo 'Keeping perf FFmpegHelper.cs; perf native-loader semantics are authoritative'
+              git checkout --ours -- VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
+              git add VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
+            fi
+
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
               echo 'Unresolved source conflicts remain and require review:'
