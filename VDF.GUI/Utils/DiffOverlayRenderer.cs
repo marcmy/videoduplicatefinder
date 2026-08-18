@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY without even the implied warranty of
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -99,7 +99,7 @@ namespace VDF.GUI.Utils {
 		static unsafe float[]? TryExtractViaReencode(Bitmap bmp, int dstWidth, int dstHeight) {
 			try {
 				using var ms = new MemoryStream();
-				bmp.Save(ms);
+				bmp.Save(ms, PngBitmapEncoderOptions.Default);
 				ms.Position = 0;
 				using var decoded = WriteableBitmap.Decode(ms);
 				using var fb = decoded.Lock();
