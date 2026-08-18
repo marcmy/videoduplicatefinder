@@ -1,7 +1,6 @@
 name: Docker (Web UI)
 
-on:
-  workflow_dispatch:
+on: [push]
 
 jobs:
   build-and-push:
