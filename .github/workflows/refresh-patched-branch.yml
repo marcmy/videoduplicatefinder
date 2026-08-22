@@ -84,16 +84,39 @@ jobs:
               git add README.md
             fi
 
-            # These shells contain no perf acceleration logic; master is authoritative.
+            # These shells and tests contain no perf acceleration logic; master is authoritative.
             for file in \
               'VDF.GUI/ViewModels/MainWindowVM_FfmpegDownloader.cs' \
-              'VDF.Web/Services/FFmpegSetupService.cs'; do
+              'VDF.Web/Services/FFmpegSetupService.cs' \
+              'VDF.Core.Tests/Utils/PauseTokenSourceTests.cs' \
+              'VDF.Core.Tests/Utils/PeriodicCheckpointTests.cs' \
+              'VDF.GUI.Tests/FolderCountingServiceTests.cs'; do
               if grep -Fxq "$file" <<< "$conflicted_files"; then
-                echo "Taking origin/master shared-downloader shell for $file"
+                echo "Taking origin/master version for $file"
                 git checkout --theirs -- "$file"
                 git add "$file"
               fi
             done
+
+            # VDF.Core.csproj is shared: upstream owns the general dependency set while
+            # the perf branch additionally requires Vortice.Direct3D11 for native HW accel.
+            if grep -Fxq 'VDF.Core/VDF.Core.csproj' <<< "$conflicted_files"; then
+              echo 'Taking origin/master VDF.Core.csproj and restoring the perf Vortice dependency'
+              git checkout --theirs -- VDF.Core/VDF.Core.csproj
+              python - <<'PY'
+          from pathlib import Path
+          path = Path('VDF.Core/VDF.Core.csproj')
+          text = path.read_text(encoding='utf-8')
+          dependency = '    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />\n'
+          if 'Include="Vortice.Direct3D11"' not in text:
+              anchor = '    <PackageReference Include="Mono.Posix.NETStandard" Version="5.20.1-preview" />\n'
+              if anchor not in text:
+                  raise SystemExit('Unable to locate package dependency insertion point')
+              text = text.replace(anchor, anchor + dependency, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+              git add VDF.Core/VDF.Core.csproj
+            fi
 
             if grep -Fxq 'VDF.Core/FFTools/FfmpegEngine.cs' <<< "$conflicted_files"; then
               echo 'Keeping perf FfmpegEngine.cs; compatibility partials/reconciliation carry upstream contracts'
