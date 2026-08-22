@@ -19,4 +19,8 @@
     <ProjectReference Include="..\VDF.TestSupport\VDF.TestSupport.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition="!Exists('..\VDF.Core\ScanProgress.cs')">
+    <Compile Remove="ScanProgressCompatibility.cs" />
+  </ItemGroup>
+
 </Project>
