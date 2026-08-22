@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -94,7 +94,7 @@ public class PeriodicCheckpointTests {
 		using var inSave = new ManualResetEventSlim();
 		using var release = new ManualResetEventSlim();
 		int runs = 0, skipped = 0;
-		Thread.Sleep(5); // let the interval elapse
+		await Task.Delay(5); // let the interval elapse
 
 		var saver = Task.Run(() => checkpoint.TryRun(() => {
 			Interlocked.Increment(ref runs);
@@ -107,10 +107,10 @@ public class PeriodicCheckpointTests {
 			if (!checkpoint.TryRun(() => Interlocked.Increment(ref runs)))
 				Interlocked.Increment(ref skipped);
 		})).ToArray();
-		await Task.WhenAll(others).WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(await Task.WhenAll(others).TryWaitAsync(TimeSpan.FromSeconds(5)), "a worker blocked behind the save in flight");
 
 		release.Set();
-		await saver.WaitAsync(TimeSpan.FromSeconds(5));
+		await saver.TryWaitAsync(TimeSpan.FromSeconds(5));
 		Assert.Equal(1, runs);
 		Assert.Equal(4, skipped);
 	}

@@ -6,7 +6,7 @@
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //     VideoDuplicateFinder is distributed in the hope that it will be useful,
-//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     but WITHOUT ANY WARRANTY without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU Affero General Public License for more details.
 //     You should have received a copy of the GNU Affero General Public License
@@ -35,20 +35,22 @@ public class PauseTokenSourceTests {
 		using var cts = new CancellationTokenSource();
 
 		var worker = Task.Run(() => pts.TryWaitWhilePaused(cts.Token));
-		Assert.NotSame(worker, await Task.WhenAny(worker, Task.Delay(150))); // parked at the gate
+		Assert.False(await worker.TryWaitAsync(TimeSpan.FromMilliseconds(150))); // parked at the gate
 
 		cts.Cancel();
-		Assert.False(await worker.WaitAsync(TimeSpan.FromSeconds(10)));
+		Assert.True(await worker.TryWaitAsync(TimeSpan.FromSeconds(10)), "worker did not unwind after cancel");
+		Assert.False(await worker);
 	}
 
 	[Fact]
 	public async Task TryWait_ResumedWhilePaused_ReturnsTrue() {
 		var pts = new PauseTokenSource { IsPaused = true };
 		var worker = Task.Run(() => pts.TryWaitWhilePaused(CancellationToken.None));
-		Assert.NotSame(worker, await Task.WhenAny(worker, Task.Delay(150)));
+		Assert.False(await worker.TryWaitAsync(TimeSpan.FromMilliseconds(150)));
 
 		pts.IsPaused = false;
-		Assert.True(await worker.WaitAsync(TimeSpan.FromSeconds(10)));
+		Assert.True(await worker.TryWaitAsync(TimeSpan.FromSeconds(10)));
+		Assert.True(await worker);
 	}
 
 	[Fact]
