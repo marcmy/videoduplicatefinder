@@ -10,7 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="10.0.1" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <!-- Full package (not .Managed): native onnxruntime for AI tests without the
          on-demand download. Version must match VDF.Core's .Managed reference. -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" />
