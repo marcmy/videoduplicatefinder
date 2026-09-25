@@ -24,9 +24,9 @@ updates:
     # directly, so keep the managed wrapper and test runtime on the 1.23.x line.
     ignore:
       - dependency-name: "Microsoft.ML.OnnxRuntime"
-        versions: ["[1.24.0,)"]
+        versions: [">= 1.24.0"]
       - dependency-name: "Microsoft.ML.OnnxRuntime.Managed"
-        versions: ["[1.24.0,)"]
+        versions: [">= 1.24.0"]
 
   - package-ecosystem: "docker"
     directories:
