@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="10.0.1" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <!-- Full package (not .Managed): brings the native onnxruntime library into the
          test output so OnnxEmbedder tests run without the on-demand download. The
          version must match VDF.Core's Microsoft.ML.OnnxRuntime.Managed reference. -->
