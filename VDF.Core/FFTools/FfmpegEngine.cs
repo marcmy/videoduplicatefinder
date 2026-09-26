@@ -935,7 +935,7 @@ namespace VDF.Core.FFTools {
 					AVPixelFormat destinationPixelFrmt = isGrayByte ? AVPixelFormat.AV_PIX_FMT_GRAY8 : AVPixelFormat.AV_PIX_FMT_YUVJ420P;
 
 					phaseSw.Restart();
-					using var vfc = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, destinationPixelFrmt, isGrayByte ? VideoFrameConverter.ScaleQuality.Bicubic : VideoFrameConverter.ScaleQuality.Bicubic, false);
+					using var vfc = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, destinationPixelFrmt, VideoFrameConverter.ScaleQuality.Bicubic, false);
 					AVFrame convertedFrame = vfc.Convert(srcFrame);
 					convertMs = phaseSw.ElapsedMilliseconds;
 
