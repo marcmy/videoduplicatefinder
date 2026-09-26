@@ -90,6 +90,11 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			ffmpeg.avcodec_open2(_pCodecContext, codec, null).ThrowExceptionIfError("avcodec_open2");
 
 			CodecName = ffmpeg.avcodec_get_name(codec->id);
+			AVCodecParameters* codecpar = _pFormatContext->streams[_streamIndex]->codecpar;
+			AVPacketSideData* matrixSideData = ffmpeg.av_packet_side_data_get(codecpar->coded_side_data, codecpar->nb_coded_side_data,
+				AVPacketSideDataType.AV_PKT_DATA_DISPLAYMATRIX);
+			if (matrixSideData != null && matrixSideData->size >= 9 * sizeof(int))
+				StreamOrientation = FrameOrientation.FromDisplayMatrix(new ReadOnlySpan<int>(matrixSideData->data, 9));
 			FrameSize = new Size(_pCodecContext->width, _pCodecContext->height);
 			if (FrameSize.Width <= 0 || FrameSize.Height <= 0)
 				throw new FFInvalidExitCodeException($"Invalid frame dimensions {FrameSize.Width}x{FrameSize.Height}.");
@@ -111,6 +116,14 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		public string CodecName { get; }
+		public FrameOrientation StreamOrientation { get; }
+
+		public FrameOrientation GetOrientation(AVFrame frame) {
+			AVFrameSideData* sideData = ffmpeg.av_frame_get_side_data(&frame, AVFrameSideDataType.AV_FRAME_DATA_DISPLAYMATRIX);
+			if (sideData != null && sideData->size >= 9 * sizeof(int))
+				return FrameOrientation.FromDisplayMatrix(new ReadOnlySpan<int>(sideData->data, 9));
+			return StreamOrientation;
+		}
 		public Size FrameSize { get; }
 		public AVPixelFormat PixelFormat { get; }
 		public bool IsHardwareDecode { get; }

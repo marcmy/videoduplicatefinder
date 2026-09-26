@@ -65,6 +65,7 @@ These are not optional fork features. They are upstream contracts that must rema
 | Tiled Apple HEIF/HEIC stream groups are refused by the single-stream native decoder and routed through FFmpeg's assembled `[0:g:0]` graph | PARITY BRIDGE | `FfmpegEngine.UpstreamCompat.cs`, native refusal sites, AI/process handling. |
 | Gray + AI process fallback can derive both outputs from one decode | PARITY BRIDGE, HARDENED | `FfmpegEngine.AiProcessCombined.cs`. |
 | Anamorphic/SAR metadata survives hardware transfer and display thumbnails use display aspect | UPSTREAM-OWNED semantics | Inherited from upstream and preserved by custom decoder paths. |
+| Rotation/display-matrix metadata is applied like FFmpeg autorotate for native gray hashes, AI frames, partial-clip samples, stills, and thumbnails | PARITY BRIDGE | Upstream `4f86fc9` / #910 semantics adapted into the custom `VideoStreamDecoder`, D3D11 gray path, and perf extraction helpers. |
 
 `FfmpegEngine.UpstreamCompat.cs` intentionally contains two pure helper seams whose production equivalents differ in perf:
 

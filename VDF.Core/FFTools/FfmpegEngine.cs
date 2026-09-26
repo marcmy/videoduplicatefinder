@@ -206,13 +206,15 @@ namespace VDF.Core.FFTools {
 		}
 
 		sealed class PendingD3D11GrayByteResult {
-			public PendingD3D11GrayByteResult(GrayByteRequest request, D3D11VideoProcessorGrayByteScaler.PendingDownload pendingDownload) {
+			public PendingD3D11GrayByteResult(GrayByteRequest request, D3D11VideoProcessorGrayByteScaler.PendingDownload pendingDownload, FrameOrientation orientation) {
 				Request = request;
 				PendingDownload = pendingDownload;
+				Orientation = orientation;
 			}
 
 			public GrayByteRequest Request { get; }
 			public D3D11VideoProcessorGrayByteScaler.PendingDownload PendingDownload { get; }
+			public FrameOrientation Orientation { get; }
 		}
 
 		sealed class SemaphoreLease : IDisposable {
@@ -257,6 +259,30 @@ namespace VDF.Core.FFTools {
 
 		static unsafe byte[] ExtractGray32FromFrame(AVFrame convertedFrame) =>
 			ExtractGrayFrameFromFrame(convertedFrame, 32);
+
+		static unsafe AVFrame* TurnYuv420Frame(AVFrame source, FrameOrientation orientation) {
+			AVFrame* turned = ffmpeg.av_frame_alloc();
+			if (turned == null)
+				throw new FFInvalidExitCodeException("Failed to allocate AVFrame.");
+			try {
+				var (width, height) = orientation.Apply(source.width, source.height);
+				turned->format = source.format;
+				turned->width = width;
+				turned->height = height;
+				ffmpeg.av_frame_get_buffer(turned, 0).ThrowExceptionIfError();
+				for (uint plane = 0; plane < 3; plane++) {
+					int planeWidth = plane == 0 ? source.width : (source.width + 1) / 2;
+					int planeHeight = plane == 0 ? source.height : (source.height + 1) / 2;
+					orientation.ApplyPlane(source.data[plane], source.linesize[plane], planeWidth, planeHeight, 1,
+						turned->data[plane], turned->linesize[plane]);
+				}
+				return turned;
+			}
+			catch {
+				ffmpeg.av_frame_free(&turned);
+				throw;
+			}
+		}
 
 		static List<GrayByteRequest> GetMissingGrayByteRequests(FileEntry videoFile, List<float> positions, double maxSamplingDurationSeconds) {
 			List<GrayByteRequest> requests = new();
@@ -305,13 +331,14 @@ namespace VDF.Core.FFTools {
 			convertMs = phaseSw.ElapsedMilliseconds;
 
 			phaseSw.Restart();
-			byte[] outBuf = ExtractGrayFrameFromFrame(convertedFrame, sideLength);
+			byte[] outBuf = vsd.GetOrientation(srcFrame).Apply(
+				ExtractGrayFrameFromFrame(convertedFrame, sideLength), sideLength, sideLength, 1);
 			copyMs = phaseSw.ElapsedMilliseconds;
 
 			return outBuf;
 		}
 
-		static unsafe byte[] ExtractJpegFromFrame(VideoStreamDecoder vsd, AVFrame srcFrame, int maxWidth, int jpegQuality, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, out long convertMs, out long copyMs) {
+		static unsafe byte[] ExtractJpegFromFrame(VideoStreamDecoder vsd, AVFrame srcFrame, int maxWidth, int jpegQuality, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref Size converterDestinationSize, ref AVPixelFormat converterSourcePixelFormat, out long convertMs, out long copyMs) {
 			Size sourceSize = new(srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width, srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
 			if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
 				throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}.");
@@ -325,13 +352,19 @@ namespace VDF.Core.FFTools {
 				sampleAspectRatio = vsd.StreamSampleAspectRatio;
 			Size displaySize = GetDisplaySizeForSampleAspectRatio(
 				sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
+			FrameOrientation orientation = vsd.GetOrientation(srcFrame);
+			var (uprightWidth, uprightHeight) = orientation.Apply(displaySize.Width, displaySize.Height);
+			Size uprightSize = new(uprightWidth, uprightHeight);
 			Size destinationSize = maxWidth == 0
-				? displaySize
-				: ScaleToMaxWidth(displaySize, maxWidth > 0 ? maxWidth : 100);
-			if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSourcePixelFormat) {
+				? uprightSize
+				: ScaleToMaxWidth(uprightSize, maxWidth > 0 ? maxWidth : 100);
+			if (orientation.Transpose)
+				destinationSize = new Size(destinationSize.Height, destinationSize.Width);
+			if (converter == null || sourceSize != converterSourceSize || destinationSize != converterDestinationSize || srcPixFmt != converterSourcePixelFormat) {
 				converter?.Dispose();
 				converter = new VideoFrameConverter(sourceSize, srcPixFmt, destinationSize, AVPixelFormat.AV_PIX_FMT_YUVJ420P, VideoFrameConverter.ScaleQuality.Bicubic, false);
 				converterSourceSize = sourceSize;
+				converterDestinationSize = destinationSize;
 				converterSourcePixelFormat = srcPixFmt;
 			}
 
@@ -340,7 +373,20 @@ namespace VDF.Core.FFTools {
 			convertMs = phaseSw.ElapsedMilliseconds;
 
 			phaseSw.Restart();
-			byte[] jpeg = JpegFrameEncoder.Encode(convertedFrame, jpegQuality > 0 ? jpegQuality : DefaultJpegQuality);
+			int quality = jpegQuality > 0 ? jpegQuality : DefaultJpegQuality;
+			byte[] jpeg;
+			if (orientation.IsIdentity) {
+				jpeg = JpegFrameEncoder.Encode(convertedFrame, quality);
+			}
+			else {
+				AVFrame* upright = TurnYuv420Frame(convertedFrame, orientation);
+				try {
+					jpeg = JpegFrameEncoder.Encode(*upright, quality);
+				}
+				finally {
+					ffmpeg.av_frame_free(&upright);
+				}
+			}
 			copyMs = phaseSw.ElapsedMilliseconds;
 			return jpeg;
 		}
@@ -366,7 +412,8 @@ namespace VDF.Core.FFTools {
 
 			timing.SeekMs += decodeTiming.SeekMs;
 			timing.DecodeMs += decodeTiming.DecodeMs;
-			byte[] data = scaler.ScaleToGray32(srcFrame, out D3D11GrayByteScaleTiming scaleTiming);
+			byte[] data = vsd.GetOrientation(srcFrame).Apply(
+				scaler.ScaleToGray32(srcFrame, out D3D11GrayByteScaleTiming scaleTiming), 32, 32, 1);
 			timing.FilterMs += scaleTiming.FilterMs;
 			timing.TinyConvertMs += scaleTiming.TinyConvertMs;
 			timing.MapMs += scaleTiming.MapMs;
@@ -384,7 +431,8 @@ namespace VDF.Core.FFTools {
 			ref AVPixelFormat converterSourcePixelFormat,
 			NativeGrayByteTiming timing) {
 			if (VideoStreamDecoder.IsHardwareFrame(frame)) {
-				byte[] data = scaler.ScaleToGray32(frame, out D3D11GrayByteScaleTiming scaleTiming);
+				byte[] data = vsd.GetOrientation(frame).Apply(
+					scaler.ScaleToGray32(frame, out D3D11GrayByteScaleTiming scaleTiming), 32, 32, 1);
 				timing.FilterMs += scaleTiming.FilterMs;
 				timing.TinyConvertMs += scaleTiming.TinyConvertMs;
 				timing.MapMs += scaleTiming.MapMs;
@@ -486,7 +534,8 @@ namespace VDF.Core.FFTools {
 		static void FlushOldestPendingD3D11GrayBytes(D3D11VideoProcessorGrayByteScaler scaler, List<PendingD3D11GrayByteResult> pendingDownloads, List<GrayByteResult> results, NativeGrayByteTiming timing) {
 			PendingD3D11GrayByteResult pending = pendingDownloads[0];
 			pendingDownloads.RemoveAt(0);
-			byte[] data = scaler.DownloadGray32(pending.PendingDownload, out D3D11GrayByteScaleTiming scaleTiming);
+			byte[] data = pending.Orientation.Apply(
+				scaler.DownloadGray32(pending.PendingDownload, out D3D11GrayByteScaleTiming scaleTiming), 32, 32, 1);
 			AccumulateD3D11ScaleTiming(scaleTiming, timing);
 			results.Add(CreateGrayByteResult(pending.Request, data));
 		}
@@ -521,7 +570,8 @@ namespace VDF.Core.FFTools {
 				d3d11Scaler ??= new D3D11VideoProcessorGrayByteScaler();
 				if (pendingDownloads.Count >= d3d11Scaler.PendingDownloadCapacity)
 					FlushOldestPendingD3D11GrayBytes(d3d11Scaler, pendingDownloads, results, timing);
-				pendingDownloads.Add(new PendingD3D11GrayByteResult(request, d3d11Scaler.EnqueueScaleToGray32(frame)));
+				pendingDownloads.Add(new PendingD3D11GrayByteResult(
+					request, d3d11Scaler.EnqueueScaleToGray32(frame), vsd.GetOrientation(frame)));
 				return;
 			}
 
@@ -740,7 +790,8 @@ namespace VDF.Core.FFTools {
 								converterSrcFmt = srcPixFmt;
 							}
 
-							frames[i] = ExtractGray32FromFrame(converter.Convert(srcFrame));
+							frames[i] = vsd.GetOrientation(srcFrame).Apply(
+								ExtractGray32FromFrame(converter.Convert(srcFrame)), N, N, 1);
 						}
 					}
 					finally {
@@ -864,15 +915,22 @@ namespace VDF.Core.FFTools {
 					AVRational sampleAspectRatio = vsd.StreamSampleAspectRatio;
 					if (sampleAspectRatio.num <= 0 || sampleAspectRatio.den <= 0)
 						sampleAspectRatio = srcFrame.sample_aspect_ratio;
+					FrameOrientation orientation = vsd.GetOrientation(srcFrame);
 					Size displaySize = isGrayByte
 						? sourceSize
 						: GetDisplaySizeForSampleAspectRatio(
 							sourceSize, sampleAspectRatio.num, sampleAspectRatio.den);
+					if (!isGrayByte) {
+						var (uprightWidth, uprightHeight) = orientation.Apply(displaySize.Width, displaySize.Height);
+						displaySize = new Size(uprightWidth, uprightHeight);
+					}
 					Size destinationSize = isGrayByte
 						? new Size(graySideLength, graySideLength)
 						: settings.Fullsize == 1
 							? displaySize
 							: ScaleToMaxWidth(displaySize, settings.MaxWidth > 0 ? settings.MaxWidth : 100);
+					if (!isGrayByte && orientation.Transpose)
+						destinationSize = new Size(destinationSize.Height, destinationSize.Width);
 
 					AVPixelFormat destinationPixelFrmt = isGrayByte ? AVPixelFormat.AV_PIX_FMT_GRAY8 : AVPixelFormat.AV_PIX_FMT_YUVJ420P;
 
@@ -884,9 +942,11 @@ namespace VDF.Core.FFTools {
 					phaseSw.Restart();
 					if (isGrayByte) {
 						byte[] outBuf =
-							ExtractGrayFrameFromFrame(
-								convertedFrame,
-								graySideLength);
+							orientation.Apply(
+								ExtractGrayFrameFromFrame(convertedFrame, graySideLength),
+								graySideLength,
+								graySideLength,
+								1);
 						copyMs = phaseSw.ElapsedMilliseconds;
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, true, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
@@ -900,8 +960,20 @@ namespace VDF.Core.FFTools {
 					else {
 						if (convertedFrame.width <= 0 || convertedFrame.height <= 0)
 							throw new Exception($"Invalid converted frame dimensions {convertedFrame.width}x{convertedFrame.height}.");
-						byte[] jpeg = JpegFrameEncoder.Encode(convertedFrame,
-							settings.JpegQuality > 0 ? settings.JpegQuality : DefaultJpegQuality);
+						int quality = settings.JpegQuality > 0 ? settings.JpegQuality : DefaultJpegQuality;
+						byte[] jpeg;
+						if (orientation.IsIdentity) {
+							jpeg = JpegFrameEncoder.Encode(convertedFrame, quality);
+						}
+						else {
+							AVFrame* upright = TurnYuv420Frame(convertedFrame, orientation);
+							try {
+								jpeg = JpegFrameEncoder.Encode(*upright, quality);
+							}
+							finally {
+								ffmpeg.av_frame_free(&upright);
+							}
+						}
 						copyMs = phaseSw.ElapsedMilliseconds;
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
 							LogNativeTiming(settings.File, settings.Position, false, vsd.IsHardwareDecode, hardwarePolicy, openMs, seekMs, decodeMs, transferMs, hardwareTransfers, convertMs, copyMs, totalSw.ElapsedMilliseconds);
@@ -1460,6 +1532,7 @@ namespace VDF.Core.FFTools {
 				long openMs = openSw.ElapsedMilliseconds;
 				VideoFrameConverter? converter = null;
 				Size converterSourceSize = default;
+				Size converterDestinationSize = default;
 				AVPixelFormat converterSourcePixelFormat = AVPixelFormat.AV_PIX_FMT_NONE;
 				bool anySuccess = false;
 				try {
@@ -1472,7 +1545,7 @@ namespace VDF.Core.FFTools {
 							continue;
 						}
 
-						byte[] jpeg = ExtractJpegFromFrame(vsd, srcFrame, maxWidth, jpegQuality, ref converter, ref converterSourceSize, ref converterSourcePixelFormat, out long convertMs, out long copyMs);
+						byte[] jpeg = ExtractJpegFromFrame(vsd, srcFrame, maxWidth, jpegQuality, ref converter, ref converterSourceSize, ref converterDestinationSize, ref converterSourcePixelFormat, out long convertMs, out long copyMs);
 						frames[i] = jpeg;
 						anySuccess = true;
 						if (ShouldLogNativeSuccessTiming(extendedLogging))
@@ -1596,7 +1669,8 @@ namespace VDF.Core.FFTools {
 					new Size(N, N), AVPixelFormat.AV_PIX_FMT_GRAY8,
 					VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
 				AVFrame convertedFrame = converter.Convert(srcFrame);
-				grayBytes = ExtractGray32FromFrame(convertedFrame);
+				grayBytes = vsd.GetOrientation(srcFrame).Apply(
+					ExtractGray32FromFrame(convertedFrame), N, N, 1);
 				width = sourceSize.Width;
 				height = sourceSize.Height;
 				RecordNativeSuccess();
