@@ -242,6 +242,8 @@ namespace VDF.Core.FFTools {
 						if (!needGray && !needEmbedding)
 							return;
 
+						FrameOrientation orientation = vsd.GetOrientation(frame);
+
 						Size sourceSize = new(
 							frame.width > 0
 								? frame.width
@@ -282,9 +284,11 @@ namespace VDF.Core.FFTools {
 								AVPixelFormat.AV_PIX_FMT_GRAY8,
 								VideoFrameConverter.ScaleQuality.FastBilinear,
 								false);
-							byte[] gray =
-								ExtractGray32FromFrame(
-									grayConverter.Convert(frame));
+							byte[] gray = orientation.Apply(
+								ExtractGray32FromFrame(grayConverter.Convert(frame)),
+								32,
+								32,
+								1);
 							videoFile.grayBytes[request.Index] = gray;
 							videoFile.PHashes[request.Index] =
 								pHash.PerceptualHash
@@ -301,10 +305,13 @@ namespace VDF.Core.FFTools {
 								AVPixelFormat.AV_PIX_FMT_RGB24,
 								VideoFrameConverter.ScaleQuality.Bicubic,
 								false);
-							byte[] rgb =
+							byte[] rgb = orientation.Apply(
 								ExtractPackedRgbFrame(
 									rgbConverter.Convert(frame),
-									side);
+									side),
+								side,
+								side,
+								3);
 							embeddingSink.SubmitFrame(
 								videoFile,
 								request.Index,
