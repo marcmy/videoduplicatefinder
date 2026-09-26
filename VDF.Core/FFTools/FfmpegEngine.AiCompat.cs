@@ -282,7 +282,7 @@ namespace VDF.Core.FFTools {
 								sourcePixelFormat,
 								new Size(32, 32),
 								AVPixelFormat.AV_PIX_FMT_GRAY8,
-								VideoFrameConverter.ScaleQuality.FastBilinear,
+								VideoFrameConverter.ScaleQuality.Bicubic,
 								false);
 							byte[] gray = orientation.Apply(
 								ExtractGray32FromFrame(grayConverter.Convert(frame)),
