@@ -53,6 +53,15 @@ jobs:
           git checkout "$before" -- .github/workflows
           git add .github/workflows
 
+          # Upstream removed this old misplaced Docker workflow. It is outside
+          # .github/workflows and still targets a retired perf branch, so accept
+          # the upstream deletion instead of treating it as a source conflict.
+          if git diff --name-only --diff-filter=U -- .github/docker.yml | grep -qx '.github/docker.yml'; then
+            if ! git cat-file -e upstream/master:.github/docker.yml 2>/dev/null; then
+              git rm -f .github/docker.yml
+            fi
+          fi
+
           if [ "$merge_status" -ne 0 ]; then
             echo "Merge reported conflicts. Fork-owned workflows were restored; checking for remaining source conflicts."
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
