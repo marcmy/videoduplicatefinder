@@ -2,6 +2,15 @@ name: Build 4.1 performance release
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - perf/4.1-native-hwaccel
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'PERF_BRANCH.md'
+      - 'FORK_DIFFERENCES.md'
+      - 'VDF.Benchmarks/README.md'
   push:
     branches:
       - perf/4.1-native-hwaccel
