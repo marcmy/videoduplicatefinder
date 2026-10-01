@@ -44,8 +44,8 @@
     <InternalsVisibleTo Include="VDF.GUI.HeadlessTests" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="ActiproSoftware.Controls.Avalonia" Version="26.1.1" />
-    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="ActiproSoftware.Controls.Avalonia" Version="26.2.0" />
+    <PackageReference Include="Avalonia" Version="12.1.2" />
 <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.5" />
     <PackageReference Include="DynamicExpresso.Core" Version="2.19.3" />
