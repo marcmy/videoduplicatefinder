@@ -45,9 +45,9 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="ActiproSoftware.Controls.Avalonia" Version="26.2.0" />
-    <PackageReference Include="Avalonia" Version="12.1.3" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.1.3" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.3" />
+    <PackageReference Include="Avalonia" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
     <PackageReference Include="DynamicExpresso.Core" Version="2.19.6" />
     <PackageReference Include="ReactiveUI.Avalonia" Version="12.0.3" />
     <!-- SkiaSharp is pinned ABOVE Avalonia.Skia's transitive 3.119.4 on purpose. 3.x SKStream.Read has no
