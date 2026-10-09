@@ -49,7 +49,8 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.3" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.3" />
     <PackageReference Include="DynamicExpresso.Core" Version="2.19.3" />
-    <PackageReference Include="ReactiveUI.Avalonia" Version="12.0.3" />
+    <!-- Keep the System.Reactive (Rx) API used by view models and commands. -->
+    <PackageReference Include="ReactiveUI.Avalonia.Reactive" Version="12.1.6" />
     <!-- SkiaSharp is pinned ABOVE Avalonia.Skia's transitive 3.119.4 on purpose. 3.x SKStream.Read has no
          GC.KeepAlive, so while Avalonia reads a whole font file for a synthetic bold/oblique face the
          finalizer can destroy the native stream mid-copy (AV in libSkiaSharp, #902 / #830). 4.x keeps the
