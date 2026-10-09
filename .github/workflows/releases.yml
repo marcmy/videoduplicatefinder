@@ -5,12 +5,14 @@ on:
   pull_request:
     branches:
       - perf/4.1-native-hwaccel
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
-      - 'PERF_BRANCH.md'
-      - 'FORK_DIFFERENCES.md'
-      - 'VDF.Benchmarks/README.md'
+    # Expensive performance benchmarks run only for performance-engine changes.
+    # Dependency-only PRs still receive the regular Windows 64-bit build/tests.
+    paths:
+      - 'VDF.Core/FFTools/**'
+      - 'VDF.Core/Settings.cs'
+      - 'VDF.Benchmarks/**'
+      - '.github/scripts/perf-regression-gate.ps1'
+      - '.github/workflows/releases.yml'
   push:
     branches:
       - perf/4.1-native-hwaccel
@@ -26,7 +28,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vdf-4.1-performance-release
+  group: vdf-4.1-performance-release-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
