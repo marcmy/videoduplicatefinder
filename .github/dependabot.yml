@@ -27,6 +27,11 @@ updates:
         versions: [">= 1.24.0"]
       - dependency-name: "Microsoft.ML.OnnxRuntime.Managed"
         versions: [">= 1.24.0"]
+      # ReactiveUI 12.1+ splits the Rx API into separate namespaces/packages.
+      # Defer minor/major updates until view-model and binding migration is tested.
+      # Allow 12.0.x patch updates to continue.
+      - dependency-name: "ReactiveUI.Avalonia"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: "docker"
     directories:
