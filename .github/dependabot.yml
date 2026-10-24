@@ -15,10 +15,10 @@ updates:
       - "/VDF.Web.Tests"
       - "/VDF.Web"
     schedule:
-      interval: "weekly"
-      day: "thursday"
-      time: "18:00"
+      interval: "daily"
+      time: "12:00"
       timezone: "America/New_York"
+    open-pull-requests-limit: 10
     # ONNX Runtime 1.24+ no longer ships osx-x86_64 release archives.
     # VDF still targets Intel macOS, and AiComponents downloads those archives
     # directly, so keep the managed wrapper and test runtime on the 1.23.x line.
@@ -38,23 +38,23 @@ updates:
       - "/VDF.CLI"
       - "/VDF.Web"
     schedule:
-      interval: "weekly"
-      day: "thursday"
-      time: "18:00"
+      interval: "daily"
+      time: "12:00"
       timezone: "America/New_York"
+    open-pull-requests-limit: 10
 
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "thursday"
-      time: "18:00"
+      interval: "daily"
+      time: "12:00"
       timezone: "America/New_York"
+    open-pull-requests-limit: 10
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "06:00"
+      interval: "daily"
+      time: "12:00"
       timezone: "America/New_York"
+    open-pull-requests-limit: 10
