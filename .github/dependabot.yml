@@ -9,6 +9,7 @@ updates:
       - "/VDF.Core.Tests"
       - "/VDF.Core"
       - "/VDF.GUI.Tests"
+      - "/VDF.GUI.HeadlessTests"
       - "/VDF.GUI"
       - "/VDF.IntegrationTests"
       - "/VDF.TestSupport"
