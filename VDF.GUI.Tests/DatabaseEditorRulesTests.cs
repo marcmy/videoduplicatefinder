@@ -17,12 +17,14 @@
 using VDF.Core;
 using VDF.Core.Utils;
 using VDF.GUI.Data;
+using VDF.TestSupport;
 
 namespace VDF.GUI.Tests {
 	public class DatabaseEditorRulesTests {
 
 		static FileEntry Entry(string path, EntryFlags flags = 0, long size = 100,
 			DateTime? created = null, TimeSpan? duration = null, long videoBitRate = 0) {
+			path = TestPaths.Native(path);
 			var entry = new FileEntry {
 				Folder = System.IO.Path.GetDirectoryName(path) ?? string.Empty,
 				FileSize = size,
@@ -55,7 +57,7 @@ namespace VDF.GUI.Tests {
 			Assert.True(DatabaseEditorRules.Matches(excluded, new DbFilterState { Flag = EntryFlags.ManuallyExcluded }));
 			Assert.False(DatabaseEditorRules.Matches(video, new DbFilterState { Flag = EntryFlags.ManuallyExcluded }));
 			Assert.True(DatabaseEditorRules.Matches(video, new DbFilterState { Search = "CLIP" })); // case-insensitive
-			Assert.False(DatabaseEditorRules.Matches(video, new DbFilterState { Search = @"D:\b" }));
+			Assert.False(DatabaseEditorRules.Matches(video, new DbFilterState { Search = TestPaths.Native(@"D:\b") }));
 			// combined: errors-only AND search must both hold
 			Assert.False(DatabaseEditorRules.Matches(broken, new DbFilterState { ErrorsOnly = true, Search = "photo" }));
 		}
@@ -74,7 +76,7 @@ namespace VDF.GUI.Tests {
 				Entry(@"D:\c.mp4", size: 900),
 			};
 			entries.Sort(DatabaseEditorRules.BuildComparison(DbSortMode.Size, null));
-			Assert.Equal(new[] { @"D:\c.mp4", @"D:\a.mp4", @"D:\b.mp4" }, entries.Select(e => e.Path));
+			Assert.Equal(new[] { @"D:\c.mp4", @"D:\a.mp4", @"D:\b.mp4" }.Select(TestPaths.Native), entries.Select(e => e.Path));
 		}
 
 		[Fact]
@@ -85,7 +87,7 @@ namespace VDF.GUI.Tests {
 				Entry(@"D:\flagged_big.mp4", EntryFlags.TooDark, size: 500),
 			};
 			entries.Sort(DatabaseEditorRules.BuildComparison(DbSortMode.Size, EntryFlags.TooDark));
-			Assert.Equal(new[] { @"D:\flagged_big.mp4", @"D:\flagged_small.mp4", @"D:\big.mp4" },
+			Assert.Equal(new[] { @"D:\flagged_big.mp4", @"D:\flagged_small.mp4", @"D:\big.mp4" }.Select(TestPaths.Native),
 				entries.Select(e => e.Path));
 		}
 
@@ -97,8 +99,8 @@ namespace VDF.GUI.Tests {
 				Entry(@"D:\unknown.mp4"),
 			};
 			entries.Sort(DatabaseEditorRules.BuildComparison(DbSortMode.Bitrate, null));
-			Assert.Equal(@"D:\high.mp4", entries[0].Path);
-			Assert.Equal(@"D:\unknown.mp4", entries[2].Path);
+			Assert.Equal(TestPaths.Native(@"D:\high.mp4"), entries[0].Path);
+			Assert.Equal(TestPaths.Native(@"D:\unknown.mp4"), entries[2].Path);
 			Assert.Equal(9000m, DatabaseEditorRules.GetBitRate(entries[0]));
 		}
 

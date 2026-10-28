@@ -22,5 +22,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VDF.GUI\VDF.GUI.csproj" />
+    <ProjectReference Include="..\VDF.TestSupport\VDF.TestSupport.csproj" />
   </ItemGroup>
 </Project>

@@ -16,6 +16,7 @@
 
 using VDF.Core;
 using VDF.Core.Utils;
+using VDF.TestSupport;
 
 namespace VDF.Core.Tests;
 
@@ -23,14 +24,14 @@ public class ClearCachedMediaDataTests {
 
 	static FileEntry Populated() {
 		var entry = new FileEntry {
-			Folder = @"D:\media",
+			Folder = TestPaths.Native(@"D:\media"),
 			mediaInfo = new MediaInfo { Duration = TimeSpan.FromMinutes(2), Streams = Array.Empty<MediaInfo.StreamInfo>() },
 			FileSize = 1234,
 			DateCreated = new DateTime(2024, 1, 1),
 			OsHash = "abc123",
 			AudioFingerprint = new uint[] { 1, 2, 3 },
 		};
-		entry.Path = @"D:\media\clip.mp4";
+		entry.Path = TestPaths.Native(@"D:\media\clip.mp4");
 		entry.grayBytes[0.25] = new byte[] { 1, 2 };
 		entry.PHashes[0.25] = 42UL;
 		entry.Flags.Set(EntryFlags.ThumbnailError | EntryFlags.MetadataError | EntryFlags.TooDark |
@@ -59,7 +60,7 @@ public class ClearCachedMediaDataTests {
 		entry.Flags.Set(EntryFlags.ManuallyExcluded | EntryFlags.IsImage | EntryFlags.ReparsePoint | EntryFlags.ReparsePointChecked);
 		entry.ClearCachedMediaData();
 
-		Assert.Equal(@"D:\media\clip.mp4", entry.Path);
+		Assert.Equal(TestPaths.Native(@"D:\media\clip.mp4"), entry.Path);
 		Assert.Equal(1234, entry.FileSize);
 		Assert.Equal("abc123", entry.OsHash);
 		Assert.True(entry.IsManuallyExcluded);

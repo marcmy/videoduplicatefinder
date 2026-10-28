@@ -25,6 +25,7 @@ using VDF.GUI.Controls;
 using VDF.GUI.Data;
 using VDF.GUI.ViewModels;
 using VDF.GUI.Views;
+using VDF.TestSupport;
 
 namespace VDF.GUI.HeadlessTests;
 
@@ -57,7 +58,7 @@ public class ComparerKeyboardTests {
 		// No thumbnail timestamps: loading yields nothing without ever starting FFmpeg.
 		var items = new[] { "left.mp4", "right.mp4" }
 			.Select(name => new LargeThumbnailDuplicateItem(new DuplicateItemVM(new DuplicateItem {
-				Path = $@"Z:\does\not\exist\{name}", GroupId = group, Similarity = 98.4f,
+				Path = TestPaths.Native($@"Z:\does\not\exist\{name}"), GroupId = group, Similarity = 98.4f,
 			})))
 			.ToList();
 		var comparer = new ThumbnailComparer(items);

@@ -16,6 +16,7 @@
 
 using VDF.Core.ViewModels;
 using VDF.GUI.ViewModels;
+using VDF.TestSupport;
 
 namespace VDF.GUI.HeadlessTests;
 
@@ -34,6 +35,7 @@ static class ResultsFixture {
 	}
 
 	static void Add(MainWindowVM vm, string path, Guid group, float similarity, long size, int width, bool best) {
+		path = TestPaths.Native(path);
 		int height = width * 9 / 16;
 		vm.Duplicates.Add(new DuplicateItemVM(new DuplicateItem {
 			Path = path,
