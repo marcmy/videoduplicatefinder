@@ -26,13 +26,13 @@ jobs:
     - name: Build Web
       run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
     - name: Run Unit Tests
-      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q
+      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run CLI Tests
-      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run GUI Tests
-      run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+      run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run Web Tests
-      run: dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q
+      run: dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Install FFmpeg
       run: choco install ffmpeg -y --no-progress
     - name: Run Integration Tests
