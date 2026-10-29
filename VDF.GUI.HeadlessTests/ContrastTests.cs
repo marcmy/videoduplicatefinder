@@ -270,6 +270,32 @@ public class ContrastTests {
 		}
 	});
 
+	// The fixture's files are on drives that a test machine may or may not have, so whether
+	// this badge was measured at all used to depend on the machine.
+	[Theory]
+	[InlineData("Dark")]
+	[InlineData("Light")]
+	[InlineData("HighContrastDark")]
+	[InlineData("HighContrastLight")]
+	public Task Results_TheOfflineBadge_IsReadable(string theme) => HeadlessUi.Run(() => {
+		bool highContrast = theme.StartsWith("HighContrast");
+		var variant = highContrast ? HighContrastVariant(theme) : theme == "Dark" ? ThemeVariant.Dark : ThemeVariant.Light;
+		var vm = ResultsFixture.CreatePopulatedViewModel(withOfflineFile: true);
+		var window = new Window { Width = 1300, Height = 950, RequestedThemeVariant = variant, Content = new DuplicateResultsView { DataContext = vm } };
+		window.Show();
+		HeadlessUi.Pump();
+		try {
+			Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), t => t.IsEffectivelyVisible && t.Text == App.Lang["DupList.Offline"]);
+
+			var failures = Measure(window, variant, highContrast ? Enhanced : null);
+			Assert.True(failures.Count == 0,
+				$"{failures.Count} kind(s) of text below the required contrast in the {theme} theme:\n  " + string.Join("\n  ", failures));
+		}
+		finally {
+			window.Close();
+		}
+	});
+
 	[Theory]
 	[InlineData("Dark")]
 	[InlineData("Light")]

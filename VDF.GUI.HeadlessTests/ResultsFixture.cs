@@ -16,12 +16,14 @@
 
 using VDF.Core.ViewModels;
 using VDF.GUI.ViewModels;
+using VDF.TestSupport;
 
 namespace VDF.GUI.HeadlessTests;
 
 /// <summary>A view model holding two duplicate groups of two videos each, list already built.</summary>
 static class ResultsFixture {
-	public static MainWindowVM CreatePopulatedViewModel() {
+	/// <param name="withOfflineFile">Adds a third file to the second group that shows as offline.</param>
+	public static MainWindowVM CreatePopulatedViewModel(bool withOfflineFile = false) {
 		var vm = new MainWindowVM();
 		var first = Guid.NewGuid();
 		var second = Guid.NewGuid();
@@ -29,11 +31,15 @@ static class ResultsFixture {
 		Add(vm, @"D:\Videos\Holiday\copy\beach_2019_final (1).mp4", first, 98.4f, 700_000_000, 1280, best: false);
 		Add(vm, @"E:\Archive\Old\wedding.mkv", second, 100f, 3_100_000_000, 3840, best: true);
 		Add(vm, @"E:\Archive\Old\wedding_small.mp4", second, 91.2f, 400_000_000, 854, best: false);
+		// A path without a root has no drive that could be ready, so it is offline on any machine.
+		if (withOfflineFile)
+			Add(vm, @"Unplugged\wedding_copy.mp4", second, 90.5f, 400_000_000, 854, best: false);
 		vm.RebuildResultsList();
 		return vm;
 	}
 
 	static void Add(MainWindowVM vm, string path, Guid group, float similarity, long size, int width, bool best) {
+		path = TestPaths.Native(path);
 		int height = width * 9 / 16;
 		vm.Duplicates.Add(new DuplicateItemVM(new DuplicateItem {
 			Path = path,

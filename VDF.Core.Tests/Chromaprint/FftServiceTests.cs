@@ -76,18 +76,13 @@ public class FftServiceTests {
 
 		FftService.Forward(re, im);
 
-		// Find the bin with maximum magnitude (excluding DC)
-		double maxMag = 0;
-		int maxBin = 0;
-		for (int k = 1; k < n; k++) {
+		// Both peaks have magnitude n/2. Picking "the" largest one left the tie to rounding
+		// (bin 13 won on Linux), so check every bin instead.
+		for (int k = 0; k < n; k++) {
 			double mag = Math.Sqrt(re[k] * re[k] + im[k] * im[k]);
-			if (mag > maxMag) {
-				maxMag = mag;
-				maxBin = k;
-			}
+			double expected = k == targetBin || k == n - targetBin ? n / 2.0 : 0.0;
+			Assert.True(Math.Abs(mag - expected) < 1e-9, $"|X[{k}]| = {mag}, expected {expected}");
 		}
-
-		Assert.Equal(targetBin, maxBin);
 	}
 
 	[Fact]

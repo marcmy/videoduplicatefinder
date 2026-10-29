@@ -18,10 +18,11 @@
 using VDF.Core.Utils;
 using VDF.Core.ViewModels;
 using VDF.GUI.ViewModels;
+using VDF.TestSupport;
 
 namespace VDF.GUI.Tests {
 	public class MetadataCompareVMTests {
-		static DuplicateItemVM Item(string name) => new() { ItemInfo = new DuplicateItem { Path = @"D:\clips\" + name } };
+		static DuplicateItemVM Item(string name) => new() { ItemInfo = new DuplicateItem { Path = TestPaths.Native(@"D:\clips\" + name) } };
 
 		static MetadataField C(string name, string value) => new(new(MetadataSectionKind.Container), name, value);
 		static MetadataField A(string name, string value) => new(new(MetadataSectionKind.Stream, 1, "audio"), name, value);

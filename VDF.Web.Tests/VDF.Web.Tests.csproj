@@ -22,5 +22,6 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\VDF.Web\VDF.Web.csproj" />
+    <ProjectReference Include="..\VDF.TestSupport\VDF.TestSupport.csproj" />
   </ItemGroup>
 </Project>

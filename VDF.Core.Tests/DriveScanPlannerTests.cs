@@ -16,6 +16,7 @@
 
 using System.Text.Json;
 using VDF.Core.Utils;
+using VDF.TestSupport;
 
 namespace VDF.Core.Tests;
 
@@ -128,16 +129,16 @@ public class DriveScanPlannerTests {
 	[Fact]
 	public void PartitionByDrive_GroupsCaseInsensitivelyAndKeepsStableOrder() {
 		var entries = new[] {
-			Entry(@"D:\videos\a.mp4", @"D:\videos"),
-			Entry(@"C:\clips\b.mp4", @"C:\clips"),
-			Entry(@"d:\videos\c.mp4", @"d:\videos"),
-			Entry(@"C:\other\d.mp4", @"C:\other"),
+			Entry(TestPaths.Native(@"D:\videos\a.mp4"), TestPaths.Native(@"D:\videos")),
+			Entry(TestPaths.Native(@"C:\clips\b.mp4"), TestPaths.Native(@"C:\clips")),
+			Entry(TestPaths.Native(@"d:\videos\c.mp4"), TestPaths.Native(@"d:\videos")),
+			Entry(TestPaths.Native(@"C:\other\d.mp4"), TestPaths.Native(@"C:\other")),
 		};
-		var groups = DriveScanPlanner.PartitionByDrive(entries, new[] { @"C:\", @"D:\" });
+		var groups = DriveScanPlanner.PartitionByDrive(entries, new[] { TestPaths.Native(@"C:\"), TestPaths.Native(@"D:\") });
 		Assert.Equal(2, groups.Count);
-		Assert.Equal(@"C:\", groups[0].Root);
+		Assert.Equal(TestPaths.Native(@"C:\"), groups[0].Root);
 		Assert.Equal(2, groups[0].Entries.Count);
-		Assert.Equal(@"D:\", groups[1].Root);
+		Assert.Equal(TestPaths.Native(@"D:\"), groups[1].Root);
 		Assert.Equal(2, groups[1].Entries.Count);
 	}
 
@@ -195,10 +196,10 @@ public class DriveScanPlannerTests {
 
 	[Fact]
 	public void Override_WinsAndSkipsTheProbe_KeyAndValueCaseInsensitive() {
-		var groups = new List<DriveScanGroup> { Group(@"D:\", DriveSpeedClass.Slow) };
+		var groups = new List<DriveScanGroup> { Group(TestPaths.Native(@"D:\"), DriveSpeedClass.Slow) };
 		bool probed = false;
 		DriveScanPlanner.ClassifyGroups(groups,
-			new Dictionary<string, string> { ["d:"] = "ssd" },
+			new Dictionary<string, string> { [TestPaths.Native("d:")] = "ssd" },
 			NoNetwork,
 			_ => { probed = true; return 20.0; });
 		Assert.Equal(DriveSpeedClass.Fast, groups[0].SpeedClass);

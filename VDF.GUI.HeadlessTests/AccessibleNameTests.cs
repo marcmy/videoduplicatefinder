@@ -20,6 +20,7 @@ using Avalonia.LogicalTree;
 using Avalonia.VisualTree;
 using VDF.GUI.ViewModels;
 using VDF.GUI.Views;
+using VDF.TestSupport;
 
 namespace VDF.GUI.HeadlessTests;
 
@@ -150,7 +151,7 @@ public class AccessibleNameTests {
 		Assert.StartsWith("Group 1, 2 files", rows[0].Name);
 		Assert.StartsWith("beach_2019_final.mp4, ", rows[1].Name);
 		Assert.Contains("1920x1080", rows[1].Name);
-		Assert.Contains(@"D:\Videos\Holiday", rows[1].Name);
+		Assert.Contains(TestPaths.Native(@"D:\Videos\Holiday"), rows[1].Name);
 		window.Close();
 	});
 
@@ -179,7 +180,7 @@ public class AccessibleNameTests {
 		// whole path, and used to get none of it.
 		var folders = PeerTree.Walk(window).Where(n => n.Owner is Controls.MiddleEllipsisTextBlock).Select(n => n.Name).ToList();
 
-		Assert.Contains(@"D:\Videos\Holiday\copy", folders);
+		Assert.Contains(TestPaths.Native(@"D:\Videos\Holiday\copy"), folders);
 		window.Close();
 	});
 

@@ -25,6 +25,7 @@ using VDF.GUI.Controls;
 using VDF.GUI.Data;
 using VDF.GUI.ViewModels;
 using VDF.GUI.Views;
+using VDF.TestSupport;
 
 namespace VDF.GUI.HeadlessTests;
 
@@ -42,12 +43,11 @@ public class ComparerKeyboardTests {
 	}
 
 	/// <summary>Comparer on a two-file group with "Highlight differences" on, its sensitivity slider focused.</summary>
-	static void WithFocusedSensitivitySlider(Action<ThumbnailComparer, ThumbnailComparerVM, Slider, List<LargeThumbnailDuplicateItem>> body) =>
-		// Completes synchronously: nothing in here awaits unless the body does.
+	static Task WithFocusedSensitivitySlider(Action<ThumbnailComparer, ThumbnailComparerVM, Slider, List<LargeThumbnailDuplicateItem>> body) =>
 		WithFocusedSensitivitySlider((comparer, vm, slider, items) => {
 			body(comparer, vm, slider, items);
 			return Task.CompletedTask;
-		}).GetAwaiter().GetResult();
+		});
 
 	static async Task WithFocusedSensitivitySlider(Func<ThumbnailComparer, ThumbnailComparerVM, Slider, List<LargeThumbnailDuplicateItem>, Task> body) {
 		HeadlessUi.Shell(); // the comparer takes the main window as its owner
@@ -57,7 +57,7 @@ public class ComparerKeyboardTests {
 		// No thumbnail timestamps: loading yields nothing without ever starting FFmpeg.
 		var items = new[] { "left.mp4", "right.mp4" }
 			.Select(name => new LargeThumbnailDuplicateItem(new DuplicateItemVM(new DuplicateItem {
-				Path = $@"Z:\does\not\exist\{name}", GroupId = group, Similarity = 98.4f,
+				Path = TestPaths.Native($@"Z:\does\not\exist\{name}"), GroupId = group, Similarity = 98.4f,
 			})))
 			.ToList();
 		var comparer = new ThumbnailComparer(items);
@@ -65,6 +65,14 @@ public class ComparerKeyboardTests {
 		comparer.Show();
 		HeadlessUi.Pump();
 		try {
+			// The thumbnails load off the UI thread, and the culling keys do nothing until the
+			// first pair is chosen at the end of that load. Pumping alone usually got there.
+			var deadline = DateTime.UtcNow.AddSeconds(10);
+			while (vm.IsLoadingThumbnails && DateTime.UtcNow < deadline)
+				await Task.Delay(20);
+			HeadlessUi.Pump();
+			Assert.False(vm.IsLoadingThumbnails, "the comparer did not finish loading");
+			Assert.Same(items[1], vm.SelectedItemB);
 			vm.HighlightDifferences = true;
 			vm.DiffSensitivity = 0.5;
 			HeadlessUi.Pump();

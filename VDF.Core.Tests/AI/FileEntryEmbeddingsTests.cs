@@ -15,6 +15,7 @@
 //
 
 using MemoryPack;
+using VDF.TestSupport;
 
 namespace VDF.Core.Tests.AI;
 
@@ -78,8 +79,8 @@ public partial class FileEntryEmbeddingsTests {
 		// The reverse direction: a database written by the current schema is a valid
 		// prefix of the interim embeddings schema (its Embeddings member is simply
 		// missing), and of course round-trips through itself.
-		var entry = new FileEntry { Folder = @"D:\media" };
-		entry.Path = @"D:\media\old.mp4";
+		var entry = new FileEntry { Folder = TestPaths.Native(@"D:\media") };
+		entry.Path = TestPaths.Native(@"D:\media\old.mp4");
 		entry.grayBytes[12.5] = new byte[] { 1, 2, 3 };
 
 		byte[] payload = MemoryPackSerializer.Serialize(entry);
@@ -91,6 +92,6 @@ public partial class FileEntryEmbeddingsTests {
 		FileEntryWithEmbeddingsMember? asEmbeddingsBuild =
 			MemoryPackSerializer.Deserialize<FileEntryWithEmbeddingsMember>(payload);
 		Assert.NotNull(asEmbeddingsBuild);
-		Assert.Equal(@"D:\media\old.mp4", asEmbeddingsBuild!._Path);
+		Assert.Equal(TestPaths.Native(@"D:\media\old.mp4"), asEmbeddingsBuild!._Path);
 	}
 }

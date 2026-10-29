@@ -16,6 +16,7 @@
 
 using VDF.Core;
 using VDF.Core.ViewModels;
+using VDF.TestSupport;
 using VDF.Web.Services;
 
 namespace VDF.Web.Tests.Services;
@@ -37,7 +38,7 @@ public sealed class ScanServiceTests : IDisposable {
 	}
 
 	internal static FileEntry MakeEntry(string name) => new() {
-		_Path = @"C:\vdf-webtests\" + name,
+		_Path = TestPaths.Native(@"C:\vdf-webtests\" + name),
 		FileSize = 1000,
 		invalid = false,
 		IsImage = false,
