@@ -2,8 +2,12 @@ name: Windows 64-bit
 
 on:
   pull_request:
-    paths-ignore:
-      - '.github/workflows/**'
+    # Workflow-only PRs (action bumps) skip the build, except a change to this file,
+    # which is tested by running it.
+    paths:
+      - '**'
+      - '!.github/workflows/**'
+      - '.github/workflows/dotnetcore.yml'
 
 permissions:
   contents: read
@@ -31,6 +35,8 @@ jobs:
       run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run GUI Tests
       run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run GUI Headless Tests
+      run: dotnet test VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run Web Tests
       run: dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Install FFmpeg

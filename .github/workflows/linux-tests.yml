@@ -1,0 +1,37 @@
+name: Linux tests
+
+# The Windows 64-bit workflow builds and tests the release; this one keeps the same
+# tests passing on Linux, where a path like D:\media\clip.mp4 is not rooted.
+on:
+  pull_request:
+    # Workflow-only PRs (action bumps) skip the build, except a change to this file,
+    # which is tested by running it.
+    paths:
+      - '**'
+      - '!.github/workflows/**'
+      - '.github/workflows/linux-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '10.0.x'
+    - name: Run Unit Tests
+      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run CLI Tests
+      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run GUI Tests
+      run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run GUI Headless Tests
+      run: dotnet test VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run Web Tests
+      run: dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
