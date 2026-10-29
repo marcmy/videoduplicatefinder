@@ -1,0 +1,60 @@
+name: Linux tests
+
+# The Windows 64-bit workflow builds and tests the release; this one keeps the same
+# tests passing on Linux, where a path like D:\media\clip.mp4 is not rooted.
+on:
+  pull_request:
+    # Workflow-only PRs (action bumps) skip the build, except a change to this file,
+    # which is tested by running it.
+    paths:
+      - '**'
+      - '!.github/workflows/**'
+      - '.github/workflows/linux-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '10.0.x'
+    - name: Run Unit Tests
+      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run CLI Tests
+      run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run GUI Tests
+      run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run GUI Headless Tests
+      run: dotnet test VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Run Web Tests
+      run: dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    # The integration tests need FFmpeg 8 (Ubuntu's 6.1 cannot open HEIC), and with the
+    # shared libraries next to it the native-binding tests run instead of skipping.
+    - name: Install shared FFmpeg 8.1
+      run: |
+        set -euo pipefail
+        archive=ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz
+        base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+        cd "$RUNNER_TEMP"
+        curl --fail --location --retry 3 --retry-delay 2 --silent --show-error -o "$archive" "$base/$archive"
+        curl --fail --location --retry 3 --retry-delay 2 --silent --show-error -o checksums.sha256 "$base/checksums.sha256"
+        grep -E "  $archive\$" checksums.sha256 | sha256sum --check --strict -
+        mkdir -p vdf-ffmpeg-shared
+        tar -xJf "$archive" -C vdf-ffmpeg-shared
+        bin=$(dirname "$(find "$RUNNER_TEMP/vdf-ffmpeg-shared" -type f -name ffmpeg -path '*/bin/*' -print -quit)")
+        test -x "$bin/ffprobe"
+        for lib in libavcodec.so.62 libavformat.so.62 libavutil.so.60 libswscale.so.9 libswresample.so.6; do
+          test -f "$bin/../lib/$lib" || { echo "Shared FFmpeg build is missing $lib"; exit 1; }
+        done
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "VDF_TEST_SHARED_FFMPEG_BIN=$bin" >> "$GITHUB_ENV"
+        "$bin/ffmpeg" -hide_banner -version | sed -n 1p
+    - name: Run Integration Tests
+      run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v q --logger "console;verbosity=minimal"

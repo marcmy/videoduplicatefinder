@@ -242,13 +242,13 @@ jobs:
 
           # GUI contains a few real-time/timer assertions. Retry once before blocking
           # a correct upstream merge on a transient hosted-runner scheduler stall.
-          if ! dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q; then
+          if ! dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'; then
             echo '::warning::GUI tests failed once during refresh validation; retrying once to distinguish a timing flake from a reproducible failure.'
             sleep 2
-            dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q
+            dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
           fi
 
-          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q
+          dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
 
       - name: Upload validation failure state
         if: failure()
