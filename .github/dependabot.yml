@@ -26,6 +26,11 @@ updates:
       skiasharp:
         patterns:
           - "SkiaSharp*"
+      # Avalonia's packages are released in lockstep and must match each other.
+      avalonia:
+        patterns:
+          - "Avalonia"
+          - "Avalonia.*"
     # ONNX Runtime 1.24+ no longer ships osx-x86_64 release archives.
     # VDF still targets Intel macOS, and AiComponents downloads those archives
     # directly, so keep the managed wrapper and test runtime on the 1.23.x line.
