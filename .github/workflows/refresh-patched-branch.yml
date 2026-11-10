@@ -27,6 +27,7 @@ on:
 permissions:
   contents: write
   actions: write
+  pull-requests: write
 
 concurrency:
   group: refresh-perf-branch
@@ -142,13 +143,12 @@ jobs:
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
-              echo 'Unresolved source conflicts remain and require review:'
+              echo '::warning::Unresolved source conflicts remain; opening a pull request to resolve them:'
               echo "$remaining_conflicts"
-              printf '%s\n' "$remaining_conflicts" > perf-merge-conflicts.txt
-              while IFS= read -r file; do
-                [ -z "$file" ] || echo "::error file=$file::Unresolved perf refresh merge conflict"
-              done <<< "$remaining_conflicts"
-              exit 1
+              git merge --abort || git reset -q --hard "$before"
+              echo 'conflict=true' >> "$GITHUB_OUTPUT"
+              echo "before=$before" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
           fi
 
@@ -215,13 +215,26 @@ jobs:
             echo 'Only workflow/docs/refresh machinery changed; release build will not be dispatched.'
           fi
 
-      - name: Upload merge conflict report
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: perf-merge-conflicts
-          path: perf-merge-conflicts.txt
-          if-no-files-found: ignore
+      - name: Open conflict pull request
+        if: steps.merge.outputs.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORK_BRANCH: perf/4.1-native-hwaccel
+          BASE_SHA: ${{ steps.merge.outputs.before }}
+          UPSTREAM_REF: origin/master
+          UPSTREAM_NAME: master (synced from 0x90d/videoduplicatefinder)
+          KEEP_FORK_PATHS: .github/workflows
+          PR_NOTE: >-
+            The refresh normally auto-resolves `README.md`, the FFmpeg setup shells and tests (master wins),
+            `VDF.Core/VDF.Core.csproj` (master plus the Vortice.Direct3D11 reference), and `FfmpegEngine.cs`,
+            `VideoStreamDecoder.cs` and `FFmpegHelper.cs` (perf wins), so those may be listed too.
+            After this PR is merged, run **Refresh perf branch** once so `reconcile-perf.py` and the validation run on the result.
+        # Windows checkouts may convert the script to CRLF, which bash can't run
+        run: |
+          tr -d '\r' < .github/scripts/sync-conflict-pr.sh > "$RUNNER_TEMP/sync-conflict-pr.sh"
+          bash "$RUNNER_TEMP/sync-conflict-pr.sh"
 
       - name: Setup .NET
         if: steps.merge.outputs.merge_changed == 'true' || github.event_name == 'push'

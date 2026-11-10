@@ -1,0 +1,47 @@
+name: Sync conflicts
+
+on:
+  push:
+    branches:
+      - upstream-sync
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-conflicts
+  cancel-in-progress: true
+
+env:
+  FORK_BRANCH: perf/4.1-native-hwaccel
+
+jobs:
+  check:
+    if: github.repository == 'marcmy/videoduplicatefinder'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out upstream-sync
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # Pushes made with GITHUB_TOKEN don't trigger the pull request's CI
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Check for conflict markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -z --name-only --diff-filter=AMR "origin/$FORK_BRANCH" HEAD \
+              | xargs -0 -r grep -IlE '^(<{7}|>{7})( |$)' -- > "$RUNNER_TEMP/markers.txt" || true
+
+          if [[ -s "$RUNNER_TEMP/markers.txt" ]]; then
+              echo "### Conflict markers remain" >> "$GITHUB_STEP_SUMMARY"
+              while IFS= read -r file; do
+                  echo "::error file=$file::Conflict markers remain"
+                  echo "- \`$file\`" >> "$GITHUB_STEP_SUMMARY"
+              done < "$RUNNER_TEMP/markers.txt"
+              exit 1
+          fi
+          echo "No conflict markers left."
