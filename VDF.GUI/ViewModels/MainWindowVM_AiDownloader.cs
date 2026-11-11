@@ -46,7 +46,7 @@ namespace VDF.GUI.ViewModels {
 		} = string.Empty;
 
 		static string BuildAiComponentsStatusText() => AiComponents.GetState() switch {
-			AiComponentsState.Ready => string.Format(CultureInfo.InvariantCulture, App.Lang["Settings.AiComponents.Ready"], AiComponents.RuntimeVersion),
+			AiComponentsState.Ready => string.Format(CultureInfo.InvariantCulture, App.Lang["Settings.AiComponents.Ready"], AiComponents.RuntimeDescription),
 			AiComponentsState.RuntimeMissing => App.Lang["Settings.AiComponents.RuntimeMissing"],
 			AiComponentsState.ModelMissing => App.Lang["Settings.AiComponents.ModelMissing"],
 			_ => App.Lang["Settings.AiComponents.Missing"],

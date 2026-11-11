@@ -41,7 +41,36 @@ namespace VDF.Core.AI {
 		/// PackageReference. 1.23.2 is the newest release that still ships osx-x86_64
 		/// binaries (1.24+ dropped Intel macs, which VDF releases still target).
 		/// </summary>
-		public const string RuntimeVersion = "1.23.2";
+		/// <summary>CPU-only ONNX Runtime (GitHub release archives) used on Linux/macOS.</summary>
+		public const string CpuRuntimeVersion = "1.23.2";
+		/// <summary>
+		/// ONNX Runtime with the DirectML execution provider, used on Windows so AI
+		/// inference runs on any D3D12 GPU instead of burning CPU (≈160 ms of CPU time per
+		/// frame on CPU vs ≈1 ms on DirectML). Published only as a NuGet package; it uses
+		/// the system DirectML.dll (1.15+, in-box on current Windows 11) and falls back to
+		/// the CPU provider when no usable GPU/DirectML is present. Same C API as 1.23.2.
+		/// </summary>
+		public const string DirectMLRuntimeVersion = "1.23.0";
+		internal const string ForceCpuRuntimeEnvVar = "VDF_AI_CPU_RUNTIME";
+
+		/// <summary>The ONNX Runtime version this platform installs.</summary>
+		public static string RuntimeVersion => UsesDirectMLRuntime ? DirectMLRuntimeVersion : CpuRuntimeVersion;
+
+		/// <summary>Runtime version plus its accelerator, for status text and diagnostics.</summary>
+		public static string RuntimeDescription => UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}, DirectML GPU" : $"{CpuRuntimeVersion}, CPU";
+
+		/// <summary>Content of the runtime.version marker for the runtime this platform installs.</summary>
+		internal static string RuntimeVersionMarker => UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}-directml" : CpuRuntimeVersion;
+
+		internal static bool UsesDirectMLRuntime =>
+			OperatingSystem.IsWindows()
+			&& RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64
+			&& !IsForceCpuRuntimeRequested();
+
+		static bool IsForceCpuRuntimeRequested() {
+			string? value = Environment.GetEnvironmentVariable(ForceCpuRuntimeEnvVar);
+			return value is "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+		}
 		public const string ModelFileName = "dinov2-small-int8.onnx";
 		/// <summary>SHA256 of the model file (Xenova/dinov2-small ONNX export, quantized, Apache-2.0).</summary>
 		public const string ModelSha256 = "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917";
@@ -109,7 +138,7 @@ namespace VDF.Core.AI {
 		static bool HasCurrentRuntimeVersion() {
 			try {
 				string marker = Path.Combine(AiFolder, VersionMarkerFileName);
-				return File.Exists(marker) && File.ReadAllText(marker).Trim() == RuntimeVersion;
+				return File.Exists(marker) && File.ReadAllText(marker).Trim() == RuntimeVersionMarker;
 			}
 			catch { return false; }
 		}
@@ -210,20 +239,32 @@ namespace VDF.Core.AI {
 			return missing;
 		}
 
-		internal static (Uri Url, string ArchiveFileName) GetRuntimeDownloadPlan() {
+		/// <summary>
+		/// Where to fetch the runtime for this platform: the archive URL, its file name and
+		/// the directory inside the archive holding the native libraries (null = the
+		/// archive's <c>lib/</c> directory, as in the GitHub release archives).
+		/// </summary>
+		internal static (Uri Url, string ArchiveFileName, string? NativeDirectory) GetRuntimeDownloadPlan() {
 			string os =
 				RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win" :
 				RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" :
 				RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "linux" :
 				throw new PlatformNotSupportedException("AI matching is not supported on this operating system.");
+			if (UsesDirectMLRuntime) {
+				string rid = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
+				const string package = "microsoft.ml.onnxruntime.directml";
+				string nupkg = $"{package}.{DirectMLRuntimeVersion}.nupkg";
+				return (new Uri($"https://api.nuget.org/v3-flatcontainer/{package}/{DirectMLRuntimeVersion}/{nupkg}"),
+					nupkg, $"runtimes/{rid}/native");
+			}
 			string arch = RuntimeInformation.ProcessArchitecture switch {
 				Architecture.X64 => os == "osx" ? "x86_64" : "x64",
 				Architecture.Arm64 => os == "linux" ? "aarch64" : "arm64",
 				_ => throw new PlatformNotSupportedException($"AI matching is not supported on {RuntimeInformation.ProcessArchitecture}.")
 			};
 			string ext = os == "win" ? "zip" : "tgz";
-			string file = $"onnxruntime-{os}-{arch}-{RuntimeVersion}.{ext}";
-			return (new Uri($"https://github.com/microsoft/onnxruntime/releases/download/v{RuntimeVersion}/{file}"), file);
+			string file = $"onnxruntime-{os}-{arch}-{CpuRuntimeVersion}.{ext}";
+			return (new Uri($"https://github.com/microsoft/onnxruntime/releases/download/v{CpuRuntimeVersion}/{file}"), file, null);
 		}
 
 		/// <summary>Downloads whatever is missing (runtime and/or model). Safe to call when Ready.</summary>
@@ -281,7 +322,7 @@ namespace VDF.Core.AI {
 		}
 
 		static async Task DownloadRuntimeAsync(HttpClient http, IProgress<AiDownloadProgress>? progress, CancellationToken token) {
-			(Uri url, string archiveName) = GetRuntimeDownloadPlan();
+			(Uri url, string archiveName, string? nativeDirectory) = GetRuntimeDownloadPlan();
 			// Per-attempt temp dir: a fixed shared path let two VDF processes (GUI + CLI,
 			// or Web + CLI in one container) clobber each other's in-progress download —
 			// FileShare.None collisions, or one process's cleanup deleting the other's files.
@@ -296,7 +337,7 @@ namespace VDF.Core.AI {
 				string extractDir = Path.Combine(tempRoot, "extracted");
 				Directory.CreateDirectory(extractDir);
 				ArchiveUtils.Extract(archivePath, extractDir,
-					archiveName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? ArchiveKind.Zip : ArchiveKind.TarGz);
+					archiveName.EndsWith(".tgz", StringComparison.OrdinalIgnoreCase) ? ArchiveKind.TarGz : ArchiveKind.Zip);
 
 				// Purge any previously installed runtime BEFORE copying: the Linux/macOS
 				// library names carry the version (libonnxruntime.so.1.23.2), so upgraded
@@ -310,16 +351,19 @@ namespace VDF.Core.AI {
 						try { File.Delete(old); } catch { /* loaded/locked — overwritten below */ }
 				}
 
-				// Archives lay out onnxruntime-<rid>-<ver>/lib/<libraries>; flatten lib/ into AiFolder.
-				string? libDir = Directory.EnumerateDirectories(extractDir, "lib", SearchOption.AllDirectories).FirstOrDefault();
-				if (libDir == null)
-					throw new IOException($"Downloaded ONNX Runtime archive has no lib/ directory ({archiveName}).");
+				// Release archives lay out onnxruntime-<rid>-<ver>/lib/<libraries>; the DirectML
+				// NuGet package keeps them in runtimes/<rid>/native. Flatten into AiFolder.
+				string? libDir = nativeDirectory != null
+					? Path.Combine(extractDir, nativeDirectory.Replace('/', Path.DirectorySeparatorChar))
+					: Directory.EnumerateDirectories(extractDir, "lib", SearchOption.AllDirectories).FirstOrDefault();
+				if (libDir == null || !Directory.Exists(libDir))
+					throw new IOException($"Downloaded ONNX Runtime archive has no {nativeDirectory ?? "lib/"} directory ({archiveName}).");
 				foreach (string file in Directory.EnumerateFiles(libDir)) {
 					string name = Path.GetFileName(file);
-					if (name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)) continue;
+					if (name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".lib", StringComparison.OrdinalIgnoreCase)) continue;
 					File.Copy(file, Path.Combine(AiFolder, name), overwrite: true);
 				}
-				await File.WriteAllTextAsync(Path.Combine(AiFolder, VersionMarkerFileName), RuntimeVersion, token);
+				await File.WriteAllTextAsync(Path.Combine(AiFolder, VersionMarkerFileName), RuntimeVersionMarker, token);
 				if (FindRuntimeLibrary() == null)
 					throw new IOException("ONNX Runtime archive extracted but no runtime library was found in it.");
 			}

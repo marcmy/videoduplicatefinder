@@ -219,6 +219,8 @@ namespace VDF.Core.FFTools {
 						familyKey))
 					hardwareDeviceType = GetConfiguredHardwareDeviceType();
 
+				using IDisposable? d3d11ConcurrencyLease =
+					EnterD3D11GrayByteConcurrencyLimiter(hardwareDeviceType);
 				FfmpegLogCapture.Reset();
 				using var vsd =
 					new VideoStreamDecoder(videoFile.Path, hardwareDeviceType);
@@ -228,7 +230,75 @@ namespace VDF.Core.FFTools {
 				Size converterSourceSize = default;
 				AVPixelFormat converterSourcePixelFormat =
 					AVPixelFormat.AV_PIX_FMT_NONE;
+				// D3D11VA: scale gray32 + RGB224 on the GPU and read back only those, instead
+				// of downloading every full decoded surface and scaling it on the CPU.
+				string gpuScalePolicy = string.Empty;
+				bool useGpuScale =
+					vsd.IsHardwareDecode &&
+					ShouldUseD3D11GrayByteGpuScale(
+						hardwareDeviceType,
+						ref gpuScalePolicy,
+						out _);
+				FrameTransferMode transferMode = useGpuScale
+					? FrameTransferMode.KeepHardwareFrame
+					: FrameTransferMode.TransferHardwareFrame;
+				D3D11VideoProcessorGrayByteScaler? gpuScaler = null;
 				try {
+					bool TryConsumeFrameOnGpu(
+						GrayByteRequest request,
+						AVFrame frame,
+						bool needGray,
+						bool needEmbedding,
+						FrameOrientation orientation) {
+						if (!useGpuScale ||
+							!VideoStreamDecoder.IsHardwareFrame(frame))
+							return false;
+						byte[]? gray;
+						byte[]? rgb;
+						try {
+							gpuScaler ??= new D3D11VideoProcessorGrayByteScaler();
+							gpuScaler.ScaleToGrayAndRgb(
+								frame,
+								needGray,
+								needEmbedding,
+								out gray,
+								out rgb,
+								out _);
+						}
+						catch (Exception gpuEx) when (
+							gpuEx is NotSupportedException or
+								FFInvalidExitCodeException or
+								SharpGen.Runtime.SharpGenException) {
+							// Keep decoding on the GPU but scale this file on the CPU.
+							useGpuScale = false;
+							gpuScaler?.Dispose();
+							gpuScaler = null;
+							Logger.Instance.Info(
+								$"D3D11 video processor scaling unavailable for " +
+								$"'{videoFile.Path}', using CPU scaling for this " +
+								$"file. Reason: " +
+								$"{NormalizeLogReason(gpuEx.Message, 240)}");
+							return false;
+						}
+
+						if (gray != null) {
+							gray = orientation.Apply(gray, 32, 32, 1);
+							videoFile.grayBytes[request.Index] = gray;
+							videoFile.PHashes[request.Index] =
+								pHash.PerceptualHash
+									.ComputePHashFromGray32x32(gray);
+						}
+						if (rgb != null) {
+							int side =
+								global::VDF.Core.AI.OnnxEmbedder.InputSide;
+							embeddingSink.SubmitFrame(
+								videoFile,
+								request.Index,
+								orientation.Apply(rgb, side, side, 3));
+						}
+						return true;
+					}
+
 					void ConsumeFrame(GrayByteRequest request, AVFrame frame) {
 						bool needGray =
 							!videoFile.grayBytes.TryGetValue(
@@ -243,6 +313,15 @@ namespace VDF.Core.FFTools {
 							return;
 
 						FrameOrientation orientation = vsd.GetOrientation(frame);
+						if (TryConsumeFrameOnGpu(
+							request,
+							frame,
+							needGray,
+							needEmbedding,
+							orientation))
+							return;
+						if (VideoStreamDecoder.IsHardwareFrame(frame))
+							frame = vsd.TransferCurrentFrame();
 
 						Size sourceSize = new(
 							frame.width > 0
@@ -337,8 +416,7 @@ namespace VDF.Core.FFTools {
 										ConsumeFrame(request, frame);
 									},
 									out _,
-									FrameTransferMode
-										.TransferHardwareFrame);
+									transferMode);
 							if (!decoded ||
 								clusterIndex != cluster.Requests.Count)
 								throw new Exception(
@@ -354,8 +432,7 @@ namespace VDF.Core.FFTools {
 								out AVFrame frame,
 								request.Position,
 								out _,
-								FrameTransferMode
-									.TransferHardwareFrame))
+								transferMode))
 								throw new Exception(
 									$"TryDecodeFrame failed at " +
 									$"pos={request.Position} for " +
@@ -365,6 +442,7 @@ namespace VDF.Core.FFTools {
 					}
 				}
 				finally {
+					gpuScaler?.Dispose();
 					grayConverter?.Dispose();
 					rgbConverter?.Dispose();
 				}

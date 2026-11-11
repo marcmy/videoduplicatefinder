@@ -27,8 +27,12 @@ namespace VDF.IntegrationTests.FFTools;
 public class GrayBytesParityTests {
 	const float GrayByteParityTolerance = 0.10f;
 	readonly FfmpegFixture _fixture;
+	readonly Xunit.Abstractions.ITestOutputHelper? _output;
 
-	public GrayBytesParityTests(FfmpegFixture fixture) => _fixture = fixture;
+	public GrayBytesParityTests(FfmpegFixture fixture, Xunit.Abstractions.ITestOutputHelper output) {
+		_fixture = fixture;
+		_output = output;
+	}
 
 	byte[]? ExtractGrayBytes(string file, bool native) {
 		FfmpegEngine.UseNativeBinding = native;
@@ -394,4 +398,88 @@ public class GrayBytesParityTests {
 		Assert.True(FfmpegEngine.GetGrayBytesFromVideo(entry, positions, maxSamplingDurationSeconds: 0, extendedLogging: true));
 		AssertEntryHasGrayBytes(entry, positions);
 	}
+
+	static unsafe (List<byte[]> Gray, List<byte[]> Rgb) ExtractCpuReferenceGrayAndRgb(string file, List<TimeSpan> positions) {
+		const int rgbSide = D3D11VideoProcessorGrayByteScaler.RgbSize;
+		using var decoder = new VideoStreamDecoder(file, AVHWDeviceType.AV_HWDEVICE_TYPE_NONE);
+		List<byte[]> gray = new();
+		List<byte[]> rgb = new();
+		foreach (TimeSpan position in positions) {
+			Assert.True(decoder.TryDecodeFrame(out AVFrame frame, position));
+			var size = new System.Drawing.Size(frame.width, frame.height);
+			using var grayConverter = new VideoFrameConverter(size, (AVPixelFormat)frame.format, new System.Drawing.Size(32, 32), AVPixelFormat.AV_PIX_FMT_GRAY8);
+			using var rgbConverter = new VideoFrameConverter(size, (AVPixelFormat)frame.format, new System.Drawing.Size(rgbSide, rgbSide), AVPixelFormat.AV_PIX_FMT_RGB24);
+			gray.Add(CopyPacked(grayConverter.Convert(frame), 32, 1));
+			rgb.Add(CopyPacked(rgbConverter.Convert(frame), rgbSide, 3));
+		}
+		return (gray, rgb);
+	}
+
+	static unsafe byte[] CopyPacked(AVFrame frame, int side, int bytesPerPixel) {
+		byte[] output = new byte[side * side * bytesPerPixel];
+		for (int y = 0; y < side; y++)
+			new ReadOnlySpan<byte>(frame.data[0] + y * frame.linesize[0], side * bytesPerPixel)
+				.CopyTo(output.AsSpan(y * side * bytesPerPixel));
+		return output;
+	}
+
+	static (List<byte[]> Gray, List<byte[]> Rgb) ExtractD3D11GpuScaledGrayAndRgb(string file, List<TimeSpan> positions) {
+		using var decoder = new VideoStreamDecoder(file, AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA);
+		using var scaler = new D3D11VideoProcessorGrayByteScaler();
+		List<byte[]> gray = new();
+		List<byte[]> rgb = new();
+		foreach (TimeSpan position in positions) {
+			Assert.True(decoder.TryDecodeFrame(out AVFrame frame, position, out _, FrameTransferMode.KeepHardwareFrame));
+			scaler.ScaleToGrayAndRgb(frame, gray: true, rgb: true, out byte[]? g, out byte[]? c, out _);
+			gray.Add(g!);
+			rgb.Add(c!);
+		}
+		return (gray, rgb);
+	}
+
+	static double MeanAbsoluteError(byte[] a, byte[] b) {
+		Assert.Equal(a.Length, b.Length);
+		long sum = 0;
+		for (int i = 0; i < a.Length; i++)
+			sum += Math.Abs(a[i] - b[i]);
+		return (double)sum / a.Length;
+	}
+
+	// The GPU (D3D11 video processor) and CPU (swscale) paths must produce samples that
+	// compare as the same frame, so files scanned on either path still match each other
+	// (and the AI embedder sees the same picture).
+	void AssertD3D11GrayAndRgbMatchCpu(string? file, string label) {
+		SkipIfD3D11GpuScaleUnavailable(_fixture, file);
+		using var guard = new FfmpegStaticStateGuard();
+		List<TimeSpan> positions = new() { TimeSpan.FromSeconds(0.5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.5) };
+
+		(List<byte[]> Gray, List<byte[]> Rgb) gpu;
+		try {
+			gpu = ExtractD3D11GpuScaledGrayAndRgb(file!, positions);
+		}
+		catch (Exception ex) when (ex is not Xunit.Sdk.XunitException) {
+			Skip.If(true, $"D3D11 GPU-scaled gray/RGB unavailable: {ex.Message}");
+			return;
+		}
+		var cpu = ExtractCpuReferenceGrayAndRgb(file!, positions);
+
+		for (int i = 0; i < positions.Count; i++) {
+			double grayMae = MeanAbsoluteError(gpu.Gray[i], cpu.Gray[i]);
+			double rgbMae = MeanAbsoluteError(gpu.Rgb[i], cpu.Rgb[i]);
+			float grayDiff = GrayBytesUtils.PercentageDifference(gpu.Gray[i], cpu.Gray[i]);
+			_output?.WriteLine($"{label} @ {positions[i]}: gray MAE={grayMae:0.00} diff={grayDiff:P2}, rgb MAE={rgbMae:0.00}");
+			Assert.True(grayDiff < GrayByteParityTolerance, $"{label}: D3D11 vs CPU gray differ by {grayDiff:P2} at {positions[i]}");
+			Assert.True(grayMae < 8, $"{label}: D3D11 vs CPU gray mean abs error {grayMae:0.00} at {positions[i]}");
+			Assert.True(rgbMae < 10, $"{label}: D3D11 vs CPU RGB224 mean abs error {rgbMae:0.00} at {positions[i]}");
+		}
+	}
+
+	[SkippableFact]
+	public void D3D11GrayAndRgbScaler_H264_MatchesCpuSwscale_WhenAvailable() =>
+		AssertD3D11GrayAndRgbMatchCpu(_fixture.H264_8bit, "H264");
+
+	[SkippableFact]
+	public void D3D11GrayAndRgbScaler_HEVC10bit_MatchesCpuSwscale_WhenAvailable() =>
+		AssertD3D11GrayAndRgbMatchCpu(_fixture.HEVC_10bit, "HEVC10");
 }
+
