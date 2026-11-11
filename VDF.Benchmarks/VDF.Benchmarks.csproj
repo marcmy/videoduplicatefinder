@@ -23,4 +23,18 @@
     <Compile Remove="ScanProgressCompatibility.cs" />
   </ItemGroup>
 
+  <!-- The perf gate builds this harness against the pinned baseline VDF.Core, which may
+       predate the selectable AI inference device; compile the AI embed probe only when
+       the referenced Core has it. -->
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)..\VDF.Core\AI\OnnxEmbedder.cs')">
+    <VdfCoreOnnxEmbedderSource>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\VDF.Core\AI\OnnxEmbedder.cs'))</VdfCoreOnnxEmbedderSource>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(VdfCoreOnnxEmbedderSource.Contains('enum AiInferenceDevice'))">
+    <VdfCoreHasAiInferenceDevice>true</VdfCoreHasAiInferenceDevice>
+    <DefineConstants>$(DefineConstants);VDF_HAS_AI_INFERENCE_DEVICE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(VdfCoreHasAiInferenceDevice)' != 'true'">
+    <Compile Remove="Scenarios\AiEmbedProbe.cs" />
+  </ItemGroup>
+
 </Project>
