@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY ["VDF.Core/VDF.Core.csproj", "VDF.Core/"]
 COPY ["VDF.CLI/VDF.CLI.csproj", "VDF.CLI/"]
