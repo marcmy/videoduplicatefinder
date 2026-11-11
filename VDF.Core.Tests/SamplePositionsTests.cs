@@ -38,18 +38,101 @@ public class SamplePositionsTests {
 		Assert.Empty(ScanEngine.BuildSamplePositions(count));
 
 	[Fact]
-	public void Positions_AreAccumulatedTheWayDatabasesWereKeyed() {
-		// Accumulated, not (i + 1) / (n + 1): the two differ in the last float bits, and
-		// the gray bytes of existing databases are keyed by duration * accumulated value.
+	public void Positions_AreExactFractions() {
 		var positions = ScanEngine.BuildSamplePositions(50);
 
 		Assert.Equal(50, positions.Count);
-		float expected = 0f;
-		for (int i = 0; i < 50; i++) {
-			expected += 1.0F / 51;
-			Assert.Equal(expected, positions[i]);
-		}
+		for (int i = 0; i < 50; i++)
+			Assert.Equal((float)((i + 1) / 51d), positions[i]);
 		Assert.True(positions[0] > 0f && positions[^1] < 1f);
+	}
+
+	[Theory]
+	[InlineData(5, 11)]
+	[InlineData(11, 5)]
+	[InlineData(2, 5)]
+	[InlineData(4, 9)]
+	[InlineData(3, 7)]
+	public void SharedPositions_OfTwoCounts_AreTheSameFloat(int a, int b) {
+		// k/(a+1) == m/(b+1) must give identical floats so the cached frame is reused
+		// when the frame count changes (float accumulation broke 2 of 5 for 5 <-> 11).
+		var pa = ScanEngine.BuildSamplePositions(a);
+		var pb = new HashSet<float>(ScanEngine.BuildSamplePositions(b));
+		int shared = 0;
+		for (int k = 1; k <= a; k++)
+			for (int m = 1; m <= b; m++)
+				if (k * (b + 1) == m * (a + 1)) shared++;
+		Assert.Equal(shared, pa.Count(pb.Contains));
+	}
+
+	static List<float> AccumulatedPositions(int count) {
+		// How databases written before exact positions were keyed.
+		var positions = new List<float>();
+		float counter = 0f;
+		for (int i = 0; i < count; i++) {
+			counter += 1.0F / (count + 1);
+			positions.Add(counter);
+		}
+		return positions;
+	}
+
+	static FileEntry VideoWithFrames(double durationSeconds, IEnumerable<float> positions) {
+		var entry = new FileEntry {
+			_Path = @"X:\v.mp4",
+			Folder = @"X:\",
+			mediaInfo = new MediaInfo { Duration = TimeSpan.FromSeconds(durationSeconds) },
+			invalid = false,
+		};
+		foreach (float p in positions) {
+			double key = entry.GetGrayBytesIndex(p, null);
+			entry.grayBytes[key] = new byte[32 * 32];
+			entry.PHashes[key] = 42UL;
+		}
+		return entry;
+	}
+
+	[Theory]
+	[InlineData(5)]
+	[InlineData(11)]
+	[InlineData(50)]
+	[InlineData(200)]
+	public void OldAccumulatedKeys_SnapOntoExactKeys(int count) {
+		var entry = VideoWithFrames(3600.123, AccumulatedPositions(count));
+		var exact = ScanEngine.BuildSamplePositions(count);
+
+		entry.SnapCachedPositionKeys(exact, null);
+
+		Assert.Equal(count, entry.grayBytes.Count);
+		Assert.Equal(count, entry.PHashes.Count);
+		foreach (float p in exact) {
+			double key = entry.GetGrayBytesIndex(p, null);
+			Assert.True(ScanEngine.HasUsableCachedGray(entry, key));
+			Assert.Equal(42UL, entry.PHashes[key]);
+		}
+	}
+
+	[Fact]
+	public void Snap_NeverMergesDifferentPositions() {
+		// 4 -> 5 shares no position: nothing may be treated as cached.
+		var entry = VideoWithFrames(7200, ScanEngine.BuildSamplePositions(4));
+		var five = ScanEngine.BuildSamplePositions(5);
+
+		Assert.Equal(0, entry.SnapCachedPositionKeys(five, null));
+		foreach (float p in five)
+			Assert.False(entry.grayBytes.ContainsKey(entry.GetGrayBytesIndex(p, null)));
+		Assert.Equal(4, entry.grayBytes.Count);
+	}
+
+	[Fact]
+	public void CompareSnapshot_ReusesSubsetFromLargerCount() {
+		// 11 frames cached (positions k/12); a 5-frame scan (k/6) needs no decoding.
+		var engine = new ScanEngine { Settings = new Settings { ThumbnailCount = 5, UsePHashing = false, CombineGrayscaleAndPHash = false } };
+		engine.positionList.Clear();
+		engine.positionList.AddRange(ScanEngine.BuildSamplePositions(5));
+		var entry = VideoWithFrames(1234.5, AccumulatedPositions(11));
+
+		Assert.True(engine.TryBuildCompareSnapshot(entry, usePHashing: true));
+		Assert.Equal(5, entry.comparePHashes!.Length);
 	}
 
 	[Fact]

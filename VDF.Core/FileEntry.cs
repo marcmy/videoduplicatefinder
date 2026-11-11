@@ -176,6 +176,70 @@ namespace VDF.Core {
 				durationSeconds = maxSamplingDurationSeconds.Value;
 			return durationSeconds * position;
 		}
+
+		/// <summary>
+		/// Relative tolerance under which two cached position keys name the same frame.
+		/// Databases written before sample positions were computed exactly keyed frames by
+		/// float-accumulated positions, which drift from k/(n+1) by a few float ulps (under
+		/// 3e-6 relative for 200 frames). Distinct positions of any two frame counts up to
+		/// a few hundred lie at least 1e-5 apart relatively, so this only absorbs that noise
+		/// and never treats two different moments as one.
+		/// </summary>
+		internal const double PositionKeyRelativeTolerance = 1e-5;
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		internal static bool PositionKeysMatch(double a, double b) =>
+			Math.Abs(a - b) <= PositionKeyRelativeTolerance * Math.Max(Math.Abs(a), Math.Abs(b)) + 1e-9;
+
+		/// <summary>
+		/// Finds the stored key in <paramref name="keys"/> that names the same frame as
+		/// <paramref name="positionKey"/>: the exact key when present, else the closest key
+		/// within <see cref="PositionKeyRelativeTolerance"/>.
+		/// </summary>
+		internal static bool TryFindMatchingPositionKey<T>(IReadOnlyDictionary<double, T> keys, double positionKey, out double match) {
+			if (keys.ContainsKey(positionKey)) {
+				match = positionKey;
+				return true;
+			}
+			match = 0;
+			bool found = false;
+			double bestDistance = double.MaxValue;
+			foreach (double key in keys.Keys) {
+				if (!PositionKeysMatch(key, positionKey)) continue;
+				double distance = Math.Abs(key - positionKey);
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					match = key;
+					found = true;
+				}
+			}
+			return found;
+		}
+
+		/// <summary>
+		/// Moves cached gray frames and pHashes stored under a near-identical key (float
+		/// noise from an older position calculation) onto the exact keys of
+		/// <paramref name="positions"/>, so every exact-key lookup of the scan and compare
+		/// reuses them instead of decoding the file again. Returns the number of keys moved.
+		/// </summary>
+		internal int SnapCachedPositionKeys(IReadOnlyList<float> positions, double? maxSamplingDurationSeconds) {
+			if (mediaInfo == null || IsImage) return 0;
+			int moved = 0;
+			for (int i = 0; i < positions.Count; i++) {
+				double key = GetGrayBytesIndex(positions[i], maxSamplingDurationSeconds);
+				if (grayBytes != null && SnapKey(grayBytes, key)) moved++;
+				if (PHashes != null) SnapKey(PHashes, key);
+			}
+			return moved;
+		}
+
+		static bool SnapKey<T>(Dictionary<double, T> cache, double key) {
+			if (cache.Count == 0 || cache.ContainsKey(key)) return false;
+			if (!TryFindMatchingPositionKey(cache, key, out double stored)) return false;
+			cache[key] = cache[stored];
+			cache.Remove(stored);
+			return true;
+		}
 		public override bool Equals(object? obj) =>
 			obj is FileEntry entry &&
 			Path.Equals(entry.Path, CoreUtils.IsWindows ?

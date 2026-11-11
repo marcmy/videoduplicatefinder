@@ -222,6 +222,7 @@ namespace VDF.Core {
 				else {
 					var gray = new byte[]?[positions.Count];
 					bool complete = entry.mediaInfo != null;
+					entry.SnapCachedPositionKeys(positions, Settings.MaxSamplingDurationSeconds);
 					for (int j = 0; complete && j < positions.Count; j++) {
 						double idx = entry.GetGrayBytesIndex(positions[j], Settings.MaxSamplingDurationSeconds);
 						if (!entry.grayBytes.TryGetValue(idx, out byte[]? data) || data == null)

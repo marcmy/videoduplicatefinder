@@ -509,13 +509,17 @@ namespace VDF.Core {
 		/// the scan, the thumbnail reload, the pair diagnostic and the frontends that show
 		/// the sampled frames, so that what is shown is what was compared.
 		/// </summary>
+		/// <remarks>
+		/// Each position is k / (n + 1) computed exactly, so a position shared by two frame
+		/// counts (e.g. 2/6 and 4/12) is the same float and its cached frame is reused when
+		/// the count changes. Older databases keyed frames by a float-accumulated position
+		/// that drifts by a few ulps; <see cref="FileEntry.SnapCachedPositionKeys"/> moves
+		/// those onto the exact keys.
+		/// </remarks>
 		public static List<float> BuildSamplePositions(int thumbnailCount) {
 			var positions = new List<float>(Math.Max(0, thumbnailCount));
-			float positionCounter = 0f;
-			for (int i = 0; i < thumbnailCount; i++) {
-				positionCounter += 1.0F / (thumbnailCount + 1);
-				positions.Add(positionCounter);
-			}
+			for (int i = 0; i < thumbnailCount; i++)
+				positions.Add((float)((double)(i + 1) / (thumbnailCount + 1)));
 			return positions;
 		}
 
@@ -1063,6 +1067,10 @@ namespace VDF.Core {
 						if (entry.OsHash == null && IsInIncludeScope(entry))
 							entry.OsHash = OsHashUtils.TryCompute(entry.Path);
 
+						// Frames cached under an older, float-drifted position key count as
+						// cached: move them onto the exact keys before any "already sampled" check.
+						entry.SnapCachedPositionKeys(positionList, Settings.MaxSamplingDurationSeconds);
+
 						if (Settings.IncludeMissingFiles && entry.grayBytes?.Count > 0) {
 							bool hasAllInformation = entry.IsImage && HasUsableCachedGray(entry, 0);
 							if (!entry.IsImage) {
@@ -1419,6 +1427,9 @@ namespace VDF.Core {
 				return true;
 			}
 
+			// Compare-only runs never pass through GatherInfos, so older drifted keys are
+			// snapped here too.
+			entry.SnapCachedPositionKeys(positionList, Settings.MaxSamplingDurationSeconds);
 			var gray = new byte[]?[positionList.Count];
 			var positionKeys = Settings.UseAiMatching ? new double[positionList.Count] : null;
 			for (int j = 0; j < positionList.Count; j++) {
