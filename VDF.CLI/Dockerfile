@@ -9,7 +9,7 @@ COPY VDF.CLI/ VDF.CLI/
 RUN dotnet publish "VDF.CLI/VDF.CLI.csproj" -c Release -o /app/publish --no-restore
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+FROM mcr.microsoft.com/dotnet/runtime:11.0
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["./vdf-cli"]
