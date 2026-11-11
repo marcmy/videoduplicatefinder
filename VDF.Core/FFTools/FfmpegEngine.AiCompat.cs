@@ -496,7 +496,8 @@ namespace VDF.Core.FFTools {
 						$"hardware decode failure on " +
 						$"'{videoFile.Path}', retrying remaining " +
 						$"samples with CPU decode. Reason: " +
-						$"{NormalizeLogReason(ex.Message, 240)}");
+						$"{NormalizeLogReason(ex.Message, 240)}" +
+						FormatFfmpegDiagnostics(diagnostics));
 					return TryExtractGrayAndAiNativeBatch(
 						videoFile,
 						positions,

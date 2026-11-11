@@ -617,6 +617,17 @@ namespace VDF.Core.FFTools {
 			&& !IsHardwareImplicatedNativeFailure(failure, diagnostics, string.Empty)
 			&& CategorizeNativeFailure(failure, diagnostics) == FfmpegErrorCategory.CorruptOrTruncated;
 
+		/// <summary>
+		/// FFmpeg's own log lines for a native failure, for appending to a log message. The
+		/// exception alone is often an opaque av_strerror string (e.g. the D3D11VA hwaccel's
+		/// generic -1 surfaces as "Operation not permitted"); the captured lines carry the
+		/// real cause, such as the failing D3D11 call and its HRESULT.
+		/// </summary>
+		internal static string FormatFfmpegDiagnostics(string? diagnostics) =>
+			string.IsNullOrWhiteSpace(diagnostics)
+				? string.Empty
+				: $" FFmpeg: {NormalizeLogReason(diagnostics, 800)}";
+
 		internal static bool IsPersistentHardwareCodecFailure(
 			string? text) {
 			if (!IsHardwareDecodeFailure(text))

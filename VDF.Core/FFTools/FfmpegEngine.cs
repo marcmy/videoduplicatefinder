@@ -752,7 +752,7 @@ namespace VDF.Core.FFTools {
 						codecName,
 						failureText,
 						familyKey);
-					Logger.Instance.Info($"Native FFmpeg graybyte extraction hit a hardware decode failure on '{videoFile.Path}', retrying native batch with CPU decode. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}");
+					Logger.Instance.Info($"Native FFmpeg graybyte extraction hit a hardware decode failure on '{videoFile.Path}', retrying native batch with CPU decode. hwPolicy={hardwarePolicy}. Staged {results.Count} of {requestedSamples} sample(s). Reason: {NormalizeLogReason(e.Message, 240)}{FormatFfmpegDiagnostics(diagnostics)}");
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, out failureCategory, out failureHardwareDeviceType, allowD3D11GpuScale: false, forceCpuDecode: true, forcedCpuPolicy: "hardware-decode-failure-cpu-retry");
 				}
@@ -1018,7 +1018,7 @@ namespace VDF.Core.FFTools {
 					settings.HardwareCodecName,
 					failureText,
 					settings.HardwareFamilyKey);
-					Logger.Instance.Info($"Native FFmpeg extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
+					Logger.Instance.Info($"Native FFmpeg extraction hit a hardware decode failure on '{settings.File}', retrying with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}{FormatFfmpegDiagnostics(diagnostics)}");
 					return GetThumbnail(settings with { ForceCpuDecode = true }, extendedLogging, timeoutMilliseconds);
 				}
 				Logger.Instance.Info($"Failed using native FFmpeg binding on '{settings.File}', try switching to process mode. hwPolicy={hardwarePolicy}. Reason: {e.Message}");
@@ -1593,7 +1593,7 @@ namespace VDF.Core.FFTools {
 					forceCpuForRemaining = true;
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(hardwareCodecName, failureText);
-					Logger.Instance.Info($"Native FFmpeg batched thumbnail extraction hit a hardware decode failure on '{filePath}', retrying batch with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}");
+					Logger.Instance.Info($"Native FFmpeg batched thumbnail extraction hit a hardware decode failure on '{filePath}', retrying batch with CPU decode. hwPolicy={hardwarePolicy}. Reason: {NormalizeLogReason(e.Message, 240)}{FormatFfmpegDiagnostics(FfmpegLogCapture.GetRecent())}");
 					return TryExtractThumbnailJpegsNative(filePath, positions, maxWidth, extendedLogging, jpegQuality, hardwareCodecName, frames, ref forceCpuForRemaining, forceCpuDecode: true);
 				}
 
