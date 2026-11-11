@@ -566,6 +566,57 @@ namespace VDF.Core.FFTools {
 				|| value.Contains("error", StringComparison.Ordinal);
 		}
 
+		// FFmpeg logs these when a hwaccel cannot be set up for a stream (e.g. an H.264 profile
+		// the GPU decoder lacks) and then silently decodes that stream in software. They say
+		// nothing about why a later decode failed.
+		static readonly string[] SoftwareFallbackNotices = {
+			"failed setup for format",
+			"hwaccel initiali",
+		};
+
+		internal static string StripHardwareFallbackNotices(string? diagnostics) {
+			if (string.IsNullOrEmpty(diagnostics))
+				return string.Empty;
+			IEnumerable<string> kept = diagnostics
+				.Split('\n')
+				.Where(line => !SoftwareFallbackNotices.Any(notice =>
+					line.Contains(notice, StringComparison.OrdinalIgnoreCase)));
+			return string.Join('\n', kept).Trim();
+		}
+
+		/// <summary>
+		/// Whether a native extraction failure implicates the hardware decoder and so deserves a
+		/// CPU-decode retry. A frame that was never reached (the stream ended or stayed
+		/// undecodable first) is a property of the file: our own failure text mentions the
+		/// configured device ("D3D11VA") and "failed", which used to make every such file count
+		/// as a hardware failure and be decoded again on the CPU — then again in process mode —
+		/// for the same result. For those, only FFmpeg's own diagnostics decide, minus the
+		/// benign software-fallback notices.
+		/// </summary>
+		internal static bool IsHardwareImplicatedNativeFailure(Exception failure, string? diagnostics, string failureText) =>
+			failure is FrameNotReachedException
+				? IsHardwareDecodeFailure(StripHardwareFallbackNotices(diagnostics))
+				: IsHardwareDecodeFailure(failureText);
+
+		/// <summary>Failure category for a native extraction failure (see <see cref="IsHardwareImplicatedNativeFailure"/>).</summary>
+		internal static FfmpegErrorCategory CategorizeNativeFailure(Exception failure, string? diagnostics) {
+			string relevant = failure is FrameNotReachedException
+				? StripHardwareFallbackNotices(diagnostics)
+				: diagnostics ?? string.Empty;
+			return FfmpegErrorClassifier.Categorize(
+				relevant.Length > 0 ? $"{relevant} {failure.Message}" : failure.Message);
+		}
+
+		/// <summary>
+		/// A frame that was never reached in a file whose own diagnostics show corruption or
+		/// truncation, with no hardware involvement: the FFmpeg process runs the same decoders
+		/// over the same bytes and fails the same way, so skip that retry.
+		/// </summary>
+		internal static bool IsUnreachableFrameInCorruptFile(Exception failure, string? diagnostics) =>
+			failure is FrameNotReachedException
+			&& !IsHardwareImplicatedNativeFailure(failure, diagnostics, string.Empty)
+			&& CategorizeNativeFailure(failure, diagnostics) == FfmpegErrorCategory.CorruptOrTruncated;
+
 		internal static bool IsPersistentHardwareCodecFailure(
 			string? text) {
 			if (!IsHardwareDecodeFailure(text))

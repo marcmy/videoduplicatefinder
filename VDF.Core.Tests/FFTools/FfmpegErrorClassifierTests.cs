@@ -46,6 +46,8 @@ public class FfmpegErrorClassifierTests {
 	[InlineData("Invalid NAL unit size (0 > 4182). | missing picture in access unit with size 4186 | " +
 		"Invalid NAL unit size (0 > 4182). | Error splitting the input into NAL units. " +
 		"TryDecodeFrame failed at pos=278.6666749715805 for 'E:\\redacted.mp4'")]
+	[InlineData("[mpeg4 @ 0x0] Error at MB: 340")]
+	[InlineData("[in#0/flv @ 0x0] Packet mismatch -1821966336 37735 37735")]
 	public void Categorize_CorruptOrTruncated(string text) =>
 		Assert.Equal(FfmpegErrorCategory.CorruptOrTruncated, FfmpegErrorClassifier.Categorize(text));
 

@@ -164,6 +164,17 @@ namespace VDF.Core.FFTools {
 			}
 		}
 
+		/// <summary>
+		/// The decoder ran without an error from FFmpeg but the stream ended (or stayed
+		/// undecodable) before the requested frame: a truncated file, a damaged index, or a
+		/// container duration longer than the data. This is a property of the file, not of the
+		/// decoder, so it must not be treated as a hardware failure and retried on the CPU.
+		/// </summary>
+		internal sealed class FrameNotReachedException : Exception {
+			public FrameNotReachedException(string message) : base(message) {
+			}
+		}
+
 		sealed class D3D11SoftwareFrameFallbackException : Exception {
 			public D3D11SoftwareFrameFallbackException(AVPixelFormat pixelFormat)
 				: base($"D3D11 graybyte decode produced software frames ({pixelFormat}); retrying this file with native CPU decode.") {
@@ -393,7 +404,7 @@ namespace VDF.Core.FFTools {
 
 		static unsafe byte[] ExtractGrayBytesWithDecoder(VideoStreamDecoder vsd, string filePath, TimeSpan position, ref VideoFrameConverter? converter, ref Size converterSourceSize, ref AVPixelFormat converterSourcePixelFormat, NativeGrayByteTiming timing) {
 			if (!vsd.TryDecodeFrame(out var srcFrame, position, out DecodedFrameTiming decodeTiming))
-				throw new Exception($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+				throw new FrameNotReachedException($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
 
 			timing.SeekMs += decodeTiming.SeekMs;
 			timing.DecodeMs += decodeTiming.DecodeMs;
@@ -408,7 +419,7 @@ namespace VDF.Core.FFTools {
 
 		static unsafe byte[] ExtractGrayBytesWithD3D11GpuScale(VideoStreamDecoder vsd, D3D11VideoProcessorGrayByteScaler scaler, string filePath, TimeSpan position, NativeGrayByteTiming timing) {
 			if (!vsd.TryDecodeFrame(out var srcFrame, position, out DecodedFrameTiming decodeTiming, FrameTransferMode.KeepHardwareFrame))
-				throw new Exception($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+				throw new FrameNotReachedException($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
 
 			timing.SeekMs += decodeTiming.SeekMs;
 			timing.DecodeMs += decodeTiming.DecodeMs;
@@ -457,7 +468,7 @@ namespace VDF.Core.FFTools {
 			ref AVPixelFormat converterSourcePixelFormat,
 			NativeGrayByteTiming timing) {
 			if (!vsd.TryDecodeFrame(out var srcFrame, position, out DecodedFrameTiming decodeTiming, FrameTransferMode.KeepHardwareFrame))
-				throw new Exception($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+				throw new FrameNotReachedException($"TryDecodeFrame failed at pos={position} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
 
 			timing.SeekMs += decodeTiming.SeekMs;
 			timing.DecodeMs += decodeTiming.DecodeMs;
@@ -652,14 +663,14 @@ namespace VDF.Core.FFTools {
 								QueueOrExtractNativeGrayBytesFromDecodedFrame(vsd, useD3D11GpuScale, ref d3d11Scaler, frame, request, ref converter, ref converterSourceSize, ref converterSourcePixelFormat, nativeTiming, pendingD3D11Downloads, results);
 							}, out _, useD3D11GpuScale ? FrameTransferMode.KeepHardwareFrame : FrameTransferMode.TransferHardwareFrame);
 							if (!decodedCluster || clusterIndex != cluster.Requests.Count)
-								throw new Exception($"Native clustered batch decoded {clusterIndex} of {cluster.Requests.Count} requested graybyte sample(s).");
+								throw new FrameNotReachedException($"Native clustered batch decoded {clusterIndex} of {cluster.Requests.Count} requested graybyte sample(s).");
 						}
 						else {
 							GrayByteRequest request = cluster.Requests[0];
 							byte[] data;
 							if (useD3D11GpuScale) {
 								if (!vsd.TryDecodeFrame(out var srcFrame, request.Position, out DecodedFrameTiming decodeTiming, FrameTransferMode.KeepHardwareFrame))
-									throw new Exception($"TryDecodeFrame failed at pos={request.Position} for '{videoFile.Path}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+									throw new FrameNotReachedException($"TryDecodeFrame failed at pos={request.Position} for '{videoFile.Path}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
 								nativeTiming.SeekMs += decodeTiming.SeekMs;
 								nativeTiming.DecodeMs += decodeTiming.DecodeMs;
 								QueueOrExtractNativeGrayBytesFromDecodedFrame(vsd, true, ref d3d11Scaler, srcFrame, request, ref converter, ref converterSourceSize, ref converterSourcePixelFormat, nativeTiming, pendingD3D11Downloads, results);
@@ -710,8 +721,7 @@ namespace VDF.Core.FFTools {
 			}
 			catch (Exception e) {
 				string diagnostics = FfmpegLogCapture.GetRecent();
-				failureCategory = FfmpegErrorClassifier.Categorize(
-					diagnostics.Length > 0 ? $"{diagnostics} {e.Message}" : e.Message);
+				failureCategory = CategorizeNativeFailure(e, diagnostics);
 				failureHardwareDeviceType = hardwareDeviceType;
 				if (e is TiledHeifRequiresProcessException) {
 					Logger.Instance.Info(e.Message);
@@ -721,6 +731,12 @@ namespace VDF.Core.FFTools {
 					RecordNativeFailure(videoFile.Path, e);
 					return false;
 				}
+				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
+				bool hardwareImplicated = IsHardwareImplicatedNativeFailure(e, diagnostics, failureText);
+				// A frame the file never delivered says nothing about the GPU: report no device so
+				// the caller's corrupt-file check can skip the identical process-mode retry.
+				if (e is FrameNotReachedException && !hardwareImplicated)
+					failureHardwareDeviceType = AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 				if (e is D3D11SoftwareFrameFallbackException && !forceCpuDecode) {
 					RecordD3D11SoftwareFrameFallbackForCodec(
 						codecName,
@@ -730,8 +746,7 @@ namespace VDF.Core.FFTools {
 					results.Clear();
 					return TryGetGrayBytesFromVideoNativeBatch(videoFile, positions, maxSamplingDurationSeconds, extendedLogging, results, out failureCategory, out failureHardwareDeviceType, allowD3D11GpuScale: false, forceCpuDecode: true);
 				}
-				string failureText = $"{hardwarePolicy} {hardwareDeviceType} {e}";
-				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
+				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && hardwareImplicated) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(
 						codecName,
@@ -896,7 +911,7 @@ namespace VDF.Core.FFTools {
 					Size sourceSize = vsd.FrameSize;
 					phaseSw.Restart();
 					if (!vsd.TryDecodeFrame(out var srcFrame, settings.Position, out DecodedFrameTiming frameTiming))
-						throw new Exception($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
+						throw new FrameNotReachedException($"TryDecodeFrame failed at pos={settings.Position} for '{settings.File}'. size={sourceSize.Width}x{sourceSize.Height}");
 					seekMs = frameTiming.SeekMs;
 					decodeMs = frameTiming.DecodeMs;
 					transferMs = frameTiming.TransferMs;
@@ -988,10 +1003,16 @@ namespace VDF.Core.FFTools {
 			}
 			catch (Exception e) {
 				string failureText = $"{hardwarePolicy} {nativeHardwareDeviceType} {e}";
+				string diagnostics = FfmpegLogCapture.GetRecent();
 				if (IsNativeBindingLoadFailure(e)) {
 					RecordNativeFailure(settings.File, e);
 				}
-				else if (!settings.ForceCpuDecode && enableHardwareAcceleration && nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
+				else if (IsUnreachableFrameInCorruptFile(e, diagnostics)) {
+					// The FFmpeg process would run the same decoders over the same damaged bytes.
+					Logger.Instance.Info($"Skipping process-mode retry for '{settings.File}' @ {settings.Position}: the frame is not reachable and FFmpeg reports a truncated or corrupt file. Reason: {NormalizeLogReason(e.Message, 240)} {NormalizeLogReason(StripHardwareFallbackNotices(diagnostics), 240)}");
+					return null;
+				}
+				else if (!settings.ForceCpuDecode && enableHardwareAcceleration && nativeHardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareImplicatedNativeFailure(e, diagnostics, failureText)) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(
 					settings.HardwareCodecName,
@@ -1371,7 +1392,7 @@ namespace VDF.Core.FFTools {
 					nativeFailureHardwareDeviceType)) {
 				videoFile.Flags.Set(EntryFlags.ThumbnailError);
 				Logger.Instance.Info(
-					$"Skipping process-mode retry for '{videoFile.Path}': the native software decode failure indicates a truncated or corrupt file, and the FFmpeg process would run the same decoder over the same damaged bitstream.");
+					$"Skipping process-mode retry for '{videoFile.Path}': the native decode failure (with no GPU error) indicates a truncated or corrupt file, and the FFmpeg process would run the same decoder over the same damaged bitstream.");
 				return false;
 			}
 			if (ShouldLogGrayByteScanTelemetry(extendedLogging) && nativeGrayByteState != "available")
@@ -1541,7 +1562,7 @@ namespace VDF.Core.FFTools {
 						long openForSampleMs = i == 0 ? openMs : 0;
 						if (!vsd.TryDecodeFrame(out var srcFrame, positions[i], out DecodedFrameTiming frameTiming)) {
 							if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE)
-								throw new Exception($"TryDecodeFrame failed at pos={positions[i]} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
+								throw new FrameNotReachedException($"TryDecodeFrame failed at pos={positions[i]} for '{filePath}'. size={vsd.FrameSize.Width}x{vsd.FrameSize.Height}");
 							continue;
 						}
 
@@ -1568,7 +1589,7 @@ namespace VDF.Core.FFTools {
 					RecordNativeFailure(filePath, e);
 					return false;
 				}
-				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareDecodeFailure(failureText)) {
+				if (!forceCpuDecode && hardwareDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE && IsHardwareImplicatedNativeFailure(e, FfmpegLogCapture.GetRecent(), failureText)) {
 					forceCpuForRemaining = true;
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(hardwareCodecName, failureText);
