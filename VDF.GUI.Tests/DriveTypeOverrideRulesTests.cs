@@ -22,6 +22,10 @@ namespace VDF.GUI.Tests;
 
 public class DriveTypeOverrideRulesTests {
 
+	// Roots are built with the platform's separator: the rules trim it like Core's scan does,
+	// and on Linux a backslash is an ordinary character, so "C:\\" is not "C:" there.
+	static readonly string Sep = Path.DirectorySeparatorChar.ToString();
+
 	static Dictionary<string, string> Map(params (string Key, string Value)[] entries) {
 		var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		foreach (var (k, v) in entries) map[k] = v;
@@ -34,30 +38,32 @@ public class DriveTypeOverrideRulesTests {
 	[InlineData("HDD", DriveTypeChoice.Slow)]
 	[InlineData("nvme", DriveTypeChoice.Automatic)] // the scan ignores unusable values
 	public void Get_ReadsValuesLikeTheScan(string value, DriveTypeChoice expected) =>
-		Assert.Equal(expected, DriveTypeOverrideRules.Get(Map(("D:", value)), @"D:\"));
+		Assert.Equal(expected, DriveTypeOverrideRules.Get(Map(("D:", value)), $"D:{Sep}"));
 
 	[Theory]
-	[InlineData("C:", @"C:\")]
-	[InlineData(@"C:\", "C:")]
-	[InlineData("c:", @"C:\")]
+	// "|" stands for the platform separator (attribute arguments must be constants).
+	[InlineData("C:", "C:|")]
+	[InlineData("C:|", "C:")]
+	[InlineData("c:", "C:|")]
 	public void Get_TrailingSeparatorAndCase_NameTheSameDrive(string key, string root) =>
-		Assert.Equal(DriveTypeChoice.Fast, DriveTypeOverrideRules.Get(Map((key, "SSD")), root));
+		Assert.Equal(DriveTypeChoice.Fast,
+			DriveTypeOverrideRules.Get(Map((key.Replace("|", Sep), "SSD")), root.Replace("|", Sep)));
 
 	[Fact]
 	public void Get_UnlistedDrive_IsAutomatic() =>
-		Assert.Equal(DriveTypeChoice.Automatic, DriveTypeOverrideRules.Get(Map(("C:", "SSD")), @"D:\"));
+		Assert.Equal(DriveTypeChoice.Automatic, DriveTypeOverrideRules.Get(Map(("C:", "SSD")), $"D:{Sep}"));
 
 	[Fact]
 	public void Set_ExistingKey_IsUpdatedInPlace_KeepingItsSpelling() {
 		var map = Map(("C:", "SSD"), ("F:", "HDD"));
-		Assert.True(DriveTypeOverrideRules.Set(map, @"C:\", DriveTypeChoice.Slow));
+		Assert.True(DriveTypeOverrideRules.Set(map, $"C:{Sep}", DriveTypeChoice.Slow));
 		Assert.Equal(Map(("C:", "HDD"), ("F:", "HDD")), map);
 		Assert.True(map.ContainsKey("C:"));
 	}
 
 	[Fact]
 	public void Set_DuplicateSpellings_CollapseToOneEntry() {
-		var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["C:"] = "SSD", [@"C:\"] = "HDD" };
+		var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["C:"] = "SSD", [$"C:{Sep}"] = "HDD" };
 		DriveTypeOverrideRules.Set(map, "C:", DriveTypeChoice.Fast);
 		Assert.Single(map);
 		Assert.Equal("SSD", map["C:"]);
@@ -66,31 +72,31 @@ public class DriveTypeOverrideRulesTests {
 	[Fact]
 	public void Set_NewDrive_IsStoredWithoutTrailingSeparator() {
 		var map = Map();
-		Assert.True(DriveTypeOverrideRules.Set(map, @"G:\", DriveTypeChoice.Slow));
+		Assert.True(DriveTypeOverrideRules.Set(map, $"G:{Sep}", DriveTypeChoice.Slow));
 		Assert.Equal(Map(("G:", "HDD")), map);
 	}
 
 	[Fact]
 	public void Set_Automatic_RemovesTheOverride() {
 		var map = Map(("C:", "SSD"), ("F:", "HDD"));
-		Assert.True(DriveTypeOverrideRules.Set(map, @"F:\", DriveTypeChoice.Automatic));
+		Assert.True(DriveTypeOverrideRules.Set(map, $"F:{Sep}", DriveTypeChoice.Automatic));
 		Assert.Equal(Map(("C:", "SSD")), map);
 	}
 
 	[Fact]
 	public void Set_NoChange_ReportsNothingChanged() {
 		var map = Map(("C:", "SSD"));
-		Assert.False(DriveTypeOverrideRules.Set(map, @"C:\", DriveTypeChoice.Fast));
-		Assert.False(DriveTypeOverrideRules.Set(map, @"D:\", DriveTypeChoice.Automatic));
+		Assert.False(DriveTypeOverrideRules.Set(map, $"C:{Sep}", DriveTypeChoice.Fast));
+		Assert.False(DriveTypeOverrideRules.Set(map, $"D:{Sep}", DriveTypeChoice.Automatic));
 		Assert.Equal(Map(("C:", "SSD")), map);
 	}
 
 	[Fact]
 	public void ListRoots_UnionsDrivesIncludesOverridesAndAdded_OnePerRoot() {
 		var roots = DriveTypeOverrideRules.ListRoots(
-			driveRoots: new[] { @"C:\", @"F:\", @"Z:\" },
+			driveRoots: new[] { $"C:{Sep}", $"F:{Sep}", $"Z:{Sep}" },
 			includedFolders: new[] { @"F:\Videos", @"\\nas\media\clips" },
-			rootOfIncludedFolder: f => f.StartsWith(@"\\") ? @"\\nas\media" : f[..3],
+			rootOfIncludedFolder: f => f.StartsWith(@"\\") ? @"\\nas\media" : f[..2] + Sep,
 			overrideKeys: new[] { "C:", "R:" },
 			addedRoots: new[] { "/mnt/usb/" });
 		// Ordinal order: '/' sorts before letters, '\' after them.
@@ -99,7 +105,7 @@ public class DriveTypeOverrideRulesTests {
 
 	[Fact]
 	public void ListRoots_ARootLookupThatFails_SkipsThatFolder() {
-		var roots = DriveTypeOverrideRules.ListRoots(new[] { @"C:\" }, new[] { "bad" },
+		var roots = DriveTypeOverrideRules.ListRoots(new[] { $"C:{Sep}" }, new[] { "bad" },
 			_ => throw new IOException("unreadable"), Array.Empty<string>(), Array.Empty<string>());
 		Assert.Equal(new[] { "C:" }, roots);
 	}
