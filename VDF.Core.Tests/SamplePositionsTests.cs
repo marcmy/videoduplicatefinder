@@ -18,7 +18,7 @@ namespace VDF.Core.Tests;
 
 /// <summary>
 /// The relative positions frames are sampled at. The scan, the thumbnail reload and the
-/// Web UI's frame stepping all read them from <see cref="ScanEngine.BuildSamplePositions"/>;
+/// Web UI's frame stepping all read them from <see cref="ScanEngine.BuildSamplePositions(int, SamplePositionLayout)"/>;
 /// the values are part of the database contract (gray bytes are keyed by them), so a
 /// change here re-extracts every library. The layout is nested so that changing the
 /// frame count reuses every frame the old and new counts share.
@@ -26,21 +26,21 @@ namespace VDF.Core.Tests;
 public class SamplePositionsTests {
 	[Fact]
 	public void OneFrame_IsTheMidpoint() =>
-		Assert.Equal(new[] { 0.5f }, ScanEngine.BuildSamplePositions(1));
+		Assert.Equal(new[] { 0.5f }, ScanEngine.BuildSamplePositions(1, SamplePositionLayout.Nested));
 
 	[Fact]
 	public void ThreeFrames_AreTheQuarters() =>
-		Assert.Equal(new[] { 0.25f, 0.5f, 0.75f }, ScanEngine.BuildSamplePositions(3));
+		Assert.Equal(new[] { 0.25f, 0.5f, 0.75f }, ScanEngine.BuildSamplePositions(3, SamplePositionLayout.Nested));
 
 	[Theory]
 	[InlineData(0)]
 	[InlineData(-1)]
 	public void NoFrames_IsEmptyInsteadOfThrowing(int count) =>
-		Assert.Empty(ScanEngine.BuildSamplePositions(count));
+		Assert.Empty(ScanEngine.BuildSamplePositions(count, SamplePositionLayout.Nested));
 
 	[Fact]
 	public void SevenFrames_AreTheEighths() =>
-		Assert.Equal(new[] { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f }, ScanEngine.BuildSamplePositions(7));
+		Assert.Equal(new[] { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f }, ScanEngine.BuildSamplePositions(7, SamplePositionLayout.Nested));
 
 	static List<float> LegacyPositions(int count) {
 		// The layout before nested positions: k / (n + 1), float-accumulated.
@@ -59,17 +59,25 @@ public class SamplePositionsTests {
 	[InlineData(7)]
 	[InlineData(15)]
 	[InlineData(31)]
-	public void CountsOfTwoPowerMinusOne_KeepTheLegacyLayout(int count) =>
-		// Existing databases scanned with these counts reuse every cached frame.
-		Assert.Equal(LegacyPositions(count), ScanEngine.BuildSamplePositions(count));
+	public void CountsOfTwoPowerMinusOne_AreTheSameInBothLayouts(int count) =>
+		Assert.Equal(LegacyPositions(count), ScanEngine.BuildSamplePositions(count, SamplePositionLayout.Nested));
+
+	[Theory]
+	[InlineData(2)]
+	[InlineData(5)]
+	[InlineData(6)]
+	[InlineData(50)]
+	public void LegacyLayout_ReproducesTheOldKeysBitForBit(int count) =>
+		// Databases scanned before nested positions keep every cached frame at the same count.
+		Assert.Equal(LegacyPositions(count), ScanEngine.BuildSamplePositions(count, SamplePositionLayout.Legacy));
 
 	[Fact]
 	public void Positions_AreNested_SoAnyCountChangeReusesTheSmallerSet() {
 		for (int larger = 1; larger <= 64; larger++) {
-			var big = new HashSet<float>(ScanEngine.BuildSamplePositions(larger));
+			var big = new HashSet<float>(ScanEngine.BuildSamplePositions(larger, SamplePositionLayout.Nested));
 			Assert.Equal(larger, big.Count);
 			for (int smaller = 1; smaller < larger; smaller++)
-				Assert.All(ScanEngine.BuildSamplePositions(smaller), p => Assert.Contains(p, big));
+				Assert.All(ScanEngine.BuildSamplePositions(smaller, SamplePositionLayout.Nested), p => Assert.Contains(p, big));
 		}
 	}
 
@@ -82,7 +90,7 @@ public class SamplePositionsTests {
 	[InlineData(50)]
 	[InlineData(200)]
 	public void Positions_AreSortedInsideTheVideo_AndEvenWithinFactorTwo(int count) {
-		var positions = ScanEngine.BuildSamplePositions(count);
+		var positions = ScanEngine.BuildSamplePositions(count, SamplePositionLayout.Nested);
 		Assert.Equal(count, positions.Count);
 		Assert.Equal(positions.OrderBy(p => p), positions);
 		Assert.True(positions[0] > 0f && positions[^1] < 1f);
@@ -113,7 +121,7 @@ public class SamplePositionsTests {
 	[InlineData(50)]
 	public void FloatNoiseKeys_SnapOntoExactKeys(int count) {
 		// Keys a few ulps off (older position math, AI sidecar records) still count as cached.
-		var positions = ScanEngine.BuildSamplePositions(count);
+		var positions = ScanEngine.BuildSamplePositions(count, SamplePositionLayout.Nested);
 		var entry = VideoWithFrames(3600.123, positions, relativeNoise: 3e-6);
 
 		Assert.Equal(count, entry.SnapCachedPositionKeys(positions, null));
@@ -131,7 +139,7 @@ public class SamplePositionsTests {
 	public void Snap_NeverMergesDifferentPositions() {
 		// The old 4-frame layout (fifths) shares no position with the new 5-frame layout.
 		var entry = VideoWithFrames(7200, LegacyPositions(4));
-		var five = ScanEngine.BuildSamplePositions(5);
+		var five = ScanEngine.BuildSamplePositions(5, SamplePositionLayout.Nested);
 
 		Assert.Equal(0, entry.SnapCachedPositionKeys(five, null));
 		foreach (float p in five)
@@ -146,8 +154,8 @@ public class SamplePositionsTests {
 	public void CompareSnapshot_LowerCount_NeedsNoDecoding(int cached, int wanted) {
 		var engine = new ScanEngine { Settings = new Settings { ThumbnailCount = wanted, UsePHashing = false, CombineGrayscaleAndPHash = false } };
 		engine.positionList.Clear();
-		engine.positionList.AddRange(ScanEngine.BuildSamplePositions(wanted));
-		var entry = VideoWithFrames(1234.5, ScanEngine.BuildSamplePositions(cached));
+		engine.positionList.AddRange(ScanEngine.BuildSamplePositions(wanted, SamplePositionLayout.Nested));
+		var entry = VideoWithFrames(1234.5, ScanEngine.BuildSamplePositions(cached, SamplePositionLayout.Nested));
 
 		Assert.True(engine.TryBuildCompareSnapshot(entry, usePHashing: true));
 		Assert.Equal(wanted, entry.comparePHashes!.Length);
@@ -160,6 +168,7 @@ public class SamplePositionsTests {
 
 		engine.EnsureThumbnailPositions();
 
-		Assert.Equal(ScanEngine.BuildSamplePositions(7), engine.positionList);
+		// 7 frames sit at the same positions in both layouts, whatever the shared database says.
+		Assert.Equal(ScanEngine.BuildSamplePositions(7, SamplePositionLayout.Legacy), engine.positionList);
 	}
 }

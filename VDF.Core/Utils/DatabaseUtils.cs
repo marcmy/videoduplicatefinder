@@ -37,6 +37,9 @@ namespace VDF.Core.Utils {
 		// Any older format is migrated to the newest on the next save.
 		static ReadOnlySpan<byte> FormatMagic => "VDFDB001"u8;
 		static ReadOnlySpan<byte> FormatMagicStreaming => "VDFDB002"u8;
+		// Optional trailer after the entry terminator. Readers written before it existed stop
+		// at the terminator and never see it, so the file stays loadable by older builds.
+		static ReadOnlySpan<byte> SampleLayoutTrailerMagic => "VDFSPL01"u8;
 
 		internal static HashSet<FileEntry> Database => DbWrapper.Entries;
 		internal static int DbVersion => DbWrapper.Version;
@@ -178,6 +181,57 @@ namespace VDF.Core.Utils {
 			if (cleared > 0)
 				Logger.Instance.Info($"Image hash migration: cleared cached hashes of {cleared:N0} image(s) — they will be re-hashed with the FFmpeg pipeline on the next scan.");
 		}
+		/// <summary>
+		/// The sample-position layout for <paramref name="thumbnailCount"/> frames on this
+		/// database: a nested database stays nested; a legacy one keeps its layout while the
+		/// frame count is the one it was scanned with (or unknown, for databases written
+		/// before the count was recorded), so upgrading costs no decoding. Any other count
+		/// moves to the nested layout.
+		/// </summary>
+		internal static SamplePositionLayout ResolveSamplePositionLayout(int thumbnailCount) =>
+			ResolveSamplePositionLayout(DbWrapper, thumbnailCount);
+
+		internal static SamplePositionLayout ResolveSamplePositionLayout(DatabaseWrapper wrapper, int thumbnailCount) {
+			if (wrapper.SamplePositionLayout == (int)SamplePositionLayout.Nested)
+				return SamplePositionLayout.Nested;
+			return wrapper.SamplePositionCount == 0 || wrapper.SamplePositionCount == thumbnailCount
+				? SamplePositionLayout.Legacy
+				: SamplePositionLayout.Nested;
+		}
+
+		/// <summary>
+		/// Called when a scan starts sampling: decides the layout for this scan (see
+		/// <see cref="ResolveSamplePositionLayout(int)"/>; a database with no sampled video
+		/// frames, new or emptied, starts nested) and records it with the frame count in the
+		/// database header. The layout is one choice for the whole database, never per entry.
+		/// </summary>
+		internal static SamplePositionLayout AdoptSamplePositionLayout(int thumbnailCount) {
+			SamplePositionLayout layout = HasSampledVideoFrames(DbWrapper)
+				? ResolveSamplePositionLayout(thumbnailCount)
+				: SamplePositionLayout.Nested;
+			if ((int)layout != DbWrapper.SamplePositionLayout)
+				Logger.Instance.Info($"Sample positions: switching this database to the nested layout ({thumbnailCount} frame(s) per video). Videos are sampled once at the new positions; later frame-count changes reuse them.");
+			DbWrapper.SamplePositionLayout = (int)layout;
+			DbWrapper.SamplePositionCount = thumbnailCount;
+			return layout;
+		}
+
+		static bool HasSampledVideoFrames(DatabaseWrapper wrapper) {
+			foreach (FileEntry entry in wrapper.Entries)
+				if (!entry.IsImage && entry.grayBytes?.Count > 0)
+					return true;
+			return false;
+		}
+
+		/// <summary>Test hook: the header fields of the in-memory database.</summary>
+		internal static (int Layout, int Count) SampleLayoutHeader {
+			get => (DbWrapper.SamplePositionLayout, DbWrapper.SamplePositionCount);
+			set {
+				DbWrapper.SamplePositionLayout = value.Layout;
+				DbWrapper.SamplePositionCount = value.Count;
+			}
+		}
+
 		internal static void Create16x16Database() {
 			DbWrapper.Version = 1;
 			SaveDatabase();
@@ -246,9 +300,11 @@ namespace VDF.Core.Utils {
 		///
 		/// Layout: magic | Version (int32 LE) | ImageHashPipeline (int32 LE) |
 		///         repeated [ entryLength (int32 LE >= 0) | MemoryPack(FileEntry) ] |
-		///         terminator (int32 LE == -1).
+		///         terminator (int32 LE == -1) |
+		///         optional trailer: "VDFSPL01" | SamplePositionLayout (int32 LE) | SamplePositionCount (int32 LE).
+		/// The trailer sits after the terminator so builds that predate it still load the file.
 		/// </summary>
-		static void SerializeDatabaseStreaming(Stream stream, DatabaseWrapper wrapper) {
+		internal static void SerializeDatabaseStreaming(Stream stream, DatabaseWrapper wrapper) {
 			stream.Write(FormatMagicStreaming);
 			Span<byte> intBuf = stackalloc byte[sizeof(int)];
 			BinaryPrimitives.WriteInt32LittleEndian(intBuf, wrapper.Version);
@@ -281,6 +337,12 @@ namespace VDF.Core.Utils {
 			BinaryPrimitives.WriteInt32LittleEndian(intBuf, -1);
 			stream.Write(intBuf);
 
+			stream.Write(SampleLayoutTrailerMagic);
+			BinaryPrimitives.WriteInt32LittleEndian(intBuf, wrapper.SamplePositionLayout);
+			stream.Write(intBuf);
+			BinaryPrimitives.WriteInt32LittleEndian(intBuf, wrapper.SamplePositionCount);
+			stream.Write(intBuf);
+
 			if (skipped > 0)
 				Logger.Instance.Info($"Database checkpoint skipped {skipped:N0} entries still being hashed; they will be saved on the next checkpoint.");
 		}
@@ -291,7 +353,7 @@ namespace VDF.Core.Utils {
 		/// and throws, which the caller treats as a load failure — so a half-written temp
 		/// file never masquerades as an empty database.
 		/// </summary>
-		static DatabaseWrapper DeserializeDatabaseStreaming(Stream stream) {
+		internal static DatabaseWrapper DeserializeDatabaseStreaming(Stream stream) {
 			var wrapper = new DatabaseWrapper { Entries = new() };
 			Span<byte> intBuf = stackalloc byte[sizeof(int)];
 			stream.ReadExactly(intBuf);
@@ -314,7 +376,21 @@ namespace VDF.Core.Utils {
 					?? throw new InvalidDataException("Corrupt database: an entry deserialized to null.");
 				wrapper.Entries.Add(entry);
 			}
+			ReadSampleLayoutTrailer(stream, wrapper);
 			return wrapper;
+		}
+
+		/// <summary>
+		/// Reads the optional trailer; a database written before it existed has none and
+		/// keeps the defaults (legacy layout, unknown count).
+		/// </summary>
+		static void ReadSampleLayoutTrailer(Stream stream, DatabaseWrapper wrapper) {
+			Span<byte> trailer = stackalloc byte[16];
+			int read = stream.ReadAtLeast(trailer, trailer.Length, throwOnEndOfStream: false);
+			if (read < trailer.Length || !trailer[..8].SequenceEqual(SampleLayoutTrailerMagic))
+				return;
+			wrapper.SamplePositionLayout = BinaryPrimitives.ReadInt32LittleEndian(trailer[8..12]);
+			wrapper.SamplePositionCount = BinaryPrimitives.ReadInt32LittleEndian(trailer[12..16]);
 		}
 		internal static void ClearDatabase() {
 			Database.Clear();
