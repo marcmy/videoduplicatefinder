@@ -64,7 +64,10 @@ namespace VDF.Core {
 
 		void BackfillTrackLanguages() =>
 			BackfillTrackLanguages(
-				path => DatabaseUtils.Database.TryGetValue(new FileEntry(path), out var entry) ? entry : null,
+				// A path-only key: new FileEntry(path) stats the file, which throws for a result
+				// whose file is gone (a remembered deleted file, or one removed mid-scan) and
+				// aborted the whole compare at its very end. FileEntry equality is by path.
+				path => DatabaseUtils.Database.TryGetValue(new FileEntry { _Path = path }, out var entry) ? entry : null,
 				path => FFProbeEngine.GetMediaInfo(path, Settings.ExtendedFFToolsLogging),
 				cancelationTokenSource.Token);
 

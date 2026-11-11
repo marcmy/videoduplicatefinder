@@ -731,6 +731,7 @@ namespace VDF.GUI.ViewModels {
 			Dispatcher.UIThread.InvokeAsync(() => {
 				IsScanning = false;
 				IsBusy = false;
+				IsStoppingWithResults = false;
 				IsReadyToCompare = false;
 				IsGathered = false;
 				scheduledScanInProgress = false;
@@ -741,6 +742,7 @@ namespace VDF.GUI.ViewModels {
 			Dispatcher.UIThread.InvokeAsync(() => {
 				IsScanning = false;
 				IsBusy = false;
+				IsStoppingWithResults = false;
 				IsReadyToCompare = true;
 				IsGathered = true;
 				RemainingTime = TimeSpan.Zero.Format();
@@ -748,6 +750,8 @@ namespace VDF.GUI.ViewModels {
 				ScanDrives.Clear();
 				var completedScheduledScan = scheduledScanInProgress;
 				scheduledScanInProgress = false;
+				// Stopped by the user and finished with what it had (ShowPartialResultsOnStop).
+				bool partial = Scanner.ResultsArePartial;
 
 				var blacklistedGids = ComputeBlacklistedGroupIds(
 					Scanner.Duplicates.Select(d => (d.GroupId, d.Path)));
@@ -758,7 +762,9 @@ namespace VDF.GUI.ViewModels {
 
 				// A completed scan that matched nothing drops back to the Setup screen; flag
 				// it so the screen shows a "no duplicates found" notice instead of looking
-				// identical to the never-scanned state.
+				// identical to the never-scanned state. Set the partial flag first: it picks
+				// the notice's wording ("none found yet" instead of "none found").
+				LastScanWasPartial = partial;
 				ShowNoDuplicatesNotice = SetupNotice.ShowAfterScanDone(Duplicates.Count);
 
 				if (SettingsFile.Instance.GeneratePreviewThumbnails) {
@@ -771,7 +777,13 @@ namespace VDF.GUI.ViewModels {
 				RebuildSearchPathIndex();
 				RefreshGroupStats();
 
-				if (SettingsFile.Instance.AutoApplySelectionPresetEnabled &&
+				// Nothing is checked for deletion automatically on partial results: a stop can
+				// land before the groups are validated, so a group may still hold a file that
+				// only chains to the others through a third one.
+				if (partial && (SettingsFile.Instance.AutoApplySelectionPresetEnabled
+						|| (SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)))
+					Logger.Instance.Info("Scan was stopped early: automatic selection skipped for these partial results.");
+				else if (SettingsFile.Instance.AutoApplySelectionPresetEnabled &&
 					!string.IsNullOrEmpty(SettingsFile.Instance.AutoApplySelectionPreset)) {
 					var preset = SettingsFile.Instance.CustomSelectionPresets
 						.FirstOrDefault(p => p.Name == SettingsFile.Instance.AutoApplySelectionPreset);
@@ -784,10 +796,15 @@ namespace VDF.GUI.ViewModels {
 					}
 				}
 
-				if (SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)
+				if (!partial && SettingsFile.Instance.RememberDeletedContent && SettingsFile.Instance.AutoCheckDeletedContentMatches)
 					AutoCheckTombstoneMatches();
 
 				AnnounceScanDone();
+
+				// A stopped scan ended because the user was there to stop it: no "scan
+				// complete" pop-up or desktop notification for something that did not complete.
+				if (partial)
+					return;
 
 				if (completedScheduledScan && SettingsFile.Instance.NotifyOnScheduledScanComplete) {
 					_ = MessageBoxService.Show(App.Lang["Message.ScheduledScanCompleted"]);
@@ -1151,6 +1168,7 @@ namespace VDF.GUI.ViewModels {
 				Utils.ThumbCacheHelpers.SetActiveProvider(Utils.ThumbPack.Open(TempDirectory.Path));
 
 				Duplicates.Clear();
+				LastScanWasPartial = false; // imported results carry no "stopped early" state
 				AddDuplicatesInBulk(items);
 
 				BuildActiveResultsView();
@@ -1690,6 +1708,8 @@ Non-Windows setup:
 
 			Duplicates.Clear();
 			ShowNoDuplicatesNotice = false;
+			LastScanWasPartial = false;
+			IsStoppingWithResults = false;
 
 			// Folder counting is informational only — never let it compete with the scan for IO.
 			folderCounting.CancelAll();
@@ -1730,7 +1750,16 @@ Non-Windows setup:
 		/// defaults (e.g. ThumbnailMaxWidth 100 instead of the configured value),
 		/// producing pixelated thumbnails (issue #778).
 		/// </summary>
-		void SyncCoreSettings() {
+		internal void SyncCoreSettings() {
+			// Settings stay editable during a scan, but only take effect at the next one:
+			// the running scan works from the copy made when it started. Rewriting that
+			// copy mid-scan (diagnostics, thumbnail loading and the file-pair test all
+			// call this) would change the scan under its feet — and IncludeList.Clear()
+			// below would race the workers reading the include scope.
+			if (IsScanning) {
+				Logger.Instance.Info("Settings not applied to the running scan; they take effect at the next scan.");
+				return;
+			}
 			Scanner.Settings.IncludeSubDirectories = SettingsFile.Instance.IncludeSubDirectories;
 			Scanner.Settings.IncludeImages = SettingsFile.Instance.IncludeImages;
 			Scanner.Settings.GeneratePreviewThumbnails = SettingsFile.Instance.GeneratePreviewThumbnails;
@@ -1759,6 +1788,7 @@ Non-Windows setup:
 			Scanner.Settings.CompareHorizontallyFlipped = SettingsFile.Instance.CompareHorizontallyFlipped;
 			Scanner.Settings.CustomDatabaseFolder = SettingsFile.Instance.CustomDatabaseFolder;
 			Scanner.Settings.DatabaseCheckpointIntervalMinutes = SettingsFile.Instance.DatabaseCheckpointIntervalMinutes;
+			Scanner.Settings.KeepPartialResultsOnStop = SettingsFile.Instance.ShowPartialResultsOnStop;
 			SettingsFile.Instance.LanguageCode = App.Lang.CurrentLanguage;
 			Scanner.Settings.LanguageCode = SettingsFile.Instance.LanguageCode;
 			Scanner.Settings.IncludeNonExistingFiles = SettingsFile.Instance.IncludeNonExistingFiles;
@@ -1822,10 +1852,33 @@ Non-Windows setup:
 
 		public ReactiveCommand<Unit, Unit> StopScanCommand => ReactiveCommand.Create(() => {
 			IsPaused = false;
-			IsBusy = true;
-			IsBusyOverlayText = "Stopping all scan threads...";
+			// The engine's own copy decides (settings stay editable during a scan, so the
+			// GUI value may already differ from what this scan was started with).
+			if (Scanner.Settings.KeepPartialResultsOnStop && !IsStoppingWithResults) {
+				// No blocking overlay: the scan finishes by comparing what it has, which can
+				// take a while — the scanning screen keeps showing that, and Stop stays
+				// clickable so a second press can end the comparison sooner.
+				IsStoppingWithResults = true;
+			}
+			else {
+				IsBusy = true;
+				IsBusyOverlayText = "Stopping all scan threads...";
+			}
 			Scanner.Stop();
 		}, CanStopScan);
+
+		bool _IsStoppingWithResults;
+		/// <summary>Stop was pressed and the scan is finishing with the results found so far.</summary>
+		public bool IsStoppingWithResults {
+			get => _IsStoppingWithResults;
+			set => this.RaiseAndSetIfChanged(ref _IsStoppingWithResults, value);
+		}
+
+		/// <summary>CanExecute for actions that must not run alongside a scan.</summary>
+		IObservable<bool> IsNotScanning {
+			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]
+			get => this.WhenAnyValue(x => x.IsScanning, scanning => !scanning);
+		}
 
 		IObservable<bool> CanStopScan {
 			[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = WhenAnyValueTrimJustification)]

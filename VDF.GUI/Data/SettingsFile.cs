@@ -406,6 +406,16 @@ namespace VDF.GUI.Data {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, Math.Max(0, value));
 		} = 5;
+		/// <summary>
+		/// Stop finishes a scan with the results found so far instead of discarding them
+		/// (mapped onto Core's Settings.KeepPartialResultsOnStop). On by default: stopping
+		/// and then starting a new scan still replaces the partial results.
+		/// </summary>
+		[JsonPropertyName("ShowPartialResultsOnStop")]
+		public bool ShowPartialResultsOnStop {
+			get;
+			set => this.RaiseAndSetIfChanged(ref field, value);
+		} = true;
 
 		public static void SaveSettings(string? path = null) {
 			path = ResolveSettingsPath(path);

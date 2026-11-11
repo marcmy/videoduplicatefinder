@@ -134,8 +134,16 @@
         <Border CornerRadius="8" Padding="14,7"
                 BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
                 BorderThickness="1">
-          <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}" VerticalAlignment="Center"
-                     Text="{Binding Source={x:Static local:App.Lang}, Path=[Scan.PauseNote]}" />
+          <Panel VerticalAlignment="Center">
+            <TextBlock FontSize="12.5" Opacity="{DynamicResource VdfTextMutedOpacity}"
+                       IsVisible="{Binding !IsStoppingWithResults}"
+                       Text="{Binding Source={x:Static local:App.Lang}, Path=[Scan.PauseNote]}" />
+            <!-- Stop with partial results keeps the scan running while it compares what is
+                 done; say so, since the screen otherwise looks like Stop did nothing. -->
+            <TextBlock x:Name="StoppingNote" FontSize="12.5" TextWrapping="Wrap" MaxWidth="420"
+                       IsVisible="{Binding IsStoppingWithResults}"
+                       Text="{Binding Source={x:Static local:App.Lang}, Path=[Scan.StoppingNote]}" />
+          </Panel>
         </Border>
       </StackPanel>
 

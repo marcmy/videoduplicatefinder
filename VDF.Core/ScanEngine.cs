@@ -125,6 +125,14 @@ namespace VDF.Core {
 		// joining it; lets a standalone StartCompare open its own session instead.
 		bool compareIsChainedToSearch;
 
+		/// <summary>
+		/// True when the last scan was stopped by the user and finished with what it had
+		/// found so far (<see cref="Settings.KeepPartialResultsOnStop"/>) instead of every
+		/// file being fingerprinted and compared. Valid when <see cref="ScanDone"/> fires;
+		/// reset when the next scan or compare starts.
+		/// </summary>
+		public bool ResultsArePartial { get; private set; }
+
 		string T(string key, params object[] args) =>
 			LanguageService.Instance.Get(Settings.LanguageCode, key, args);
 
@@ -345,6 +353,9 @@ namespace VDF.Core {
 				await BuildFileList(cancelationTokenSource.Token);
 				Logger.Instance.Info(T("Log.FinishedBuildingFileList", SearchTimer.StopGetElapsedAndRestart()));
 				FilesEnumerated?.Invoke(this, new EventArgs());
+				// A stop during the file walk has nothing worth comparing yet: only a stop
+				// once fingerprinting has begun may finish with partial results.
+				bool fingerprintingStarted = !cancelationTokenSource.IsCancellationRequested;
 				try {
 					if (!cancelationTokenSource.IsCancellationRequested && Settings.UseAiMatching) {
 						unionEmbeddingStore = AI.UnionEmbeddingStore.Load();
@@ -379,7 +390,19 @@ namespace VDF.Core {
 				lock (checkpointLock)
 					DatabaseUtils.SaveDatabase();
 				BuildingHashesDone?.Invoke(this, new EventArgs());
-				if (!cancelationTokenSource.IsCancellationRequested) {
+				bool stopped = cancelationTokenSource.IsCancellationRequested;
+				// Stopped mid-fingerprinting with partial results wanted: compare what was
+				// fingerprinted. Entries this scan never reached keep their default invalid
+				// flag and ones cut off mid-sampling fail the compare snapshot check, so the
+				// compare covers exactly the files finished so far. PrepareCompare swaps in a
+				// fresh cancellation source, so a second Stop still ends the compare.
+				bool keepPartial = ComparesAfterStoppedFingerprinting(stopped, searchAndCompare,
+					fingerprintingStarted, Settings.KeepPartialResultsOnStop);
+				if (keepPartial) {
+					ResultsArePartial = true;
+					Logger.Instance.Info("Scan stopped while fingerprinting: comparing the files fingerprinted so far.");
+				}
+				if (!stopped || keepPartial) {
 					if (searchAndCompare)
 						StartCompare();
 					else
@@ -396,33 +419,53 @@ namespace VDF.Core {
 			}
 		}
 
+		/// <summary>
+		/// Whether a search whose fingerprinting was stopped goes on to compare what it has.
+		/// Only with partial results wanted, only once fingerprinting began (a stop during
+		/// the file walk has nothing to compare), and only when the search chains into the
+		/// compare (search-only callers such as the CLI drive the phases themselves).
+		/// </summary>
+		internal static bool ComparesAfterStoppedFingerprinting(bool stopped, bool searchAndCompare,
+			bool fingerprintingStarted, bool keepPartialResultsOnStop) =>
+			stopped && searchAndCompare && fingerprintingStarted && keepPartialResultsOnStop;
+
 		public async void StartCompare() {
 			try {
 				// Standalone compare runs (GUI compare-only rescan, CLI compare command) get
 				// their own log session; a compare chained to StartSearch stays in the scan's.
-				if (!compareIsChainedToSearch)
+				if (!compareIsChainedToSearch) {
 					Logger.Instance.BeginSession(T("Log.SessionCompare"));
+					ResultsArePartial = false;
+				}
 				compareIsChainedToSearch = false;
 				PrepareCompare();
 				SearchTimer.Start();
 				ElapsedTimer.Start();
 				Logger.Instance.Info(T("Log.ScanForDuplicates"));
+				// No token on Task.Run: each pass observes the token itself. A token here only
+				// turns a Stop landing between the guard and the start into a
+				// TaskCanceledException, which would discard results a stopped scan may keep.
 				if (!cancelationTokenSource.IsCancellationRequested)
-					await Task.Run(ScanForDuplicates, cancelationTokenSource.Token);
+					await Task.Run(ScanForDuplicates);
 				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnablePartialClipDetection)
-					await Task.Run(ScanForPartialDuplicates, cancelationTokenSource.Token);
+					await Task.Run(ScanForPartialDuplicates);
 				// After the audio pass: videos it already grouped are excluded, the visual
 				// pass only adds pairs audio could not see (no/replaced audio, music-only).
 				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnableAiPartialDetection)
-					await Task.Run(ScanForPartialDuplicatesVisual, cancelationTokenSource.Token);
+					await Task.Run(ScanForPartialDuplicatesVisual);
 				if (!cancelationTokenSource.IsCancellationRequested)
-					await Task.Run(BackfillTrackLanguages, cancelationTokenSource.Token);
+					await Task.Run(BackfillTrackLanguages);
 				if (cancelationTokenSource.IsCancellationRequested) {
 					// The passes swallow their internal OperationCanceledExceptions, so a
 					// Stop pressed during any of them would otherwise fall through to
-					// ScanDone and present partial results as a completed scan.
-					AbortScanOnError(new OperationCanceledException());
-					return;
+					// ScanDone and present partial results as a completed scan. Either abort,
+					// or — when wanted — finish with what was found, flagged as partial.
+					if (!Settings.KeepPartialResultsOnStop) {
+						AbortScanOnError(new OperationCanceledException());
+						return;
+					}
+					ResultsArePartial = true;
+					Logger.Instance.Info($"Scan stopped while comparing: keeping the {Duplicates.Count:N0} duplicate(s) found so far; the remaining passes were skipped.");
 				}
 				SearchTimer.Stop();
 				ElapsedTimer.Stop();
@@ -435,7 +478,7 @@ namespace VDF.Core {
 					DatabaseUtils.SaveDatabase();
 				isScanning = false;
 				ScanDone?.Invoke(this, new EventArgs());
-				Logger.Instance.Info(T("Log.ScanDone"));
+				Logger.Instance.Info(ResultsArePartial ? "Scan stopped early: showing partial results." : T("Log.ScanDone"));
 			}
 			catch (Exception ex) {
 				AbortScanOnError(ex);
@@ -480,6 +523,7 @@ namespace VDF.Core {
 				AI.AiComponents.EnsureReady();
 
 			CancelAllTasks();
+			ResultsArePartial = false;
 
 			FfmpegEngine.HardwareAccelerationMode = Settings.HardwareAccelerationMode;
 			FfmpegEngine.CustomFFArguments = Settings.CustomFFArguments;
@@ -1898,7 +1942,9 @@ namespace VDF.Core {
 						Parallel.For(0, imageEntries.Count, new ParallelOptions { CancellationToken = cancelationTokenSource.Token, MaxDegreeOfParallelism = matchingParallelism }, compareAction);
 					}
 					else {
-						for (int i = 0; i < imageEntries.Count; i++)
+						// Like the linear video path: the sequential loop must check the
+						// token itself, or Stop is ignored until every image is compared.
+						for (int i = 0; i < imageEntries.Count && !cancelationTokenSource.IsCancellationRequested; i++)
 							compareAction(i);
 					}
 				}
@@ -2581,7 +2627,8 @@ namespace VDF.Core {
 			}
 			catch (OperationCanceledException) {
 				// Stop pressed mid-validation: StartCompare sees the cancelled token and
-				// aborts, so the partially validated groups never reach the user.
+				// either aborts or, with KeepPartialResultsOnStop, shows the groups as they
+				// stand (each split above is applied whole, so no group is half-split).
 				return;
 			}
 
@@ -3098,18 +3145,22 @@ namespace VDF.Core {
 
 		public void Stop() {
 			Logger.Instance.Info("Scan stopped by user");
-			if (isScanning)
+			if (isScanning) {
 				cancelationTokenSource.Cancel();
-			// Cancel before resuming: workers parked in WaitWhilePaused observe the
-			// cancelled token and throw instead of waking up and fully processing one
-			// more file each (with a dead token that would poison its results).
-			if (pauseTokenSource.IsPaused)
-				Resume();
+				// Cancel before resuming: workers parked in WaitWhilePaused observe the
+				// cancelled token and throw instead of waking up and fully processing one
+				// more file each (with a dead token that would poison its results).
+				if (pauseTokenSource.IsPaused)
+					Resume();
+			}
 			else
 				// No scan task is alive to observe the cancellation, so nothing would ever
 				// raise ScanAborted. A frontend that still believes a scan is running (its
 				// Stop was clickable) would otherwise wait on its busy overlay forever (#821)
-				// — tell it the scan is over so it can reset.
+				// — tell it the scan is over so it can reset. (This else once drifted onto
+				// the pause check, raising ScanAborted on every unpaused Stop of a LIVE scan:
+				// the UI reset while workers were still winding down, and a stop that keeps
+				// partial results would have been reported as aborted before its ScanDone.)
 				ScanAborted?.Invoke(this, new EventArgs());
 		}
 	}

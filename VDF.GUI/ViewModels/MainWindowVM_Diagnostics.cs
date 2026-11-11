@@ -76,6 +76,7 @@ namespace VDF.GUI.ViewModels {
 			await MessageBoxService.Show(ok
 				? string.Format(App.Lang["MainWindow.Settings.Diagnostics.ExportGrayBytes.Done"], result)
 				: App.Lang["MainWindow.Settings.Diagnostics.ExportGrayBytes.Failed"]);
-		});
+		// Locked during a scan: it walks the database the scan's workers are writing to.
+		}, IsNotScanning);
 	}
 }
