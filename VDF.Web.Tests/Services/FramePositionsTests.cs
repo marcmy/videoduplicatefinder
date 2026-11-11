@@ -50,11 +50,13 @@ public sealed class FramePositionsTests {
 
 	[Fact]
 	public void DefaultFrame_IsTheMiddleOneOfTheSampledFrames() {
-		// 50 samples: the first one sits at 2 percent, in the intro. The middle one
-		// (index 24, 25/51 of the file) is the one that says something about the video.
+		// 50 samples: the first one sits in the intro. The middle one (index 24) is the
+		// one that says something about the video.
 		var at = FramePositions.DefaultTimestamp(Video(5100), Sampling(50));
 
-		AssertSeconds(2500, at);
+		float middle = ScanEngine.BuildSamplePositions(50)[24];
+		Assert.InRange(middle, 0.4f, 0.6f);
+		AssertSeconds(5100 * middle, at);
 	}
 
 	[Fact]

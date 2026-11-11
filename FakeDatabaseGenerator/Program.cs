@@ -137,15 +137,9 @@ namespace FakeDatabaseGenerator {
 			return bytes;
 		}
 
-		static List<double> BuildPositions(int thumbnailCount) {
-			var positions = new List<double>(thumbnailCount);
-			double positionCounter = 0;
-			for (int i = 0; i < thumbnailCount; i++) {
-				positionCounter += 1.0d / (thumbnailCount + 1);
-				positions.Add(positionCounter);
-			}
-			return positions;
-		}
+		// The engine's own positions, so generated keys match what a scan looks up.
+		static List<double> BuildPositions(int thumbnailCount) =>
+			ScanEngine.BuildSamplePositions(thumbnailCount).ConvertAll(p => (double)p);
 
 		static Options ParseArgs(string[] args) {
 			var options = new Options {

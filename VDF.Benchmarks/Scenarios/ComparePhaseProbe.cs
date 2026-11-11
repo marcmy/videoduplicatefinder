@@ -57,6 +57,27 @@ public static class ComparePhaseProbe {
 	}
 
 	/// <summary>
+	/// The positions the engine under test samples at, so the corpus's frames sit exactly
+	/// where its compare looks them up (a mismatch drops every entry and measures nothing).
+	/// The perf gate builds this harness against the pinned baseline as well, which predates
+	/// <c>ScanEngine.BuildSamplePositions</c>: call it when present, otherwise reproduce the
+	/// baseline's own float-accumulated positions.
+	/// </summary>
+	static List<float> EngineSamplePositions(int count) {
+		var build = typeof(ScanEngine).GetMethod("BuildSamplePositions",
+			System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, new[] { typeof(int) });
+		if (build?.Invoke(null, new object[] { count }) is List<float> engine)
+			return engine;
+		var legacy = new List<float>(count);
+		float positionCounter = 0f;
+		for (int i = 0; i < count; i++) {
+			positionCounter += 1.0f / (count + 1);
+			legacy.Add(positionCounter);
+		}
+		return legacy;
+	}
+
+	/// <summary>
 	/// Builds a deterministic corpus: ~1 in 6 base entries spawns a duplicate
 	/// cluster of 2-4 members whose gray bytes are the base pattern with ±2 noise
 	/// (well above the 96% similarity threshold) and whose durations differ by
@@ -65,12 +86,7 @@ public static class ComparePhaseProbe {
 	/// non-duplicates that still exercise the full comparison cost.
 	/// </summary>
 	static List<FileEntry> BuildCorpus(int count, Random rng, double durationMin = 30, double durationSpread = 3570) {
-		var positions = new List<float>();
-		float positionCounter = 0f;
-		for (int i = 0; i < ThumbnailCount; i++) {
-			positionCounter += 1.0f / (ThumbnailCount + 1);
-			positions.Add(positionCounter);
-		}
+		var positions = EngineSamplePositions(ThumbnailCount);
 
 		var entries = new List<FileEntry>(count);
 		int fileIndex = 0;

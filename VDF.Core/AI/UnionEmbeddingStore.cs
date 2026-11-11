@@ -58,11 +58,16 @@ namespace VDF.Core.AI {
 
 		internal int Count => records.Count;
 
+		// Embeddings written before sample positions were computed exactly are keyed by a
+		// float-drifted position; FileEntry.TryFindMatchingPositionKey still finds them.
 		internal bool HasEmbedding(FileEntry entry, double positionKey) =>
-			TryGetCurrent(entry)?.Positions.ContainsKey(positionKey) == true;
+			TryGetCurrent(entry) is { } record &&
+			FileEntry.TryFindMatchingPositionKey(record.Positions, positionKey, out _);
 
 		internal byte[]? GetEmbedding(FileEntry entry, double positionKey) =>
-			TryGetCurrent(entry) is { } record && record.Positions.TryGetValue(positionKey, out byte[]? embedding)
+			TryGetCurrent(entry) is { } record &&
+			FileEntry.TryFindMatchingPositionKey(record.Positions, positionKey, out double key) &&
+			record.Positions.TryGetValue(key, out byte[]? embedding)
 				? embedding
 				: null;
 

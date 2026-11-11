@@ -54,6 +54,11 @@ namespace VDF.Core {
 		internal PauseTokenSource pauseTokenSource = new();
 		CancellationTokenSource cancelationTokenSource = new();
 		internal readonly List<float> positionList = new();
+		/// <summary>
+		/// Frames per video the last scan in this process sampled. Sample positions are nested,
+		/// so a quick rescan (compare only) can use this many frames or fewer without decoding.
+		/// </summary>
+		public int GatheredThumbnailCount { get; private set; }
 		// The video compare switches from the linear pair loop to duration buckets at this
 		// many videos (avoids bucket overhead on small libraries). Internal so tests can
 		// drive the bucketed path deliberately.
@@ -537,6 +542,7 @@ namespace VDF.Core {
 			SearchTimer.Reset();
 
 			BuildPositionList();
+			GatheredThumbnailCount = positionList.Count;
 			NormalizeScanPaths();
 
 			isScanning = true;
@@ -549,18 +555,36 @@ namespace VDF.Core {
 
 		/// <summary>
 		/// Relative positions (between 0 and 1, both exclusive) of the frames sampled per
-		/// video: evenly spaced, never the very first or last frame. The one definition for
-		/// the scan, the thumbnail reload, the pair diagnostic and the frontends that show
+		/// video, in ascending order, never the very first or last frame. The one definition
+		/// for the scan, the thumbnail reload, the pair diagnostic and the frontends that show
 		/// the sampled frames, so that what is shown is what was compared.
 		/// </summary>
+		/// <remarks>
+		/// The positions are the first <paramref name="thumbnailCount"/> terms of the base-2
+		/// van der Corput sequence (1/2, 1/4, 3/4, 1/8, 5/8, 3/8, 7/8, 1/16, ...), sorted.
+		/// The layout is nested: the positions of a smaller count are always a subset of a
+		/// larger count's, so lowering the frame count reuses cached frames with no decoding
+		/// and raising it decodes only the added positions. Every term is an exact binary
+		/// fraction, so shared positions are bit-identical cache keys. For 1, 3, 7 and 15
+		/// frames this is the same evenly spaced layout as before (k / (n + 1)); other
+		/// counts are evenly spaced within a factor of two (no gap is more than twice
+		/// another).
+		/// </remarks>
 		public static List<float> BuildSamplePositions(int thumbnailCount) {
 			var positions = new List<float>(Math.Max(0, thumbnailCount));
-			float positionCounter = 0f;
-			for (int i = 0; i < thumbnailCount; i++) {
-				positionCounter += 1.0F / (thumbnailCount + 1);
-				positions.Add(positionCounter);
-			}
+			for (int k = 1; k <= thumbnailCount; k++)
+				positions.Add(VanDerCorputBase2(k));
+			positions.Sort();
 			return positions;
+		}
+
+		/// <summary>The k-th term (k ≥ 1) of the base-2 van der Corput sequence: k's binary digits mirrored behind the binary point.</summary>
+		static float VanDerCorputBase2(int k) {
+			double value = 0d, digit = 0.5d;
+			for (; k > 0; k >>= 1, digit *= 0.5d)
+				if ((k & 1) != 0)
+					value += digit;
+			return (float)value;
 		}
 
 		/// <summary>
@@ -613,7 +637,12 @@ namespace VDF.Core {
 				BuildPositionList();
 			}
 			else if (Settings.ThumbnailCount != positionList.Count) {
-				throw new Exception("Number of thumbnails can't be changed between quick rescans! Rescan has been aborted.");
+				// Sample positions are nested: a lower count's positions are a subset of the
+				// gathered count's, so every needed frame is already cached. A higher count
+				// has positions nothing sampled yet and needs a scan.
+				if (Settings.ThumbnailCount > Math.Max(GatheredThumbnailCount, positionList.Count))
+					throw new Exception("Number of thumbnails can't be increased between quick rescans! Rescan has been aborted.");
+				BuildPositionList();
 			}
 			NormalizeScanPaths();
 			if (DatabaseUtils.Database.Count == 0) {
@@ -1107,6 +1136,10 @@ namespace VDF.Core {
 						if (entry.OsHash == null && IsInIncludeScope(entry))
 							entry.OsHash = OsHashUtils.TryCompute(entry.Path);
 
+						// Frames cached under an older, float-drifted position key count as
+						// cached: move them onto the exact keys before any "already sampled" check.
+						entry.SnapCachedPositionKeys(positionList, Settings.MaxSamplingDurationSeconds);
+
 						if (Settings.IncludeMissingFiles && entry.grayBytes?.Count > 0) {
 							bool hasAllInformation = entry.IsImage && HasUsableCachedGray(entry, 0);
 							if (!entry.IsImage) {
@@ -1463,6 +1496,9 @@ namespace VDF.Core {
 				return true;
 			}
 
+			// Compare-only runs never pass through GatherInfos, so older drifted keys are
+			// snapped here too.
+			entry.SnapCachedPositionKeys(positionList, Settings.MaxSamplingDurationSeconds);
 			var gray = new byte[]?[positionList.Count];
 			var positionKeys = Settings.UseAiMatching ? new double[positionList.Count] : null;
 			for (int j = 0; j < positionList.Count; j++) {
