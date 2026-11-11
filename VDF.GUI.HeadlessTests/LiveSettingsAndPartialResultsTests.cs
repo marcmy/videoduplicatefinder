@@ -72,6 +72,37 @@ public class LiveSettingsAndPartialResultsTests {
 		}
 	});
 
+	/// <summary>
+	/// Regression: the scan start set IsScanning before copying the settings, so the guard in
+	/// SyncCoreSettings skipped the copy for the very scan being started. Every scan then ran on
+	/// engine defaults — no included folders — compared 0 files and "found no duplicates" at once.
+	/// </summary>
+	[Fact]
+	public Task StartingAScan_HandsTheCurrentSettingsToThatScan() => HeadlessUi.Run(() => {
+		var vm = new MainWindowVM();
+		var settings = SettingsFile.Instance;
+		var includesBefore = settings.Includes.ToList();
+		bool aiBefore = settings.UseAiMatching;
+		string folder = Path.Combine(Path.GetTempPath(), "vdf-start-scan-" + Guid.NewGuid().ToString("N"));
+		try {
+			settings.Includes.Clear();
+			settings.Includes.Add(folder);
+			settings.UseAiMatching = !aiBefore;
+
+			vm.EnterScanningState();
+
+			Assert.True(vm.IsScanning);
+			Assert.Equal(new[] { folder }, vm.Scanner.Settings.IncludeList);
+			Assert.Equal(!aiBefore, vm.Scanner.Settings.UseAiMatching);
+		}
+		finally {
+			vm.IsScanning = false;
+			settings.Includes.Clear();
+			foreach (var i in includesBefore) settings.Includes.Add(i);
+			settings.UseAiMatching = aiBefore;
+		}
+	});
+
 	[Fact]
 	public Task ActionsThatTouchWhatAScanUses_StayLockedDuringAScan() => HeadlessUi.Run(() => {
 		var vm = new MainWindowVM { IsScanning = true };

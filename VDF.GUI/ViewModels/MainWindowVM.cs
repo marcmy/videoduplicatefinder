@@ -1720,15 +1720,13 @@ Non-Windows setup:
 			TempDirectory = TempExtractionManager.Register(new("VDF-"));
 			Utils.ThumbCacheHelpers.SetActiveProvider(Utils.ThumbPack.Open(TempDirectory.Path));
 
-			IsScanning = true;
+			SettingsFile.SaveSettings();
+			EnterScanningState();
 			IsReadyToCompare = false;
 			IsGathered = false;
 			TotalDuplicateGroups = 0;
 			TotalDuplicates = 0;
 			TotalDuplicatesSize = string.Empty;
-
-			SettingsFile.SaveSettings();
-			SyncCoreSettings();
 
 			ChangeIsBusyMessage();
 			IsBusy = true;
@@ -1763,6 +1761,21 @@ Non-Windows setup:
 				Logger.Instance.Info("Settings not applied to the running scan; they take effect at the next scan.");
 				return;
 			}
+			CopySettingsToEngine();
+		}
+
+		/// <summary>
+		/// Starts the scanning state for a scan that is about to begin. The settings are copied
+		/// FIRST: once <see cref="IsScanning"/> is up, <see cref="SyncCoreSettings"/> leaves the
+		/// engine's copy alone, and copying after it made every scan run on engine defaults —
+		/// no included folders, so it compared nothing and finished at once.
+		/// </summary>
+		internal void EnterScanningState() {
+			CopySettingsToEngine();
+			IsScanning = true;
+		}
+
+		void CopySettingsToEngine() {
 			Scanner.Settings.IncludeSubDirectories = SettingsFile.Instance.IncludeSubDirectories;
 			Scanner.Settings.IncludeImages = SettingsFile.Instance.IncludeImages;
 			Scanner.Settings.GeneratePreviewThumbnails = SettingsFile.Instance.GeneratePreviewThumbnails;
