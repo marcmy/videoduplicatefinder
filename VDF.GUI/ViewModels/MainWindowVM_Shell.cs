@@ -33,6 +33,9 @@ namespace VDF.GUI.ViewModels {
 				this.RaisePropertyChanged(nameof(IsShellSettingsVisible));
 				this.RaisePropertyChanged(nameof(IsShellLogVisible));
 				RaiseShellNavChanged();
+				// Drives come and go (USB, mapped shares): list them fresh each time the page opens.
+				if (value == ShellView.Settings)
+					_ = RefreshDriveTypeRowsAsync();
 			}
 		}
 
