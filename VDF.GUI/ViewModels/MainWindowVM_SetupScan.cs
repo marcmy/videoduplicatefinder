@@ -115,6 +115,7 @@ namespace VDF.GUI.ViewModels {
 		internal void DiscardResultsToSetup() {
 			Duplicates.Clear(); // Reset event → checked counters/undo stack clear + state raise
 			ShowNoDuplicatesNotice = false;
+			LastScanWasPartial = false;
 			BuildActiveResultsView();
 			RefreshGroupStats();
 			// The fingerprint database may have grown since these results were produced.
@@ -141,6 +142,41 @@ namespace VDF.GUI.ViewModels {
 		public ReactiveCommand<Unit, Unit> DismissNoDuplicatesNoticeCommand => ReactiveCommand.Create(() => {
 			ShowNoDuplicatesNotice = false;
 		});
+
+		// ---------- stopped scan with partial results ----------
+		bool _LastScanWasPartial;
+		/// <summary>
+		/// The results on screen come from a scan the user stopped before it finished
+		/// (<see cref="SettingsFile.ShowPartialResultsOnStop"/>). Drives the results banner
+		/// and the wording of the Setup screen's empty-result notice. Cleared when a scan
+		/// starts or the results are discarded or replaced by an import.
+		/// </summary>
+		public bool LastScanWasPartial {
+			get => _LastScanWasPartial;
+			set {
+				this.RaiseAndSetIfChanged(ref _LastScanWasPartial, value);
+				ShowPartialResultsNotice = value;
+				this.RaisePropertyChanged(nameof(NoDuplicatesNoticeTitle));
+				this.RaisePropertyChanged(nameof(NoDuplicatesNoticeText));
+				this.RaisePropertyChanged(nameof(NoDuplicatesNoticeGlyph));
+			}
+		}
+
+		bool _ShowPartialResultsNotice;
+		/// <summary>The results view's "stopped early" banner; dismissible on its own.</summary>
+		public bool ShowPartialResultsNotice {
+			get => _ShowPartialResultsNotice;
+			set => this.RaiseAndSetIfChanged(ref _ShowPartialResultsNotice, value);
+		}
+
+		public ReactiveCommand<Unit, Unit> DismissPartialResultsNoticeCommand => ReactiveCommand.Create(() => {
+			ShowPartialResultsNotice = false;
+		});
+
+		// An empty result from a stopped scan is not "no duplicates": the rest was never compared.
+		public string NoDuplicatesNoticeTitle => App.Lang[LastScanWasPartial ? "Setup.NoDuplicatesYet.Title" : "Setup.NoDuplicates.Title"];
+		public string NoDuplicatesNoticeText => App.Lang[LastScanWasPartial ? "Setup.NoDuplicatesYet.Text" : "Setup.NoDuplicates.Text"];
+		public string NoDuplicatesNoticeGlyph => LastScanWasPartial ? "⏹" : "✓";
 
 		// ---------- folder list ----------
 		public ObservableCollection<SetupFolderVM> SetupFolders { get; } = new();

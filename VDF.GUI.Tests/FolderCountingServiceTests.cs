@@ -103,15 +103,24 @@ namespace VDF.GUI.Tests {
 				WriteFile($@"big\file{i}.mp4");
 
 			var service = new FolderCountingService(TimeSpan.Zero);
-			var progressed = new TaskCompletionSource();
+			var progressed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+			// Progress is reported on the walking thread. Hold the walk inside its first report
+			// until Cancel has been issued: otherwise a fast machine finishes the remaining files
+			// between that report and the Cancel call and (correctly) reports completion.
+			using var cancelIssued = new ManualResetEventSlim(false);
 			bool completed = false;
 			service.StartCounting(root, p => {
-				if (p.Completed) completed = true;
-				else progressed.TrySetResult();
+				if (p.Completed) {
+					completed = true;
+					return;
+				}
+				if (progressed.TrySetResult())
+					cancelIssued.Wait(TimeSpan.FromSeconds(15));
 			});
 			var progressedOrTimedOut = await Task.WhenAny(progressed.Task, Task.Delay(TimeSpan.FromSeconds(15)));
 			Assert.True(progressedOrTimedOut == progressed.Task, "no progress before cancel");
 			service.Cancel(root);
+			cancelIssued.Set();
 
 			// Give the walk time to notice the cancellation and unwind.
 			var sw = System.Diagnostics.Stopwatch.StartNew();

@@ -71,7 +71,9 @@ namespace VDF.GUI.ViewModels {
 
 		/// <summary>The outcome of a scan, which a sighted user reads off the screen that comes up.</summary>
 		internal void AnnounceScanDone() =>
-			Announce(Duplicates.Count == 0
+			Announce(LastScanWasPartial
+				? App.Lang[Duplicates.Count == 0 ? "Setup.NoDuplicatesYet.Text" : "Results.Partial.Text"]
+				: Duplicates.Count == 0
 				? App.Lang["Setup.NoDuplicates.Text"]
 				: string.Format(App.Lang["Notification.ScanComplete.Message"], TotalDuplicateGroups));
 	}

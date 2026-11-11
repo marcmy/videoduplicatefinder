@@ -90,11 +90,11 @@
           <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <TextBlock FontSize="14" VerticalAlignment="Center"
                        Foreground="{DynamicResource VdfGoodBrush}"
-                       Text="✓" />
+                       Text="{Binding NoDuplicatesNoticeGlyph}" />
             <TextBlock FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
-                       Text="{Binding Source={x:Static local:App.Lang}, Path=[Setup.NoDuplicates.Title]}" />
+                       Text="{Binding NoDuplicatesNoticeTitle}" />
             <TextBlock FontSize="13" Opacity="{DynamicResource VdfTextDim80Opacity}" TextWrapping="Wrap" VerticalAlignment="Center"
-                       Text="{Binding Source={x:Static local:App.Lang}, Path=[Setup.NoDuplicates.Text]}" />
+                       Text="{Binding NoDuplicatesNoticeText}" />
           </StackPanel>
         </DockPanel>
       </Border>

@@ -192,6 +192,16 @@ namespace VDF.Core {
 		/// </summary>
 		public int DatabaseCheckpointIntervalMinutes = 5;
 
+		// ── Stopped scans ───────────────────────────────────────────────────
+		/// <summary>
+		/// When a scan is stopped, finish with the results found so far instead of discarding
+		/// them: a stop while fingerprinting compares the files fingerprinted so far, a stop
+		/// while comparing keeps the groups already found. Either way the remaining passes are
+		/// skipped and <see cref="ScanEngine.ResultsArePartial"/> is set. Off by default so
+		/// frontends that treat a stop as an abort (the CLI) keep doing so.
+		/// </summary>
+		public bool KeepPartialResultsOnStop;
+
 		/// <summary>
 		/// Returns the allowed duration tolerance in seconds for a video of the given duration,
 		/// based on <see cref="PercentDurationDifference"/>, <see cref="DurationDifferenceMinSeconds"/>,

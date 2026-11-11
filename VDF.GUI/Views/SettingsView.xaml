@@ -128,7 +128,10 @@
     </Style>
   </UserControl.Styles>
 
-  <Grid RowDefinitions="*,Auto" IsEnabled="{Binding !IsScanning}">
+  <!-- Editable during a scan: the scan works from the copy SyncCoreSettings made when it
+       started, so changes apply to the next scan. The few actions that touch what a running
+       scan uses (AI component download, gray-bytes export, file-pair test) lock themselves. -->
+  <Grid RowDefinitions="*,Auto">
     <Grid Grid.Row="0" ColumnDefinitions="210,*">
 
       <!-- ===== left nav (mockup .set-nav) ===== -->
@@ -156,7 +159,7 @@
       </Border>
 
       <!-- ===== main column (mockup .set-main) ===== -->
-      <Grid Grid.Column="1" RowDefinitions="Auto,*" Margin="30,22,30,0" MaxWidth="760"
+      <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" Margin="30,22,30,0" MaxWidth="760"
             HorizontalAlignment="Left">
 
         <!-- header: section title + search box -->
@@ -169,7 +172,18 @@
                    Text="{Binding SettingsSearchQuery, Mode=TwoWay}" />
         </DockPanel>
 
-        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+        <!-- shown while a scan runs: edits here do not reach that scan -->
+        <Border x:Name="ScanRunningNote" Grid.Row="1"
+                CornerRadius="8" Padding="12,8" Margin="0,4,12,8"
+                Background="{DynamicResource VdfWarnSoftBrush}"
+                BorderBrush="{DynamicResource VdfWarnBorderBrush}"
+                BorderThickness="1"
+                IsVisible="{Binding IsScanning}">
+          <TextBlock FontSize="12.5" TextWrapping="Wrap"
+                     Text="{Binding Source={x:Static local:App.Lang}, Path=[Settings.ScanRunningNote]}" />
+        </Border>
+
+        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
           <StackPanel x:Name="SectionsHost" Margin="0,0,12,30">
 
             <TextBlock x:Name="NoResultsText" Margin="0,24,0,0" FontSize="13" Opacity="{DynamicResource VdfTextMutedOpacity}" IsVisible="False"
@@ -774,6 +788,14 @@
                   SearchTags="checkpoint autosave crash">
                 <NumericUpDown Classes="stepper" Minimum="0" Maximum="60" Increment="1" FormatString="0"
                                Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=DatabaseCheckpointIntervalMinutes}" />
+              </views:SettingRow>
+
+              <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowPartialResultsOnStop]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.ShowPartialResultsOnStopTooltip]}"
+                  SearchTags="stop partial results incomplete">
+                <ToggleSwitch Classes="plain"
+                              IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=ShowPartialResultsOnStop}" />
               </views:SettingRow>
             </StackPanel>
 

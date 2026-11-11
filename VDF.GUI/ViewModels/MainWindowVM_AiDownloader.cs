@@ -54,9 +54,11 @@ namespace VDF.GUI.ViewModels {
 
 		void RefreshAiComponentsStatus() => AiComponentsStatusText = BuildAiComponentsStatusText();
 
+		// Locked during a scan: the download replaces model and runtime files the running
+		// scan may have loaded.
 		public ReactiveCommand<Unit, Unit> DownloadAiComponentsCommand => ReactiveCommand.CreateFromTask(async () => {
 			await DownloadAiComponentsAsync();
-		});
+		}, IsNotScanning);
 
 		internal async Task DownloadAiComponentsAsync() {
 			if (IsAiDownloadInProgress) return;

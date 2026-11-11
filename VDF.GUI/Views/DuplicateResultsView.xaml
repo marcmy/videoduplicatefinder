@@ -202,8 +202,32 @@
 
     <!-- ======== First-results hint (one-shot, dismissible): thumbnails are small by
          default — point at the Preview drag handle and the thumbnail-width setting ======== -->
+    <StackPanel Grid.Row="0">
+    <!-- ======== Stopped-early banner: these results come from a scan the user stopped
+         (ShowPartialResultsOnStop), so not every file was fingerprinted and compared ======== -->
     <Border
-        Grid.Row="0"
+        x:Name="PartialResultsBanner"
+        Padding="10,6"
+        Background="{DynamicResource VdfWarnSoftBrush}"
+        BorderBrush="{DynamicResource VdfWarnBorderBrush}"
+        BorderThickness="0,0,0,1"
+        IsVisible="{Binding ShowPartialResultsNotice}">
+      <DockPanel LastChildFill="True">
+        <Button DockPanel.Dock="Right" Classes="group-action" FontSize="12"
+                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}"
+                Command="{Binding DismissPartialResultsNoticeCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="4">
+            <TextBlock Text="{Binding Source={x:Static local:App.Lang}, Path=[Setup.Welcome.Dismiss]}" />
+            <TextBlock Text="✕" />
+          </StackPanel>
+        </Button>
+        <TextBlock DockPanel.Dock="Left" Text="⏹" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
+                   Foreground="{DynamicResource VdfWarnBrush}" />
+        <TextBlock VerticalAlignment="Center" FontSize="12.5" TextWrapping="Wrap"
+                   Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Partial.Text]}" />
+      </DockPanel>
+    </Border>
+    <Border
         Padding="10,6"
         Background="{actipro:ThemeResource ControlBackgroundBrushSoftAccent}"
         BorderBrush="{actipro:ThemeResource Container3BorderBrush}"
@@ -227,6 +251,7 @@
                    Text="{Binding Source={x:Static local:App.Lang}, Path=[Results.Hint.PreviewSize]}" />
       </DockPanel>
     </Border>
+    </StackPanel>
 
     <!-- ======== Toolbar: sort + filter chips ======== -->
     <Border
