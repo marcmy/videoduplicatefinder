@@ -413,7 +413,7 @@
 	"Message.RescanConfirm": "Êtes-vous sûr de vouloir relancer l'analyse ?",
 	"Message.SettingsLoadFailed": "Les paramètres n'ont pas pu être chargés, VDF a donc démarré avec les paramètres par défaut.\n\n{0}",
 	"Message.RestartRequired": "Veuillez redémarrer VDF pour appliquer les nouveaux paramètres.",
-	"Message.ThumbnailCountFullScan": "Le nombre de miniatures ne peut pas être modifié entre deux réanalyses rapides. Une analyse complète sera nécessaire.",
+	"Message.ThumbnailCountFullScan": "Pour une réanalyse rapide, le nombre de miniatures ne peut pas dépasser celui de la dernière analyse. Une analyse complète sera nécessaire ; elle n'extrait que les images ajoutées.",
 	"Message.SaveResultsPrompt": "Voulez-vous enregistrer les résultats et continuer la prochaine fois que vous lancez VDF ?",
 	"Message.ClearAllExcludedConfirm": "Êtes-vous sûr de vouloir effacer la liste de TOUS les dossiers exclus ?",
 	"Message.ClearAllIncludedConfirm": "Êtes-vous sûr de vouloir effacer la liste de TOUS les dossiers inclus ?",

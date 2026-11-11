@@ -65,12 +65,7 @@ public static class ComparePhaseProbe {
 	/// non-duplicates that still exercise the full comparison cost.
 	/// </summary>
 	static List<FileEntry> BuildCorpus(int count, Random rng, double durationMin = 30, double durationSpread = 3570) {
-		var positions = new List<float>();
-		float positionCounter = 0f;
-		for (int i = 0; i < ThumbnailCount; i++) {
-			positionCounter += 1.0f / (ThumbnailCount + 1);
-			positions.Add(positionCounter);
-		}
+		var positions = ScanEngine.BuildSamplePositions(ThumbnailCount);
 
 		var entries = new List<FileEntry>(count);
 		int fileIndex = 0;

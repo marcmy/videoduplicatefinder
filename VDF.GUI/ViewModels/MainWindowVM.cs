@@ -555,7 +555,7 @@ namespace VDF.GUI.ViewModels {
 
 		public async void Thumbnails_ValueChanged(object? sender, NumericUpDownValueChangedEventArgs e) {
 			var (isReadyToCompare, showWarning) = EvaluateThumbnailCountChange(
-				IsGathered, Scanner.Settings.ThumbnailCount, e.NewValue, ApplicationHelpers.MainWindowDataContext.IsReadyToCompare);
+				IsGathered, Scanner.GatheredThumbnailCount, e.NewValue, ApplicationHelpers.MainWindowDataContext.IsReadyToCompare);
 			// The flag must flip BEFORE the dialog await: it used to be reset only after
 			// the box was dismissed, so every further arrow click made in the meantime
 			// still saw wasReady == true and stacked another box on top (2026-07-17
@@ -566,14 +566,15 @@ namespace VDF.GUI.ViewModels {
 		}
 
 		/// <summary>
-		/// Thumbnail-count change vs. quick-rescan readiness: changing the count away
-		/// from what the last scan used forces a full scan (warn once); changing it back
-		/// restores quick-rescan readiness silently. Callers must apply the flag before
-		/// showing the warning dialog.
+		/// Thumbnail-count change vs. quick-rescan readiness. Sample positions are nested,
+		/// so any count up to what the last scan sampled is already cached and stays
+		/// quick-rescan ready; raising it above that forces a full scan (warn once), and
+		/// lowering it back restores readiness silently. Callers must apply the flag
+		/// before showing the warning dialog.
 		/// </summary>
 		internal static (bool IsReadyToCompare, bool ShowWarning) EvaluateThumbnailCountChange(
-				bool isGathered, int engineThumbnailCount, decimal? newValue, bool wasReadyToCompare) {
-			bool ready = isGathered && engineThumbnailCount == newValue;
+				bool isGathered, int gatheredThumbnailCount, decimal? newValue, bool wasReadyToCompare) {
+			bool ready = isGathered && newValue >= 1 && newValue <= gatheredThumbnailCount;
 			return (ready, !ready && wasReadyToCompare);
 		}
 
