@@ -39,5 +39,22 @@ namespace VDF.Core {
 		/// </summary>
 		[MemoryPackOrder(2)]
 		public int ImageHashPipeline { get; set; }
+
+		/// <summary>
+		/// Where this database's video frames were sampled: a <see cref="Core.SamplePositionLayout"/>
+		/// value. 0 (legacy, k/(n+1)) is what every database written before nested positions
+		/// reads as, so upgrading keeps their cached frames.
+		/// </summary>
+		[MemoryPackOrder(3)]
+		public int SamplePositionLayout { get; set; }
+
+		/// <summary>
+		/// Frames per video the database was last scanned with; 0 = unknown (a database
+		/// written before this field existed). Together with <see cref="SamplePositionLayout"/>
+		/// it decides whether a legacy database keeps its layout (same count) or moves to the
+		/// nested one (count changed).
+		/// </summary>
+		[MemoryPackOrder(4)]
+		public int SamplePositionCount { get; set; }
 	}
 }

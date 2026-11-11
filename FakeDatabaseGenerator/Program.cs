@@ -55,7 +55,11 @@ namespace FakeDatabaseGenerator {
 
 			var wrapper = new DatabaseWrapper {
 				Version = 2,
-				Entries = entries
+				Entries = entries,
+				// The header names the layout the frames above were keyed with, so a scan
+				// of this database keeps it at the same thumbnail count.
+				SamplePositionLayout = (int)SamplePositionLayout.Nested,
+				SamplePositionCount = options.ThumbnailCount,
 			};
 
 			using var stream = File.Create(options.OutputPath);
@@ -137,9 +141,10 @@ namespace FakeDatabaseGenerator {
 			return bytes;
 		}
 
-		// The engine's own positions, so generated keys match what a scan looks up.
+		// The engine's own nested positions (recorded in the header below), so generated
+		// keys match what a scan looks up.
 		static List<double> BuildPositions(int thumbnailCount) =>
-			ScanEngine.BuildSamplePositions(thumbnailCount).ConvertAll(p => (double)p);
+			ScanEngine.BuildSamplePositions(thumbnailCount, SamplePositionLayout.Nested).ConvertAll(p => (double)p);
 
 		static Options ParseArgs(string[] args) {
 			var options = new Options {

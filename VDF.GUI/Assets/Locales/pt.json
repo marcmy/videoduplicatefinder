@@ -415,7 +415,7 @@
 	"Message.RescanConfirm": "Tem certeza de que deseja realizar uma nova varredura?",
 	"Message.SettingsLoadFailed": "Não foi possível carregar as configurações, então o VDF foi iniciado com as configurações padrão.\n\n{0}",
 	"Message.RestartRequired": "Reinicie o VDF para aplicar as novas configurações.",
-	"Message.ThumbnailCountFullScan": "Para um reescaneamento rápido, o número de miniaturas não pode exceder o do último escaneamento. Será necessário um escaneamento completo, que extrai apenas os quadros adicionados.",
+	"Message.ThumbnailCountFullScan": "Um reescaneamento rápido só pode usar um número de miniaturas que o último escaneamento já extraiu. Será necessário um escaneamento completo.",
 	"Message.SaveResultsPrompt": "Deseja salvar os resultados e continuar na próxima vez que iniciar o VDF?",
 	"Message.ClearAllExcludedConfirm": "Tem certeza de que deseja limpar a lista de TODAS as pastas excluídas?",
 	"Message.ClearAllIncludedConfirm": "Tem certeza de que deseja limpar a lista de TODAS as pastas incluídas?",

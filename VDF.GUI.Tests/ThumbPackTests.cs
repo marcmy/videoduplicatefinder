@@ -75,7 +75,11 @@ namespace VDF.GUI.Tests {
 			}));
 			Assert.True(encodeStarted.Wait(TimeSpan.FromSeconds(5)));
 
-			var reader = Task.Run(() => pack.TryGetEntry("seed", out _, out _));
+			// A dedicated thread, not the pool: on a busy CI runner the other tests' blocking
+			// waits can starve the pool, and a Task.Run reader then simply never starts within
+			// the deadline — failing the test without any lock being held.
+			var reader = Task.Factory.StartNew(() => pack.TryGetEntry("seed", out _, out _),
+				CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 			try {
 				Assert.True(await reader.WaitAsync(TimeSpan.FromSeconds(2)));
 			}

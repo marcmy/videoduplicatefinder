@@ -28,7 +28,7 @@ namespace VDF.GUI.Tests {
 		[Fact]
 		public void RaisingTheCount_WarnsOnce_AndDropsReadiness() {
 			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: true, gatheredThumbnailCount: 2, newValue: 3, wasReadyToCompare: true);
+				isGathered: true, gatheredThumbnailCount: 2, nestedLayout: true, newValue: 3, wasReadyToCompare: true);
 			Assert.False(ready);
 			Assert.True(warn);
 		}
@@ -38,7 +38,7 @@ namespace VDF.GUI.Tests {
 			// The regression: click 2 .. n each spawned another message box. Once the
 			// flag is down, subsequent changes must stay silent.
 			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: true, gatheredThumbnailCount: 2, newValue: 4, wasReadyToCompare: false);
+				isGathered: true, gatheredThumbnailCount: 2, nestedLayout: true, newValue: 4, wasReadyToCompare: false);
 			Assert.False(ready);
 			Assert.False(warn);
 		}
@@ -46,7 +46,7 @@ namespace VDF.GUI.Tests {
 		[Fact]
 		public void ChangingBackToTheScannedCount_RestoresReadinessSilently() {
 			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: true, gatheredThumbnailCount: 2, newValue: 2, wasReadyToCompare: false);
+				isGathered: true, gatheredThumbnailCount: 2, nestedLayout: true, newValue: 2, wasReadyToCompare: false);
 			Assert.True(ready);
 			Assert.False(warn);
 		}
@@ -54,7 +54,7 @@ namespace VDF.GUI.Tests {
 		[Fact]
 		public void WithoutAGatheredScan_NeverReady() {
 			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: false, gatheredThumbnailCount: 2, newValue: 2, wasReadyToCompare: false);
+				isGathered: false, gatheredThumbnailCount: 2, nestedLayout: true, newValue: 2, wasReadyToCompare: false);
 			Assert.False(ready);
 			Assert.False(warn);
 		}
@@ -63,7 +63,7 @@ namespace VDF.GUI.Tests {
 		public void LoweringTheCount_StaysReady_WithoutWarning() {
 			// Sample positions are nested: 3 frames are a subset of the 7 already sampled.
 			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: true, gatheredThumbnailCount: 7, newValue: 3, wasReadyToCompare: true);
+				isGathered: true, gatheredThumbnailCount: 7, nestedLayout: true, newValue: 3, wasReadyToCompare: true);
 			Assert.True(ready);
 			Assert.False(warn);
 		}
@@ -71,8 +71,24 @@ namespace VDF.GUI.Tests {
 		[Fact]
 		public void ZeroFrames_IsNeverReady() {
 			var (ready, _) = MainWindowVM.EvaluateThumbnailCountChange(
-				isGathered: true, gatheredThumbnailCount: 7, newValue: 0, wasReadyToCompare: false);
+				isGathered: true, gatheredThumbnailCount: 7, nestedLayout: true, newValue: 0, wasReadyToCompare: false);
 			Assert.False(ready);
+		}
+
+		[Fact]
+		public void LegacyLayout_LoweringTheCount_NeedsAFullScan() {
+			// k/(n+1) positions differ for every count: 3 frames are not a subset of 6.
+			var (ready, warn) = MainWindowVM.EvaluateThumbnailCountChange(
+				isGathered: true, gatheredThumbnailCount: 6, nestedLayout: false, newValue: 3, wasReadyToCompare: true);
+			Assert.False(ready);
+			Assert.True(warn);
+		}
+
+		[Fact]
+		public void LegacyLayout_TheScannedCount_StaysReady() {
+			var (ready, _) = MainWindowVM.EvaluateThumbnailCountChange(
+				isGathered: true, gatheredThumbnailCount: 6, nestedLayout: false, newValue: 6, wasReadyToCompare: false);
+			Assert.True(ready);
 		}
 	}
 }

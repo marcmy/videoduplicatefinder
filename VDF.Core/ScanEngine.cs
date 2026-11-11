@@ -55,10 +55,18 @@ namespace VDF.Core {
 		CancellationTokenSource cancelationTokenSource = new();
 		internal readonly List<float> positionList = new();
 		/// <summary>
-		/// Frames per video the last scan in this process sampled. Sample positions are nested,
-		/// so a quick rescan (compare only) can use this many frames or fewer without decoding.
+		/// Frames per video the last scan in this process sampled. With the nested layout
+		/// (<see cref="GatheredSampleLayout"/>) a quick rescan (compare only) can use this
+		/// many frames or fewer without decoding; with the legacy layout only this count.
 		/// </summary>
 		public int GatheredThumbnailCount { get; private set; }
+		/// <summary>The sample-position layout the last scan in this process used.</summary>
+		public SamplePositionLayout GatheredSampleLayout { get; private set; }
+
+		/// <summary>True when a quick rescan with <paramref name="thumbnailCount"/> frames finds every frame cached by the last scan.</summary>
+		public bool CanQuickRescanWith(int thumbnailCount) =>
+			thumbnailCount >= 1 && (thumbnailCount == GatheredThumbnailCount ||
+				(GatheredSampleLayout == SamplePositionLayout.Nested && thumbnailCount <= GatheredThumbnailCount));
 		// The video compare switches from the linear pair loop to duration buckets at this
 		// many videos (avoids bucket overhead on small libraries). Internal so tests can
 		// drive the bucketed path deliberately.
@@ -542,7 +550,6 @@ namespace VDF.Core {
 			SearchTimer.Reset();
 
 			BuildPositionList();
-			GatheredThumbnailCount = positionList.Count;
 			NormalizeScanPaths();
 
 			isScanning = true;
@@ -554,24 +561,52 @@ namespace VDF.Core {
 		}
 
 		/// <summary>
+		/// After the scan loaded its database: fix the layout for this scan, record it in
+		/// the database header and rebuild the positions with it.
+		/// </summary>
+		internal void AdoptDatabaseSampleLayout() {
+			SamplePositionLayout layout = DatabaseUtils.AdoptSamplePositionLayout(Settings.ThumbnailCount);
+			positionList.Clear();
+			positionList.AddRange(BuildSamplePositions(Settings.ThumbnailCount, layout));
+			GatheredThumbnailCount = positionList.Count;
+			GatheredSampleLayout = layout;
+		}
+
+		/// <summary>
 		/// Relative positions (between 0 and 1, both exclusive) of the frames sampled per
-		/// video, in ascending order, never the very first or last frame. The one definition
-		/// for the scan, the thumbnail reload, the pair diagnostic and the frontends that show
-		/// the sampled frames, so that what is shown is what was compared.
+		/// video, in ascending order, never the very first or last frame, in the layout the
+		/// loaded database uses for that count (<see cref="DatabaseUtils.ResolveSamplePositionLayout(int)"/>).
+		/// The one definition for the scan, the thumbnail reload, the pair diagnostic and the
+		/// frontends that show the sampled frames, so that what is shown is what was compared.
+		/// </summary>
+		public static List<float> BuildSamplePositions(int thumbnailCount) =>
+			BuildSamplePositions(thumbnailCount, DatabaseUtils.ResolveSamplePositionLayout(thumbnailCount));
+
+		/// <summary>
+		/// Relative sample positions for <paramref name="thumbnailCount"/> frames in
+		/// <paramref name="layout"/>, ascending.
 		/// </summary>
 		/// <remarks>
-		/// The positions are the first <paramref name="thumbnailCount"/> terms of the base-2
-		/// van der Corput sequence (1/2, 1/4, 3/4, 1/8, 5/8, 3/8, 7/8, 1/16, ...), sorted.
-		/// The layout is nested: the positions of a smaller count are always a subset of a
-		/// larger count's, so lowering the frame count reuses cached frames with no decoding
-		/// and raising it decodes only the added positions. Every term is an exact binary
-		/// fraction, so shared positions are bit-identical cache keys. For 1, 3, 7 and 15
-		/// frames this is the same evenly spaced layout as before (k / (n + 1)); other
-		/// counts are evenly spaced within a factor of two (no gap is more than twice
-		/// another).
+		/// <see cref="SamplePositionLayout.Legacy"/>: k / (n + 1), float-accumulated exactly as
+		/// databases were keyed before nested positions, so their cached frames match bit for bit.
+		/// <see cref="SamplePositionLayout.Nested"/>: the first n terms of the base-2 van der
+		/// Corput sequence (1/2, 1/4, 3/4, 1/8, 5/8, 3/8, 7/8, 1/16, ...), sorted. A smaller
+		/// count's positions are always a subset of a larger count's, so lowering the frame
+		/// count reuses cached frames with no decoding and raising it decodes only the added
+		/// positions. Every term is an exact binary fraction, so shared positions are identical
+		/// cache keys. For 1, 3, 7 and 15 frames both layouts are the same; other counts are
+		/// evenly spaced within a factor of two (no gap is more than twice another).
 		/// </remarks>
-		public static List<float> BuildSamplePositions(int thumbnailCount) {
+		public static List<float> BuildSamplePositions(int thumbnailCount, SamplePositionLayout layout) {
 			var positions = new List<float>(Math.Max(0, thumbnailCount));
+			if (layout == SamplePositionLayout.Legacy) {
+				float positionCounter = 0f;
+				for (int i = 0; i < thumbnailCount; i++) {
+					positionCounter += 1.0F / (thumbnailCount + 1);
+					positions.Add(positionCounter);
+				}
+				return positions;
+			}
 			for (int k = 1; k <= thumbnailCount; k++)
 				positions.Add(VanDerCorputBase2(k));
 			positions.Sort();
@@ -631,19 +666,12 @@ namespace VDF.Core {
 			// union pass only reads cached embeddings at compare time and needs nothing.
 			if (Settings.EnableAiPartialDetection)
 				AI.AiComponents.EnsureReady();
-			if (positionList.Count == 0) {
-				// Fresh process running compare-only (CLI 'compare' on an existing database):
-				// the list is built during PrepareSearch, which never ran here (issue #790).
-				BuildPositionList();
-			}
-			else if (Settings.ThumbnailCount != positionList.Count) {
-				// Sample positions are nested: a lower count's positions are a subset of the
-				// gathered count's, so every needed frame is already cached. A higher count
-				// has positions nothing sampled yet and needs a scan.
-				if (Settings.ThumbnailCount > Math.Max(GatheredThumbnailCount, positionList.Count))
-					throw new Exception("Number of thumbnails can't be increased between quick rescans! Rescan has been aborted.");
-				BuildPositionList();
-			}
+			// A quick rescan after a scan in this process: a different frame count only works
+			// when every needed frame is cached, i.e. the nested layout and a lower count.
+			// Checked before loading anything so a refused rescan changes nothing.
+			if (positionList.Count > 0 && Settings.ThumbnailCount != positionList.Count &&
+				!CanQuickRescanWith(Settings.ThumbnailCount))
+				throw new Exception("Number of thumbnails can't be changed to this value between quick rescans! Rescan has been aborted.");
 			NormalizeScanPaths();
 			if (DatabaseUtils.Database.Count == 0) {
 				// Also a compare-only concern: the database is normally loaded by
@@ -659,6 +687,18 @@ namespace VDF.Core {
 					if (entry.invalid && reason != null)
 						LogExcludedFile(entry, reason);
 				}
+			}
+
+			if (positionList.Count == 0) {
+				// Fresh process running compare-only (CLI 'compare' on an existing database):
+				// the list is built during PrepareSearch, which never ran here (issue #790).
+				// Built after the database load above: the layout comes from its header.
+				BuildPositionList();
+			}
+			else if (Settings.ThumbnailCount != positionList.Count) {
+				// Nested layout, lower count (checked above): a subset of the gathered positions.
+				positionList.Clear();
+				positionList.AddRange(BuildSamplePositions(Settings.ThumbnailCount, GatheredSampleLayout));
 			}
 
 			// #863: a compare-only run (CLI compare, quick rescan) never goes through
@@ -760,6 +800,7 @@ namespace VDF.Core {
 		Task BuildFileList(CancellationToken cancellationToken) => Task.Run(() => {
 
 			DatabaseUtils.LoadDatabase();
+			AdoptDatabaseSampleLayout();
 			QuarantineCrashSuspects();
 			if (DatabaseUtils.DbVersion < 2) {
 				// Legacy 16x16 gray data cannot produce pHashes — neither the pHash mode
