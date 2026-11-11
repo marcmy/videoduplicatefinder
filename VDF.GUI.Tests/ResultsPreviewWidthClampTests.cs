@@ -17,6 +17,7 @@
 using VDF.GUI.Data;
 
 namespace VDF.GUI.Tests {
+	[Collection(SettingsFileInstanceCollection.Name)]
 	public class ResultsPreviewWidthClampTests {
 		[Fact]
 		public void PreviewColumn_CanGrowPastTheOld480Cap() {

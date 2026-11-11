@@ -22,6 +22,7 @@ namespace VDF.GUI.Tests {
 	// CompareMode persists numerically in Settings.json; a settings file written by a
 	// build that temporarily had extra modes can carry an out-of-range value, which
 	// would leave every Is* mode flag false and the canvas blank.
+	[Collection(SettingsFileInstanceCollection.Name)]
 	public class ComparerModeSanitizeTests {
 
 		static ComparerModeSanitizeTests() {
