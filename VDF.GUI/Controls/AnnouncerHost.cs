@@ -63,6 +63,13 @@ namespace VDF.GUI.Controls {
 			};
 		}
 
+		/// <summary>
+		/// Nothing waiting and the gap after the last message has passed: the next message is
+		/// said at once. Lets tests wait for the window's own announcements to finish instead
+		/// of sleeping a guessed amount.
+		/// </summary>
+		internal bool IsQuiet => !spacingTimer.IsEnabled;
+
 		/// <summary>The text a screen reader currently gets as this element's name; null when idle.</summary>
 		public string? Message { get; private set; }
 

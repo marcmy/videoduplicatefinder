@@ -128,7 +128,12 @@ public class ComparerKeyboardTests {
 		WithFocusedSensitivitySlider(async (comparer, _, _, _) => {
 			var announcer = comparer.GetVisualDescendants().OfType<AnnouncerHost>().Single();
 			announcer.Spacing = TimeSpan.FromMilliseconds(100);
-			await Task.Delay(300); // whatever the window said while it opened has had its turn
+			// Whatever the window said while it opened must have had its turn: a message
+			// arriving inside the gap is queued, not spoken. Wait for that, not a guessed time.
+			var quietBy = DateTime.UtcNow.AddSeconds(10);
+			while (!announcer.IsQuiet && DateTime.UtcNow < quietBy)
+				await Task.Delay(10);
+			Assert.True(announcer.IsQuiet, "the announcer never went quiet after the window opened");
 			var peer = ControlAutomationPeer.CreatePeerForElement(announcer);
 			var spoken = new List<(string Name, AutomationLiveSetting Live)>();
 			peer.PropertyChanged += (_, e) => {
