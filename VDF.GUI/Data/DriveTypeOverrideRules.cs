@@ -97,30 +97,16 @@ namespace VDF.GUI.Data {
 		}
 
 		/// <summary>
-		/// The roots the settings page lists: the machine's drives, the root each included folder
-		/// lives under, roots that already carry an override, and roots the user added by hand.
-		/// One entry per root (in display form), sorted.
+		/// The roots the settings page lists: the drives detected right now, one entry per root
+		/// (in display form), sorted. Overrides for drives that are not connected stay in the
+		/// settings file untouched and apply again when the drive comes back.
 		/// </summary>
-		/// <param name="rootOfIncludedFolder">
-		/// Maps an included folder to the root the scan groups it under (Core's mount-aware lookup).
-		/// </param>
-		public static List<string> ListRoots(IEnumerable<string> driveRoots, IEnumerable<string> includedFolders,
-			Func<string, string?> rootOfIncludedFolder, IEnumerable<string> overrideKeys, IEnumerable<string> addedRoots) {
+		public static List<string> ListRoots(IEnumerable<string> detectedDriveRoots) {
 			var byNormalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-			void Add(string? root) {
-				if (string.IsNullOrWhiteSpace(root) || root == "?") return;
-				string display = DisplayRoot(root);
-				byNormalized.TryAdd(NormalizeRoot(root), display);
+			foreach (string root in detectedDriveRoots) {
+				if (string.IsNullOrWhiteSpace(root)) continue;
+				byNormalized.TryAdd(NormalizeRoot(root), DisplayRoot(root));
 			}
-			foreach (string root in driveRoots) Add(root);
-			foreach (string folder in includedFolders) {
-				string? root;
-				try { root = rootOfIncludedFolder(folder); }
-				catch { root = null; }
-				Add(root);
-			}
-			foreach (string key in overrideKeys) Add(key);
-			foreach (string root in addedRoots) Add(root);
 			var roots = new List<string>(byNormalized.Values);
 			roots.Sort(StringComparer.OrdinalIgnoreCase);
 			return roots;

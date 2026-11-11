@@ -263,6 +263,14 @@
               </views:SettingRow>
 
               <views:SettingRow
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Desc]}"
+                  SearchTags="parallelism cpu cores threads compare matching headroom">
+                <NumericUpDown Classes="stepper" Maximum="100" Minimum="0"
+                               Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MatchingMaxDegreeOfParallelism}" />
+              </views:SettingRow>
+
+              <views:SettingRow
                   x:Name="DriveTypesRow"
                   Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DriveTypes.Title]}"
                   Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DriveTypes.Desc]}"
@@ -283,25 +291,7 @@
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                    <TextBox Grid.Column="0"
-                             PlaceholderText="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddPlaceholder]}"
-                             AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddPlaceholder]}"
-                             ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddTip]}"
-                             Text="{Binding NewDriveTypeRoot, Mode=TwoWay}" />
-                    <Button Grid.Column="1" FontSize="12.5"
-                            Command="{Binding AddDriveTypeRootCommand}"
-                            Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.Add]}" />
-                  </Grid>
                 </StackPanel>
-              </views:SettingRow>
-
-              <views:SettingRow
-                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Title]}"
-                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Desc]}"
-                  SearchTags="parallelism cpu cores threads compare matching headroom">
-                <NumericUpDown Classes="stepper" Maximum="100" Minimum="0"
-                               Value="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=MatchingMaxDegreeOfParallelism}" />
               </views:SettingRow>
             </StackPanel>
 

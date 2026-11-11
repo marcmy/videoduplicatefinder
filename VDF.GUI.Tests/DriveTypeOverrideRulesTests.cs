@@ -92,26 +92,12 @@ public class DriveTypeOverrideRulesTests {
 	}
 
 	[Fact]
-	public void ListRoots_UnionsDrivesIncludesOverridesAndAdded_OnePerRoot() {
-		var roots = DriveTypeOverrideRules.ListRoots(
-			driveRoots: new[] { $"C:{Sep}", $"F:{Sep}", $"Z:{Sep}" },
-			includedFolders: new[] { @"F:\Videos", @"\\nas\media\clips" },
-			rootOfIncludedFolder: f => f.StartsWith(@"\\") ? @"\\nas\media" : f[..2] + Sep,
-			overrideKeys: new[] { "C:", "R:" },
-			addedRoots: new[] { "/mnt/usb/" });
-		// Ordinal order: '/' sorts before letters, '\' after them.
-		Assert.Equal(new[] { "/mnt/usb", "C:", "F:", "R:", "Z:", @"\\nas\media" }, roots);
-	}
-
-	[Fact]
-	public void ListRoots_ARootLookupThatFails_SkipsThatFolder() {
-		var roots = DriveTypeOverrideRules.ListRoots(new[] { $"C:{Sep}" }, new[] { "bad" },
-			_ => throw new IOException("unreadable"), Array.Empty<string>(), Array.Empty<string>());
-		Assert.Equal(new[] { "C:" }, roots);
+	public void ListRoots_IsTheDetectedDrives_OnePerRoot_Sorted() {
+		var roots = DriveTypeOverrideRules.ListRoots(new[] { $"Z:{Sep}", $"C:{Sep}", $"F:{Sep}", "c:", " " });
+		Assert.Equal(new[] { "C:", "F:", "Z:" }, roots);
 	}
 
 	[Fact]
 	public void ListRoots_FilesystemRoot_KeepsItsSlash() =>
-		Assert.Equal(new[] { "/" }, DriveTypeOverrideRules.ListRoots(Array.Empty<string>(), Array.Empty<string>(),
-			_ => null, Array.Empty<string>(), new[] { "/" }));
+		Assert.Equal(new[] { "/" }, DriveTypeOverrideRules.ListRoots(new[] { "/" }));
 }

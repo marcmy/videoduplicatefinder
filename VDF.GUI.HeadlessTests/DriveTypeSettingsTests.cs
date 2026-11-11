@@ -13,10 +13,9 @@
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
-// Settings -> Processing -> Drive types edits SettingsFile.DriveTypeOverrides, which was
+// Settings -> Scanning -> Drive types edits SettingsFile.DriveTypeOverrides, which was
 // only reachable by hand-editing Settings.json.
 
-using System.Reactive.Linq;
 using Avalonia.Controls;
 using Avalonia.LogicalTree;
 using VDF.GUI.Data;
@@ -65,14 +64,25 @@ public class DriveTypeSettingsTests {
 	});
 
 	[Fact]
-	public Task AddingARoot_ListsIt_WithoutWritingAnOverride() => HeadlessUi.Run(async () => {
+	public Task OnlyDetectedDrivesAreListed_AndOverridesForOthersAreKept() => HeadlessUi.Run(async () => {
 		var map = SettingsFile.Instance.DriveTypeOverrides;
-		int countBefore = map.Count;
-		var vm = new MainWindowVM { NewDriveTypeRoot = "/mnt/vdf-test-usb/" };
-		await vm.AddDriveTypeRootCommand.Execute();
+		var before = new Dictionary<string, string>(map, StringComparer.OrdinalIgnoreCase);
+		try {
+			map.Clear();
+			map["C:"] = "SSD";
+			map["Q:"] = "HDD"; // an unplugged drive
+			string sep = Path.DirectorySeparatorChar.ToString();
+			var vm = new MainWindowVM { DetectedDriveRoots = () => new[] { "C:" + sep, "D:" + sep } };
+			await vm.RefreshDriveTypeRowsAsync();
 
-		Assert.Contains(vm.DriveTypeRows, r => r.Root == "/mnt/vdf-test-usb");
-		Assert.Equal(string.Empty, vm.NewDriveTypeRoot);
-		Assert.Equal(countBefore, map.Count); // nothing chosen yet, so nothing stored
+			Assert.Equal(new[] { "C:", "D:" }, vm.DriveTypeRows.Select(r => r.Root));
+			vm.DriveTypeRows[1].SelectedIndex = (int)DriveTypeChoice.Slow;
+			Assert.Equal("HDD", map["D:"]);
+			Assert.Equal("HDD", map["Q:"]); // not listed, but still in the file and still applied
+		}
+		finally {
+			map.Clear();
+			foreach (var (k, v) in before) map[k] = v;
+		}
 	});
 }
