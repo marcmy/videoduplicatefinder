@@ -96,14 +96,20 @@ public class PeriodicCheckpointTests {
 		int runs = 0, skipped = 0;
 		await Task.Delay(5); // let the interval elapse
 
-		var saver = Task.Run(() => checkpoint.TryRun(() => {
+		// Dedicated threads, not the pool: the saver blocks on purpose, and a starved pool
+		// on a busy CI runner could delay the workers past the deadline with no queueing
+		// in the code under test at all.
+		static Task OwnThread(Action body) =>
+			Task.Factory.StartNew(body, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+		var saver = OwnThread(() => checkpoint.TryRun(() => {
 			Interlocked.Increment(ref runs);
 			inSave.Set();
 			release.Wait();
 		}));
 		Assert.True(inSave.Wait(5_000), "the first checkpoint never started");
 
-		var others = Enumerable.Range(0, 4).Select(_ => Task.Run(() => {
+		var others = Enumerable.Range(0, 4).Select(_ => OwnThread(() => {
 			if (!checkpoint.TryRun(() => Interlocked.Increment(ref runs)))
 				Interlocked.Increment(ref skipped);
 		})).ToArray();

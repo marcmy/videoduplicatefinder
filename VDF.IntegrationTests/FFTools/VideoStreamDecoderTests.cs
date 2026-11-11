@@ -107,13 +107,14 @@ public class VideoStreamDecoderTests {
 		Skip.If(!_fixture.NativeBindingAvailable, "FFmpeg native libraries not available");
 		Skip.If(_fixture.H264_8bit == null, "H264 test video not generated");
 
-		using var vsd = new VideoStreamDecoder(_fixture.H264_8bit!, timeoutMs: 500);
+		// A budget a slow CI runner can decode one frame in; the idle gap below must outlast it.
+		using var vsd = new VideoStreamDecoder(_fixture.H264_8bit!, timeoutMs: 2000);
 
 		Assert.True(vsd.TryDecodeFrame(out _, TimeSpan.Zero), "first position failed on a clean file");
 
 		// Outlive the construction-time deadline. With the old lifetime deadline the
 		// interrupt callback now reports "expired" for every subsequent blocking call.
-		await Task.Delay(800);
+		await Task.Delay(2500);
 
 		Assert.True(vsd.TryDecodeFrame(out _, TimeSpan.FromSeconds(1)),
 			"second position failed after idling past the timeout — the deadline was not re-armed per call");

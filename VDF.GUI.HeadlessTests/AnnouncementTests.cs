@@ -101,7 +101,9 @@ public class AnnouncementTests {
 
 	[Fact]
 	public Task Announcer_MessagesInTheSameInstant_AreEachHeard() => HeadlessUi.Run(async () => {
-		var host = new AnnouncerHost { Spacing = TimeSpan.FromMilliseconds(150) };
+		// The check below runs 40 ms in and needs the first message still standing; a gap
+		// this wide leaves room for a stalled CI runner instead of failing on a 110 ms hiccup.
+		var host = new AnnouncerHost { Spacing = TimeSpan.FromSeconds(1) };
 		var window = HeadlessUi.Show(host, 300, 200);
 		try {
 			var spoken = Listen(host);
