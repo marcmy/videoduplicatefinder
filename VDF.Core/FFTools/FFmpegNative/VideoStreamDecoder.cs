@@ -86,11 +86,15 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError($"av_hwdevice_ctx_create({HWDeviceType})");
 			}
 			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError("avcodec_parameters_to_context");
+			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE &&
+				ShouldAllowHardwareProfileMismatch(_pCodecContext->codec_id, _pCodecContext->profile))
+				_pCodecContext->hwaccel_flags |= ffmpeg.AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 			ResetTimeout();
 			ffmpeg.avcodec_open2(_pCodecContext, codec, null).ThrowExceptionIfError("avcodec_open2");
 
 			CodecName = ffmpeg.avcodec_get_name(codec->id);
 			AVCodecParameters* codecpar = _pFormatContext->streams[_streamIndex]->codecpar;
+			CodecProfile = codecpar->profile;
 			AVPacketSideData* matrixSideData = ffmpeg.av_packet_side_data_get(codecpar->coded_side_data, codecpar->nb_coded_side_data,
 				AVPacketSideDataType.AV_PKT_DATA_DISPLAYMATRIX);
 			if (matrixSideData != null && matrixSideData->size >= 9 * sizeof(int))
@@ -116,6 +120,8 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		public string CodecName { get; }
+		/// <summary>Stream profile as probed (an <c>AV_PROFILE_*</c> value, -99 when unknown).</summary>
+		internal int CodecProfile { get; }
 		public FrameOrientation StreamOrientation { get; }
 
 		public FrameOrientation GetOrientation(AVFrame frame) {
@@ -184,6 +190,22 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		/// that fall back to CPU processing after inspecting the hardware frame.
 		/// </summary>
 		internal AVFrame TransferCurrentFrame() => TransferFrameIfNeeded(out _, out _);
+
+		internal const string DisableBaselineHardwareDecodeEnvVar = "VDF_DISABLE_H264_BASELINE_HWACCEL";
+
+		/// <summary>
+		/// FFmpeg's DXVA2/D3D11VA hwaccel accepts H.264 only as Constrained Baseline, Main or High
+		/// and rejects plain Baseline (constraint_set1 = 0) — the profile many phone and hardware
+		/// encoders write — so those files failed hwaccel setup and silently decoded on the CPU.
+		/// The features that distinguish plain Baseline (FMO, ASO, redundant slices) are virtually
+		/// never used outside conformance streams; GPU decode of such files is bit-identical to
+		/// the software decoder. Extended profile and other codecs keep the strict check.
+		/// Opt out with VDF_DISABLE_H264_BASELINE_HWACCEL=1.
+		/// </summary>
+		internal static bool ShouldAllowHardwareProfileMismatch(AVCodecID codecId, int profile) =>
+			codecId == AVCodecID.AV_CODEC_ID_H264
+			&& profile == ffmpeg.AV_PROFILE_H264_BASELINE
+			&& !IsEnvFlagSet(DisableBaselineHardwareDecodeEnvVar);
 
 		internal const string DisableNonReferenceSkipEnvVar = "VDF_DISABLE_NONREF_SKIP";
 		static readonly bool SkipNonReferenceBeforeTarget = !IsEnvFlagSet(DisableNonReferenceSkipEnvVar);
