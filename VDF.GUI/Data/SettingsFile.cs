@@ -184,6 +184,12 @@ namespace VDF.GUI.Data {
 				? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 				: new Dictionary<string, string>(value, StringComparer.OrdinalIgnoreCase);
 		} = new(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>
+		/// The map is edited in place (Settings -> Processing -> Drive types), which raises no
+		/// change of its own; this lets the debounced save see it.
+		/// </summary>
+		internal void NotifyDriveTypeOverridesChanged() => this.RaisePropertyChanged(nameof(DriveTypeOverrides));
 		/// <summary>The Setup screen's "New here?" hint strip, dismissible once.</summary>
 		[JsonPropertyName("WelcomeStripDismissed")]
 		public bool WelcomeStripDismissed {

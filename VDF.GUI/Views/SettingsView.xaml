@@ -263,6 +263,40 @@
               </views:SettingRow>
 
               <views:SettingRow
+                  x:Name="DriveTypesRow"
+                  Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DriveTypes.Title]}"
+                  Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DriveTypes.Desc]}"
+                  SearchTags="drive type ssd hdd hard disk usb network share override slow fast seek">
+                <StackPanel Spacing="6" Width="300">
+                  <ItemsControl ItemsSource="{Binding DriveTypeRows}"
+                                AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.DriveTypes.Title]}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:DriveTypeRowVM">
+                        <Grid ColumnDefinitions="*,160" Margin="0,2">
+                          <TextBlock Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                     Text="{Binding Root}" ToolTip.Tip="{Binding Root}" />
+                          <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
+                                    AutomationProperties.Name="{Binding Root}"
+                                    ItemsSource="{Binding ChoiceNames}"
+                                    SelectedIndex="{Binding SelectedIndex, Mode=TwoWay}" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                    <TextBox Grid.Column="0"
+                             PlaceholderText="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddPlaceholder]}"
+                             AutomationProperties.Name="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddPlaceholder]}"
+                             ToolTip.Tip="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.AddTip]}"
+                             Text="{Binding NewDriveTypeRoot, Mode=TwoWay}" />
+                    <Button Grid.Column="1" FontSize="12.5"
+                            Command="{Binding AddDriveTypeRootCommand}"
+                            Content="{Binding Source={x:Static local:App.Lang}, Path=[Settings.DriveTypes.Add]}" />
+                  </Grid>
+                </StackPanel>
+              </views:SettingRow>
+
+              <views:SettingRow
                   Title="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Title]}"
                   Description="{Binding Source={x:Static local:App.Lang}, Path=[Settings.Row.MatchingParallelism.Desc]}"
                   SearchTags="parallelism cpu cores threads compare matching headroom">
