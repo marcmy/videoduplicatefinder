@@ -416,7 +416,9 @@ namespace VDF.Core {
 					Logger.Instance.Info("Scan stopped while fingerprinting: comparing the files fingerprinted so far.");
 				}
 				if (!stopped || keepPartial) {
-					if (searchAndCompare)
+					if (keepPartial)
+						RunCompare(finishingStoppedScan: true);
+					else if (searchAndCompare)
 						StartCompare();
 					else
 						isScanning = false; // search-only: no StartCompare to clear it
@@ -442,7 +444,19 @@ namespace VDF.Core {
 			bool fingerprintingStarted, bool keepPartialResultsOnStop) =>
 			stopped && searchAndCompare && fingerprintingStarted && keepPartialResultsOnStop;
 
-		public async void StartCompare() {
+		public void StartCompare() => RunCompare(finishingStoppedScan: false);
+
+		/// <summary>Test hook: the compare that finishes a search stopped while fingerprinting.</summary>
+		internal void StartCompareFinishingStoppedScan() => RunCompare(finishingStoppedScan: true);
+
+		/// <param name="finishingStoppedScan">
+		/// The user stopped the search while fingerprinting and wants the results found so far:
+		/// compare what was fingerprinted and finish. The follow-up passes (partial clips, AI
+		/// partial detection, track languages) are skipped — PrepareCompare hands this compare
+		/// a fresh, uncancelled token, so without this they would all run, one phase after
+		/// another, after the user pressed Stop.
+		/// </param>
+		async void RunCompare(bool finishingStoppedScan) {
 			try {
 				// Standalone compare runs (GUI compare-only rescan, CLI compare command) get
 				// their own log session; a compare chained to StartSearch stays in the scan's.
@@ -451,6 +465,8 @@ namespace VDF.Core {
 					ResultsArePartial = false;
 				}
 				compareIsChainedToSearch = false;
+				if (finishingStoppedScan)
+					ResultsArePartial = true;
 				PrepareCompare();
 				SearchTimer.Start();
 				ElapsedTimer.Start();
@@ -460,14 +476,10 @@ namespace VDF.Core {
 				// TaskCanceledException, which would discard results a stopped scan may keep.
 				if (!cancelationTokenSource.IsCancellationRequested)
 					await Task.Run(ScanForDuplicates);
-				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnablePartialClipDetection)
-					await Task.Run(ScanForPartialDuplicates);
-				// After the audio pass: videos it already grouped are excluded, the visual
-				// pass only adds pairs audio could not see (no/replaced audio, music-only).
-				if (!cancelationTokenSource.IsCancellationRequested && Settings.EnableAiPartialDetection)
-					await Task.Run(ScanForPartialDuplicatesVisual);
-				if (!cancelationTokenSource.IsCancellationRequested)
-					await Task.Run(BackfillTrackLanguages);
+				if (finishingStoppedScan)
+					Logger.Instance.Info("Scan was stopped: skipping the partial-clip, AI partial and track-language passes.");
+				else
+					await RunFollowUpPasses();
 				if (cancelationTokenSource.IsCancellationRequested) {
 					// The passes swallow their internal OperationCanceledExceptions, so a
 					// Stop pressed during any of them would otherwise fall through to
@@ -496,6 +508,18 @@ namespace VDF.Core {
 			catch (Exception ex) {
 				AbortScanOnError(ex);
 			}
+		}
+
+		/// <summary>The passes after the duplicate compare; each one honours Stop itself.</summary>
+		async Task RunFollowUpPasses() {
+			if (!cancelationTokenSource.IsCancellationRequested && Settings.EnablePartialClipDetection)
+				await Task.Run(ScanForPartialDuplicates);
+			// After the audio pass: videos it already grouped are excluded, the visual
+			// pass only adds pairs audio could not see (no/replaced audio, music-only).
+			if (!cancelationTokenSource.IsCancellationRequested && Settings.EnableAiPartialDetection)
+				await Task.Run(ScanForPartialDuplicatesVisual);
+			if (!cancelationTokenSource.IsCancellationRequested)
+				await Task.Run(BackfillTrackLanguages);
 		}
 
 		/// <summary>
@@ -2949,6 +2973,13 @@ namespace VDF.Core {
 			int lastNotified = 0;
 			int loaded = 0, placeholders = 0, skippedMissing = 0;
 			Logger.Instance.Info($"Thumbnail loading: starting for {total} item(s).");
+
+			// Loading runs on the scan's token so that starting a new scan cancels it. A scan
+			// finished by Stop leaves that token cancelled, and the loading then quit before
+			// the first item: partial results showed no thumbnails at all. A finished scan has
+			// nothing left to stop, so load on a fresh token.
+			if (!isScanning && cancelationTokenSource.IsCancellationRequested)
+				cancelationTokenSource = new CancellationTokenSource();
 
 			var totalSw = Stopwatch.StartNew();
 			var sw = Stopwatch.StartNew();

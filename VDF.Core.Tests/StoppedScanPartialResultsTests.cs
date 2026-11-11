@@ -148,6 +148,80 @@ public sealed class StoppedScanPartialResultsTests : IDisposable {
 		Assert.Equal(0, abortedCount);
 	}
 
+	/// <summary>
+	/// A search stopped while fingerprinting finishes by comparing what it has — and nothing
+	/// more. The compare gets a fresh token, so the follow-up passes used to run anyway, one
+	/// phase after another, after the user had pressed Stop.
+	/// </summary>
+	[Fact]
+	public async Task FinishingAStoppedSearch_SkipsTheFollowUpPasses() {
+		var engine = NewEngine(keepPartial: true);
+		engine.Settings.EnablePartialClipDetection = true;
+		var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
+		Logger.LogEventHandler listen = entry => messages.Enqueue(entry.Message);
+		Logger.Instance.LogEntryAdded += listen;
+		try {
+			var done = new TaskCompletionSource<Outcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+			engine.ScanDone += (_, _) => done.TrySetResult(Outcome.Done);
+			engine.ScanAborted += (_, _) => done.TrySetResult(Outcome.Aborted);
+			engine.StartCompareFinishingStoppedScan();
+			var winner = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+
+			Assert.True(winner == done.Task, "the compare never finished");
+			Assert.Equal(Outcome.Done, done.Task.Result);
+			Assert.True(engine.ResultsArePartial);
+			Assert.Equal(6, engine.Duplicates.Count); // the compare itself ran in full
+			Assert.DoesNotContain(messages, m => m.StartsWith("Partial clip detection", StringComparison.Ordinal));
+		}
+		finally {
+			Logger.Instance.LogEntryAdded -= listen;
+		}
+	}
+
+	/// <summary>
+	/// Control for the test above: an ordinary compare does run the partial-clip pass, so its
+	/// log line is a valid witness that the pass started.
+	/// </summary>
+	[Fact]
+	public async Task OrdinaryCompare_RunsThePartialClipPass() {
+		var engine = NewEngine(keepPartial: true);
+		engine.Settings.EnablePartialClipDetection = true;
+		var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
+		Logger.LogEventHandler listen = entry => messages.Enqueue(entry.Message);
+		Logger.Instance.LogEntryAdded += listen;
+		try {
+			Assert.Equal(Outcome.Done, await RunCompare(engine));
+			Assert.Contains(messages, m => m.StartsWith("Partial clip detection", StringComparison.Ordinal));
+		}
+		finally {
+			Logger.Instance.LogEntryAdded -= listen;
+		}
+	}
+
+	/// <summary>
+	/// Thumbnail loading runs on the scan's token. A scan stopped while comparing leaves it
+	/// cancelled, and the loading quit before the first item — partial results had no
+	/// thumbnails. Missing files (these entries have none on disk) get the placeholder, so a
+	/// placeholder on every result proves each one was visited.
+	/// </summary>
+	[Fact]
+	public async Task ThumbnailsLoad_AfterAScanStoppedWhileComparing() {
+		var engine = NewEngine(keepPartial: true);
+		engine.Settings.IncludeNonExistingFiles = true;
+		engine.NoThumbnailImage = new byte[] { 1 };
+		StopAfterFirstCompareStep(engine);
+		Assert.Equal(Outcome.Done, await RunCompare(engine));
+		Assert.NotEmpty(engine.Duplicates);
+
+		var retrieved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		engine.ThumbnailsRetrieved += (_, _) => retrieved.TrySetResult();
+		engine.RetrieveThumbnails();
+		var winner = await Task.WhenAny(retrieved.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+
+		Assert.True(winner == retrieved.Task, "thumbnail loading never finished");
+		Assert.All(engine.Duplicates, d => Assert.Single(d.ImageList));
+	}
+
 	[Theory]
 	// stopped, searchAndCompare, fingerprintingStarted, keepSetting, expected
 	[InlineData(true, true, true, true, true)]    // the one case that compares what it has
