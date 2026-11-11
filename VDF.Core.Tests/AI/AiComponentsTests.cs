@@ -23,18 +23,41 @@ public class AiComponentsTests {
 
 	[Fact]
 	public void RuntimeDownloadPlan_TargetsPinnedVersionForCurrentPlatform() {
-		(Uri url, string archive) = AiComponents.GetRuntimeDownloadPlan();
+		(Uri url, string archive, string? nativeDirectory) = AiComponents.GetRuntimeDownloadPlan();
 
 		Assert.Contains(AiComponents.RuntimeVersion, archive);
-		Assert.Contains("github.com/microsoft/onnxruntime/releases/download", url.AbsoluteUri);
-		Assert.Contains($"v{AiComponents.RuntimeVersion}", url.AbsoluteUri);
-		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-			Assert.StartsWith("onnxruntime-win-", archive);
-			Assert.EndsWith(".zip", archive);
+		if (AiComponents.UsesDirectMLRuntime) {
+			// Windows: the DirectML build, published only on NuGet.
+			Assert.Equal(AiComponents.DirectMLRuntimeVersion, AiComponents.RuntimeVersion);
+			Assert.StartsWith("https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/", url.AbsoluteUri);
+			Assert.EndsWith(".nupkg", archive);
+			Assert.StartsWith("runtimes/win-", nativeDirectory);
+			Assert.EndsWith("/native", nativeDirectory);
+			Assert.EndsWith("-directml", AiComponents.RuntimeVersionMarker);
 		}
 		else {
-			Assert.EndsWith(".tgz", archive);
+			Assert.Equal(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersion);
+			Assert.Contains("github.com/microsoft/onnxruntime/releases/download", url.AbsoluteUri);
+			Assert.Contains($"v{AiComponents.RuntimeVersion}", url.AbsoluteUri);
+			Assert.Null(nativeDirectory);
+			Assert.Equal(AiComponents.RuntimeVersion, AiComponents.RuntimeVersionMarker);
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
+				Assert.StartsWith("onnxruntime-win-", archive);
+				Assert.EndsWith(".zip", archive);
+			}
+			else {
+				Assert.EndsWith(".tgz", archive);
+			}
 		}
+	}
+
+	[Fact]
+	public void RuntimeVersionMarker_FromCpuRuntime_IsNotCurrentWhenDirectMLIsExpected() {
+		// Upgrading Windows installs from the CPU-only runtime must re-download (the GUI
+		// prompts once at the next AI scan), not keep running inference on the CPU.
+		if (!AiComponents.UsesDirectMLRuntime)
+			return;
+		Assert.NotEqual(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersionMarker);
 	}
 
 	[Fact]
@@ -151,7 +174,7 @@ public class AiComponentsTests {
 	[Fact]
 	public void EnsureReady_RuntimeThatWillNotLoad_FailsBeforeTheScanStarts() {
 		string folder = BrokenRuntimeFolder();
-		File.WriteAllText(Path.Combine(folder, "runtime.version"), AiComponents.RuntimeVersion);
+		File.WriteAllText(Path.Combine(folder, "runtime.version"), AiComponents.RuntimeVersionMarker);
 		File.WriteAllBytes(Path.Combine(folder, AiComponents.ModelFileName), new byte[16]);
 		try {
 			AiComponents.TestAiFolder.Value = folder;

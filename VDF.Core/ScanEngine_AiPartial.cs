@@ -76,6 +76,7 @@ namespace VDF.Core {
 			var dense = new DenseEmbeddingStore.DenseRecord?[videos.Count];
 			int extracted = 0, cached = 0, failed = 0, skippedFailed = 0;
 			using (var embedder = new OnnxEmbedder(AiComponents.ModelPath)) {
+				Logger.Instance.Info($"AI partial detection embedder: {embedder.Description}");
 				object embedLock = new();
 				// Sampling keyframes for a large library runs for hours, and the sidecar used
 				// to be written only after the very last file - so a crash, or the kill that

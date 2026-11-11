@@ -56,6 +56,7 @@ namespace VDF.Core.AI {
 			this.store = store;
 			this.token = token;
 			embedder = new OnnxEmbedder(modelPath);
+			Logger.Instance.Info($"AI embedder: {embedder.Description}");
 			worker = Task.Run(WorkerLoop, CancellationToken.None);
 		}
 

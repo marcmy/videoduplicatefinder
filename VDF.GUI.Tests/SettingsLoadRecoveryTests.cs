@@ -25,6 +25,7 @@ namespace VDF.GUI.Tests;
 // the user found and deleted Settings.json by hand (issue #830, reported as "cannot
 // launch after switching language": the language switch is simply what rewrote the file).
 // Startup must survive any settings-file content.
+[Collection(SettingsFileInstanceCollection.Name)]
 public class SettingsLoadRecoveryTests : IDisposable {
 	readonly string dir = Directory.CreateTempSubdirectory("vdf-settings-tests-").FullName;
 

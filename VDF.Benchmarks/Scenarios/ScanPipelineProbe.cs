@@ -36,6 +36,7 @@ public static partial class ScanPipelineProbe {
 		public int MatchingParallelism { get; set; }
 		public int TimeoutMinutes { get; set; } = 20;
 		public bool UsePHash { get; set; }
+		public bool UseAi { get; set; }
 		public bool EnablePartialClipDetection { get; set; }
 		public bool KeepWorkDir { get; set; }
 	}
@@ -243,6 +244,7 @@ public static partial class ScanPipelineProbe {
 				HddMaxDegreeOfParallelism = 2,
 				MatchingMaxDegreeOfParallelism = options.MatchingParallelism,
 				UsePHashing = options.UsePHash,
+				UseAiMatching = options.UseAi,
 				EnablePartialClipDetection = options.EnablePartialClipDetection,
 				DatabaseCheckpointIntervalMinutes = 0,
 				CustomDatabaseFolder = databaseDir,
@@ -407,6 +409,7 @@ public static partial class ScanPipelineProbe {
 				case "--matching-parallelism": options.MatchingParallelism = NonNegativeInt(Next(), args[i - 1]); break;
 				case "--timeout-minutes": options.TimeoutMinutes = PositiveInt(Next(), args[i - 1]); break;
 				case "--phash": options.UsePHash = true; break;
+				case "--ai": options.UseAi = true; break;
 				case "--partial": options.EnablePartialClipDetection = true; break;
 				case "--keep-workdir": options.KeepWorkDir = true; break;
 				case "--help":
@@ -454,6 +457,7 @@ public static partial class ScanPipelineProbe {
 		Console.WriteLine("  --media-parallelism <n>       Media-read concurrency.");
 		Console.WriteLine("  --matching-parallelism <n>    Matching worker cap, 0 = automatic.");
 		Console.WriteLine("  --phash                       Use pHash matching in the full scan.");
+		Console.WriteLine("  --ai                          Enable AI (DINOv2) matching; needs onnxruntime + model in <state>/ai.");
 		Console.WriteLine("  --partial                     Enable audio partial-clip detection.");
 		Console.WriteLine("  --timeout-minutes <n>         Abort the probe wait after N minutes (default: 20).");
 		Console.WriteLine("  --keep-workdir                Keep temporary database/synthetic corpus for inspection.");

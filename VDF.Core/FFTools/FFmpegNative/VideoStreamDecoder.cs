@@ -127,6 +127,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public Size FrameSize { get; }
 		public AVPixelFormat PixelFormat { get; }
 		public bool IsHardwareDecode { get; }
+
 		internal AVRational StreamTimeBase => _pFormatContext->streams[_streamIndex]->time_base;
 		internal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;
 		public bool HasStreamGroups => _pFormatContext != null && _pFormatContext->nb_stream_groups > 0;
@@ -175,6 +176,43 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			transferMs = transferSw.ElapsedMilliseconds;
 			hardwareTransfers = 1;
 			return *_pReceivedFrame;
+		}
+
+		/// <summary>
+		/// Downloads the most recently decoded frame (one returned with
+		/// <see cref="FrameTransferMode.KeepHardwareFrame"/>) to system memory, for callers
+		/// that fall back to CPU processing after inspecting the hardware frame.
+		/// </summary>
+		internal AVFrame TransferCurrentFrame() => TransferFrameIfNeeded(out _, out _);
+
+		internal const string DisableNonReferenceSkipEnvVar = "VDF_DISABLE_NONREF_SKIP";
+		static readonly bool SkipNonReferenceBeforeTarget = !IsEnvFlagSet(DisableNonReferenceSkipEnvVar);
+
+		static bool IsEnvFlagSet(string name) {
+			string? value = Environment.GetEnvironmentVariable(name);
+			return value != null
+				&& (value == "1"
+					|| value.Equals("true", StringComparison.OrdinalIgnoreCase)
+					|| value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+					|| value.Equals("on", StringComparison.OrdinalIgnoreCase));
+		}
+
+		/// <summary>
+		/// Seeking lands on the keyframe before the target and every frame up to the target
+		/// is decoded (often 100+ frames per sample). A non-reference frame whose timestamp
+		/// is before the target can never be returned (only frames at/after the target are)
+		/// and no other frame depends on it, so the decoder may skip it outright. This is
+		/// lossless — the returned frame is identical — and with a typical B-frame GOP it
+		/// removes a large share of the decode work on both hardware and CPU decoders.
+		/// Packets at/after the target (or without a timestamp) are always fully decoded.
+		/// </summary>
+		void ApplySkipPolicyForPacket(long targetPts) {
+			if (!SkipNonReferenceBeforeTarget)
+				return;
+			long packetPts = _pPacket->pts;
+			_pCodecContext->skip_frame = packetPts != ffmpeg.AV_NOPTS_VALUE && packetPts < targetPts
+				? AVDiscard.AVDISCARD_NONREF
+				: AVDiscard.AVDISCARD_DEFAULT;
 		}
 
 		void SeekTo(long targetPts, out long seekMs) {
@@ -294,6 +332,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 					if (!draining) {
 						int sendErr;
 						try {
+							ApplySkipPolicyForPacket(targetPts);
 							ResetTimeout();
 							sendErr = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
 						}
@@ -392,6 +431,7 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				} while (_pPacket->stream_index != _streamIndex);
 
 				try {
+					ApplySkipPolicyForPacket(targetPts[targetIndex]);
 					ResetTimeout();
 					ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket).ThrowExceptionIfError("avcodec_send_packet while decoding graybyte batch");
 				}

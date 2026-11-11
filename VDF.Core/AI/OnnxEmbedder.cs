@@ -25,6 +25,16 @@ namespace VDF.Core.AI {
 	/// embedding whose dot product is the frames' cosine similarity. Instances are
 	/// created per scan; <see cref="EmbedBatch"/> is called from a single worker thread.
 	/// </summary>
+	/// <summary>Where AI inference should run.</summary>
+	public enum AiInferenceDevice {
+		/// <summary>GPU (DirectML) when the runtime and hardware support it, otherwise CPU.</summary>
+		Auto,
+		/// <summary>Always CPU.</summary>
+		Cpu,
+		/// <summary>GPU only; session creation fails instead of falling back.</summary>
+		Gpu
+	}
+
 	internal sealed class OnnxEmbedder : IDisposable {
 		public const int InputSide = 224;
 		public const int MaxBatch = 16;
@@ -39,21 +49,74 @@ namespace VDF.Core.AI {
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
 
-		public OnnxEmbedder(string modelPath) {
+		internal const string DeviceEnvVar = "VDF_AI_DEVICE";
+
+		public OnnxEmbedder(string modelPath) : this(modelPath, GetConfiguredDevice()) { }
+
+		/// <summary>VDF_AI_DEVICE=cpu|gpu|auto overrides where inference runs (default auto).</summary>
+		internal static AiInferenceDevice GetConfiguredDevice() =>
+			Environment.GetEnvironmentVariable(DeviceEnvVar)?.Trim().ToLowerInvariant() switch {
+				"cpu" => AiInferenceDevice.Cpu,
+				"gpu" => AiInferenceDevice.Gpu,
+				_ => AiInferenceDevice.Auto
+			};
+
+		public OnnxEmbedder(string modelPath, AiInferenceDevice device) {
 			AiComponents.LoadRuntime();
-			// InferenceSession does NOT take ownership of caller-supplied options —
-			// without the using this native handle waited for its finalizer.
-			using var options = new SessionOptions();
-			// The embedder shares the machine with the decode workers during hashing;
-			// give inference a portion of the cores, not all of them.
-			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
-			session = new InferenceSession(modelPath, options);
+			session = CreateSession(modelPath, device, out bool usesGpu, out string description);
+			UsesGpu = usesGpu;
+			Description = description;
 			inputName = session.InputMetadata.Keys.First();
 			// DINOv2 exports emit last_hidden_state (CLS token = the image embedding);
 			// keep the generic fallbacks so a future model swap keeps working.
 			if (session.OutputMetadata.ContainsKey("image_embeds")) outputName = "image_embeds";
 			else if (session.OutputMetadata.ContainsKey("pooler_output")) outputName = "pooler_output";
 			else { outputName = session.OutputMetadata.Keys.First(); clsFromHiddenState = true; }
+		}
+
+		/// <summary>True when inference runs on the GPU (DirectML execution provider).</summary>
+		public bool UsesGpu { get; }
+		/// <summary>Human-readable execution provider description for logs.</summary>
+		public string Description { get; }
+
+		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, out bool usesGpu, out string description) {
+			usesGpu = false;
+			string? gpuFailure = null;
+			if (device != AiInferenceDevice.Cpu && OperatingSystem.IsWindows()) {
+				// InferenceSession does NOT take ownership of caller-supplied options.
+				using var gpuOptions = new SessionOptions();
+				try {
+					// DirectML requires sequential execution and no memory-pattern planning.
+					gpuOptions.EnableMemoryPattern = false;
+					gpuOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					// Extended (fusion/layout) optimizations crash DirectML on the dynamically
+					// quantized DINOv2 graph (access violation in session init, ORT 1.23). Basic
+					// constant folding / redundancy elimination is safe and keeps embeddings
+					// within ~0.3% of the CPU provider, so existing caches stay comparable.
+					gpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
+					// Only the few ops DirectML cannot run stay on the CPU; keep them small.
+					gpuOptions.IntraOpNumThreads = 1;
+					gpuOptions.AppendExecutionProvider_DML(0);
+					var gpuSession = new InferenceSession(modelPath, gpuOptions);
+					usesGpu = true;
+					description = "DirectML (GPU 0)";
+					return gpuSession;
+				}
+				catch (Exception e) when (device == AiInferenceDevice.Auto && e is not OutOfMemoryException) {
+					// CPU-only runtime build, no DirectML 1.15+ on the system, or no D3D12 GPU.
+					gpuFailure = e.Message;
+				}
+			}
+
+			using var options = new SessionOptions();
+			// The embedder shares the machine with the decode workers during hashing;
+			// give inference a portion of the cores, not all of them.
+			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
+			var session = new InferenceSession(modelPath, options);
+			description = gpuFailure == null
+				? $"CPU ({options.IntraOpNumThreads} threads)"
+				: $"CPU ({options.IntraOpNumThreads} threads; DirectML unavailable: {gpuFailure})";
+			return session;
 		}
 
 		/// <summary>L2-normalized float embeddings, one per input frame (each 224·224·3 RGB24 bytes).</summary>

@@ -22,6 +22,7 @@ using VDF.GUI.Data;
 using VDF.GUI.ViewModels;
 
 namespace VDF.GUI.Tests {
+	[Collection(SettingsFileInstanceCollection.Name)]
 	public class ResultsDateTests {
 		static readonly DateTime Copied = new(2026, 9, 1, 12, 0, 0);
 		static readonly DateTime Recorded = new(2014, 6, 15, 18, 30, 0);

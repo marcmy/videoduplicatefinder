@@ -42,6 +42,16 @@ internal static class Program {
 		if (args.Length > 0 && args[0] == "--probe-scan-pipeline")
 			return ScanPipelineProbe.Run(args);
 
+		// AI embedding throughput / CPU cost per execution provider (CPU vs DirectML).
+		if (args.Length > 0 && args[0] == "--probe-ai-embed") {
+#if VDF_HAS_AI_INFERENCE_DEVICE
+			return AiEmbedProbe.Run(args);
+#else
+			Console.Error.WriteLine("--probe-ai-embed needs a VDF.Core with selectable AI inference devices.");
+			return 1;
+#endif
+		}
+
 		// BenchmarkSwitcher routes CLI args (--filter, --list, --job, --exporters …)
 		// to BDN. With no args, prints the menu of available benchmarks.
 		BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
@@ -54,6 +64,7 @@ internal static class Program {
 		Console.WriteLine("  --probe-compare         Synthetic duplicate matching/highlight phases");
 		Console.WriteLine("  --probe-regression      Repeatable extraction-path JSON regression probe");
 		Console.WriteLine("  --probe-scan-pipeline   Full discovery -> analysis -> compare/finalize scan profile");
+		Console.WriteLine("  --probe-ai-embed        AI embedding throughput and CPU cost, CPU vs DirectML");
 		Console.WriteLine();
 		Console.WriteLine("Pass --help after a probe name for probe-specific options where supported.");
 	}
