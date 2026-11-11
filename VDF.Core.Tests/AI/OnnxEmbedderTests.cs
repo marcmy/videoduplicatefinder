@@ -104,6 +104,29 @@ public class OnnxEmbedderTests {
 	}
 
 	[Fact]
+	public async Task EmbeddingPipeline_SubmittedFrame_IsNotWantedWhileStillQueued() {
+		// Inference is asynchronous. A decoder that asked WantsEmbedding right after
+		// SubmitFrame used to see "still missing" until the batch finished, and then
+		// extracted the same frame again through an FFmpeg process (CPU decode + scale).
+		var entry = new FileEntry { Folder = @"D:\media" };
+		entry.Path = @"D:\media\queued.mp4";
+		var store = new UnionEmbeddingStore();
+
+		using (var pipeline = new EmbeddingPipeline(TestModels.TinyEmbedderPath, store, CancellationToken.None)) {
+			for (int i = 0; i < 200; i++) {
+				Assert.True(pipeline.WantsEmbedding(entry, i));
+				pipeline.SubmitFrame(entry, i, PatternFrame(i));
+				Assert.False(pipeline.WantsEmbedding(entry, i), $"position {i} still wanted right after SubmitFrame");
+			}
+			await pipeline.CompleteAsync();
+			Assert.Equal(200, pipeline.EmbeddedCount);
+			for (int i = 0; i < 200; i++)
+				Assert.False(pipeline.WantsEmbedding(entry, i));
+		}
+		Assert.NotNull(store.GetEmbedding(entry, 199));
+	}
+
+	[Fact]
 	public async Task EmbeddingPipeline_RecyclesSubmittedFramesIntoThePool() {
 		// Frames are pool-owned after SubmitFrame (#878): once the batch is embedded,
 		// only the 384-byte embedding survives and the 150 KB buffer must recycle.

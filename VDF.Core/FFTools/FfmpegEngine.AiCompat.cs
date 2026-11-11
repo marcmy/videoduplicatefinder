@@ -61,7 +61,7 @@ namespace VDF.Core.FFTools {
 					if (!allGrayAvailable) {
 						videoFile.Flags.Set(EntryFlags.ThumbnailError);
 						Logger.Instance.Info(
-							$"Skipping process-mode retry for '{videoFile.Path}': the native software decode failure indicates a truncated or corrupt file, and required gray samples are still missing.");
+							$"Skipping process-mode retry for '{videoFile.Path}': the native decode failure (with no GPU error) indicates a truncated or corrupt file, and required gray samples are still missing.");
 						return false;
 					}
 					// Gray matching remains valid; abstain from missing AI embeddings rather
@@ -419,7 +419,7 @@ namespace VDF.Core.FFTools {
 									transferMode);
 							if (!decoded ||
 								clusterIndex != cluster.Requests.Count)
-								throw new Exception(
+								throw new FrameNotReachedException(
 									$"Native AI batch decoded " +
 									$"{clusterIndex} of " +
 									$"{cluster.Requests.Count} " +
@@ -433,7 +433,7 @@ namespace VDF.Core.FFTools {
 								request.Position,
 								out _,
 								transferMode))
-								throw new Exception(
+								throw new FrameNotReachedException(
 									$"TryDecodeFrame failed at " +
 									$"pos={request.Position} for " +
 									$"'{videoFile.Path}'.");
@@ -458,8 +458,7 @@ namespace VDF.Core.FFTools {
 			}
 			catch (Exception ex) {
 				string diagnostics = FfmpegLogCapture.GetRecent();
-				failureCategory = FfmpegErrorClassifier.Categorize(
-					diagnostics.Length > 0 ? $"{diagnostics} {ex.Message}" : ex.Message);
+				failureCategory = CategorizeNativeFailure(ex, diagnostics);
 				failureHardwareDeviceType = hardwareDeviceType;
 				if (ex is TiledHeifRequiresProcessException) {
 					Logger.Instance.Info(ex.Message);
@@ -472,10 +471,21 @@ namespace VDF.Core.FFTools {
 
 				string failureText =
 					$"{hardwareDeviceType} {ex}";
+				bool hardwareImplicated =
+					IsHardwareImplicatedNativeFailure(
+						ex,
+						diagnostics,
+						failureText);
+				// A frame the file never delivered says nothing about the GPU:
+				// report no device so the caller's corrupt-file check can skip
+				// the identical process-mode retries.
+				if (ex is FrameNotReachedException && !hardwareImplicated)
+					failureHardwareDeviceType =
+						AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
 				if (!forceCpuDecode &&
 					hardwareDeviceType !=
 						AVHWDeviceType.AV_HWDEVICE_TYPE_NONE &&
-					IsHardwareDecodeFailure(failureText)) {
+					hardwareImplicated) {
 					MarkConfiguredHardwareDecodeFailure(failureText);
 					RecordHardwareDecodeFailureForCodec(
 						codecName,
@@ -486,7 +496,8 @@ namespace VDF.Core.FFTools {
 						$"hardware decode failure on " +
 						$"'{videoFile.Path}', retrying remaining " +
 						$"samples with CPU decode. Reason: " +
-						$"{NormalizeLogReason(ex.Message, 240)}");
+						$"{NormalizeLogReason(ex.Message, 240)}" +
+						FormatFfmpegDiagnostics(diagnostics));
 					return TryExtractGrayAndAiNativeBatch(
 						videoFile,
 						positions,

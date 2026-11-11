@@ -45,6 +45,10 @@ namespace VDF.Core.AI {
 	/// </summary>
 	sealed class EmbeddingPipeline : IEmbeddingFrameSink, IDisposable {
 		readonly BlockingCollection<(FileEntry entry, double key, byte[] rgb)> queue = new(boundedCapacity: 256);
+		// Frames handed over but not embedded yet. Inference runs asynchronously, so without
+		// this a decoder asking WantsEmbedding right after SubmitFrame saw "still missing" and
+		// extracted the same frame again through the FFmpeg process (CPU decode + scale).
+		readonly ConcurrentDictionary<(FileEntry entry, double key), byte> pending = new();
 		readonly OnnxEmbedder embedder;
 		readonly UnionEmbeddingStore store;
 		readonly CancellationToken token;
@@ -64,18 +68,19 @@ namespace VDF.Core.AI {
 		public bool Faulted => faulted;
 
 		public bool WantsEmbedding(FileEntry entry, double positionKey) =>
-			!faulted && !store.HasEmbedding(entry, positionKey);
+			!faulted && !pending.ContainsKey((entry, positionKey)) && !store.HasEmbedding(entry, positionKey);
 
 		public void SubmitFrame(FileEntry entry, double positionKey, byte[] rgb224) {
 			if (faulted) {
 				FramePool.Shared.Return(rgb224);
 				return;
 			}
+			pending.TryAdd((entry, positionKey), 0);
 			try {
 				queue.Add((entry, positionKey, rgb224), token);
 			}
-			catch (OperationCanceledException) { FramePool.Shared.Return(rgb224); }
-			catch (InvalidOperationException) { FramePool.Shared.Return(rgb224); /* completed while a decoder was mid-submit */ }
+			catch (OperationCanceledException) { pending.TryRemove((entry, positionKey), out _); FramePool.Shared.Return(rgb224); }
+			catch (InvalidOperationException) { pending.TryRemove((entry, positionKey), out _); FramePool.Shared.Return(rgb224); /* completed while a decoder was mid-submit */ }
 		}
 
 		/// <summary>No more frames will arrive; returns when everything queued is embedded.</summary>
@@ -119,6 +124,9 @@ namespace VDF.Core.AI {
 				}
 
 				void ReturnBatchFrames() {
+					// After store.Put for embedded frames, so WantsEmbedding never sees neither.
+					foreach ((FileEntry entry, double key) done in batchEntries)
+						pending.TryRemove(done, out _);
 					foreach (byte[] frame in batchFrames)
 						FramePool.Shared.Return(frame);
 					batchFrames.Clear();
@@ -131,8 +139,10 @@ namespace VDF.Core.AI {
 				faulted = true;
 				Logger.Instance.Error($"AI embedding stage failed — continuing scan without AI matching for the remaining files: {e}");
 				try {
-					while (queue.TryTake(out var dropped, Timeout.Infinite))
+					while (queue.TryTake(out var dropped, Timeout.Infinite)) {
+						pending.TryRemove((dropped.entry, dropped.key), out _);
 						FramePool.Shared.Return(dropped.rgb);
+					}
 				}
 				catch (InvalidOperationException) { /* completed and empty — done */ }
 			}

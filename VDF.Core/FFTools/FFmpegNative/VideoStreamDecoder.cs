@@ -86,11 +86,15 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError($"av_hwdevice_ctx_create({HWDeviceType})");
 			}
 			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError("avcodec_parameters_to_context");
+			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE &&
+				ShouldAllowHardwareProfileMismatch(_pCodecContext->codec_id, _pCodecContext->profile))
+				_pCodecContext->hwaccel_flags |= ffmpeg.AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 			ResetTimeout();
 			ffmpeg.avcodec_open2(_pCodecContext, codec, null).ThrowExceptionIfError("avcodec_open2");
 
 			CodecName = ffmpeg.avcodec_get_name(codec->id);
 			AVCodecParameters* codecpar = _pFormatContext->streams[_streamIndex]->codecpar;
+			CodecProfile = codecpar->profile;
 			AVPacketSideData* matrixSideData = ffmpeg.av_packet_side_data_get(codecpar->coded_side_data, codecpar->nb_coded_side_data,
 				AVPacketSideDataType.AV_PKT_DATA_DISPLAYMATRIX);
 			if (matrixSideData != null && matrixSideData->size >= 9 * sizeof(int))
@@ -116,6 +120,8 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		}
 
 		public string CodecName { get; }
+		/// <summary>Stream profile as probed (an <c>AV_PROFILE_*</c> value, -99 when unknown).</summary>
+		internal int CodecProfile { get; }
 		public FrameOrientation StreamOrientation { get; }
 
 		public FrameOrientation GetOrientation(AVFrame frame) {
@@ -184,6 +190,22 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		/// that fall back to CPU processing after inspecting the hardware frame.
 		/// </summary>
 		internal AVFrame TransferCurrentFrame() => TransferFrameIfNeeded(out _, out _);
+
+		internal const string DisableBaselineHardwareDecodeEnvVar = "VDF_DISABLE_H264_BASELINE_HWACCEL";
+
+		/// <summary>
+		/// FFmpeg's DXVA2/D3D11VA hwaccel accepts H.264 only as Constrained Baseline, Main or High
+		/// and rejects plain Baseline (constraint_set1 = 0) — the profile many phone and hardware
+		/// encoders write — so those files failed hwaccel setup and silently decoded on the CPU.
+		/// The features that distinguish plain Baseline (FMO, ASO, redundant slices) are virtually
+		/// never used outside conformance streams; GPU decode of such files is bit-identical to
+		/// the software decoder. Extended profile and other codecs keep the strict check.
+		/// Opt out with VDF_DISABLE_H264_BASELINE_HWACCEL=1.
+		/// </summary>
+		internal static bool ShouldAllowHardwareProfileMismatch(AVCodecID codecId, int profile) =>
+			codecId == AVCodecID.AV_CODEC_ID_H264
+			&& profile == ffmpeg.AV_PROFILE_H264_BASELINE
+			&& !IsEnvFlagSet(DisableBaselineHardwareDecodeEnvVar);
 
 		internal const string DisableNonReferenceSkipEnvVar = "VDF_DISABLE_NONREF_SKIP";
 		static readonly bool SkipNonReferenceBeforeTarget = !IsEnvFlagSet(DisableNonReferenceSkipEnvVar);
@@ -303,51 +325,69 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			// Once the demuxer is exhausted, flush the decoder once so buffered
 			// intra frames (notably single-frame MJPEG images) can be received.
 			bool draining = false;
+			// FFmpeg's send/receive contract: after sending a packet, read frames until
+			// avcodec_receive_frame returns EAGAIN, and only then send the next packet.
+			// Sending again while output is pending (a packet that yields several frames,
+			// or a decode error mid-packet) fails with EAGAIN ("Resource temporarily
+			// unavailable"), which used to abort the sample and retry it on the CPU and in
+			// process mode. needInput tracks whether the decoder has asked for more input.
+			bool needInput = true;
+			// _pPacket holds a packet the decoder refused with EAGAIN; resend it once the
+			// pending output has been drained (defensive: draining first should prevent it).
+			bool packetPending = false;
 			for (int iter = 0; iter < maxIterations; iter++) {
-				if (!draining) {
-					int error;
-					while (true) {
-						ffmpeg.av_packet_unref(_pPacket);
-						ResetTimeout();
-						error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
-						if (error == ffmpeg.AVERROR_EOF) {
+				if (!draining && needInput) {
+					if (!packetPending) {
+						int error;
+						while (true) {
 							ffmpeg.av_packet_unref(_pPacket);
 							ResetTimeout();
-							ffmpeg.avcodec_send_packet(_pCodecContext, null).ThrowExceptionIfError("avcodec_send_packet(NULL) while draining single frame");
-							draining = true;
-							break;
-						}
-						if (error == ffmpeg.AVERROR_INVALIDDATA) {
-							if (++badPacketCount > maxBadPackets) {
-								frame = *_pFrame;
-								timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
-								return false;
+							error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
+							if (error == ffmpeg.AVERROR_EOF) {
+								ffmpeg.av_packet_unref(_pPacket);
+								ResetTimeout();
+								ffmpeg.avcodec_send_packet(_pCodecContext, null).ThrowExceptionIfError("avcodec_send_packet(NULL) while draining single frame");
+								draining = true;
+								break;
 							}
-							continue;
+							if (error == ffmpeg.AVERROR_INVALIDDATA) {
+								if (++badPacketCount > maxBadPackets) {
+									frame = *_pFrame;
+									timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+									return false;
+								}
+								continue;
+							}
+							error.ThrowExceptionIfError("av_read_frame while decoding single frame");
+							if (_pPacket->stream_index == _streamIndex) break;
 						}
-						error.ThrowExceptionIfError("av_read_frame while decoding single frame");
-						if (_pPacket->stream_index == _streamIndex) break;
 					}
 
 					if (!draining) {
-						int sendErr;
-						try {
-							ApplySkipPolicyForPacket(targetPts);
-							ResetTimeout();
-							sendErr = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
+						ApplySkipPolicyForPacket(targetPts);
+						ResetTimeout();
+						int sendErr = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
+						if (sendErr == ffmpeg.AVERROR(ffmpeg.EAGAIN)) {
+							packetPending = true;
+							needInput = false;
 						}
-						finally {
+						else {
+							packetPending = false;
 							ffmpeg.av_packet_unref(_pPacket);
-						}
-						if (sendErr == ffmpeg.AVERROR_INVALIDDATA || sendErr == ffmpeg.AVERROR(ffmpeg.EINVAL)) {
-							if (++badPacketCount > maxBadPackets) {
-								frame = *_pFrame;
-								timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
-								return false;
+							if (sendErr == ffmpeg.AVERROR_INVALIDDATA || sendErr == ffmpeg.AVERROR(ffmpeg.EINVAL)) {
+								if (++badPacketCount > maxBadPackets) {
+									frame = *_pFrame;
+									timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+									return false;
+								}
+								// The bad packet may still have produced output; collect it before
+								// sending more.
+								needInput = false;
 							}
-							continue;
+							else {
+								sendErr.ThrowExceptionIfError("avcodec_send_packet while decoding single frame");
+							}
 						}
-						sendErr.ThrowExceptionIfError("avcodec_send_packet while decoding single frame");
 					}
 				}
 
@@ -359,12 +399,24 @@ namespace VDF.Core.FFTools.FFmpegNative {
 						timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
 						return false;
 					}
+					needInput = true;
 					continue;
 				}
 				if (recvErr == ffmpeg.AVERROR_EOF) {
 					frame = *_pFrame;
 					timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
 					return false;
+				}
+				if (recvErr == ffmpeg.AVERROR_INVALIDDATA) {
+					// A damaged frame; like a bad packet on the send side, skip it (bounded)
+					// and keep decoding towards the target.
+					if (++badPacketCount > maxBadPackets) {
+						frame = *_pFrame;
+						timing = new DecodedFrameTiming(seekMs, decodeSw.ElapsedMilliseconds, 0, 0);
+						return false;
+					}
+					needInput = false;
+					continue;
 				}
 				if (recvErr < 0)
 					recvErr.ThrowExceptionIfError("avcodec_receive_frame while decoding single frame");
@@ -375,7 +427,11 @@ namespace VDF.Core.FFTools.FFmpegNative {
 				}
 
 				ffmpeg.av_frame_unref(_pFrame);
+				// More output may be ready from the same packet: keep receiving first.
+				needInput = false;
 			}
+			if (packetPending)
+				ffmpeg.av_packet_unref(_pPacket);
 
 			long decodeMs = decodeSw.ElapsedMilliseconds;
 			if (!foundTargetFrame) {

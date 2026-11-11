@@ -86,6 +86,8 @@ namespace VDF.Core.FFTools {
 				"error while decoding",
 				"partial file",
 				"truncat",
+				"error at mb:",                     // mpeg4/h263 macroblock decode error
+				"packet mismatch",                  // flv demuxer: damaged tag structure
 			}),
 			(FfmpegErrorCategory.FileAccess, new[] {
 				"permission denied",
