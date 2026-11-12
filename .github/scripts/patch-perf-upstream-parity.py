@@ -10,12 +10,15 @@ def replace_once(text: str, old: str, new: str, description: str) -> str:
 
 def replace_once_if_missing(
     text: str,
-    marker: str,
+    marker: str | tuple[str, ...],
     old: str,
     new: str,
     description: str,
 ) -> str:
-    if marker in text:
+    # A marker tuple lists every accepted "already applied" form, so a later perf
+    # refactor of the patched code is not mistaken for a missing patch.
+    markers = (marker,) if isinstance(marker, str) else marker
+    if any(m in text for m in markers):
         return text
     return replace_once(text, old, new, description)
 
@@ -131,7 +134,12 @@ def patch_non_ai_corrupt_fast_fail() -> None:
     )
     block = replace_once_if_missing(
         block,
-        "failureCategory = FfmpegErrorClassifier.Categorize(",
+        # Since #157 perf classifies via CategorizeNativeFailure, so frames a damaged
+        # file never delivered are not blamed on the GPU; both forms mean "applied".
+        (
+            "failureCategory = FfmpegErrorClassifier.Categorize(",
+            "failureCategory = CategorizeNativeFailure(",
+        ),
         catch_old,
         catch_new,
         "non-AI native batch failure classification",
@@ -261,7 +269,12 @@ def patch_ai_corrupt_fast_fail() -> None:
     )
     block = replace_once_if_missing(
         block,
-        "failureCategory = FfmpegErrorClassifier.Categorize(",
+        # Since #157 perf classifies via CategorizeNativeFailure, so frames a damaged
+        # file never delivered are not blamed on the GPU; both forms mean "applied".
+        (
+            "failureCategory = FfmpegErrorClassifier.Categorize(",
+            "failureCategory = CategorizeNativeFailure(",
+        ),
         catch_old,
         catch_new,
         "AI native batch failure classification",

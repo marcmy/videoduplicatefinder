@@ -82,8 +82,9 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			if (_pCodecContext == null)
 				throw new FFInvalidExitCodeException("Failed to allocate AVCodecContext.");
 			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
-				ResetTimeout();
-				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError($"av_hwdevice_ctx_create({HWDeviceType})");
+				// D3D11VA decoders share one device (see SharedHardwareDevice); the context
+				// owns this reference and avcodec_free_context releases it.
+				_pCodecContext->hw_device_ctx = SharedHardwareDevice.Acquire(HWDeviceType);
 			}
 			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError("avcodec_parameters_to_context");
 			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE &&
@@ -133,6 +134,141 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public Size FrameSize { get; }
 		public AVPixelFormat PixelFormat { get; }
 		public bool IsHardwareDecode { get; }
+		/// <summary>The ID3D11Device this decoder decodes on (zero unless D3D11VA).</summary>
+		internal nint D3D11DevicePointer => _pCodecContext == null ? 0 : SharedHardwareDevice.GetD3D11Device(_pCodecContext->hw_device_ctx);
+
+		/// <summary>Demuxer short name list, e.g. "mov,mp4,m4a,3gp,3g2,mj2" or "matroska,webm".</summary>
+		internal string FormatName =>
+			_pFormatContext != null && _pFormatContext->iformat != null
+				? System.Runtime.InteropServices.Marshal.PtrToStringAnsi((IntPtr)_pFormatContext->iformat->name) ?? string.Empty
+				: string.Empty;
+
+		/// <summary>First timestamp of the video stream in stream time base (0 when unknown).</summary>
+		internal long StreamStartPts {
+			get {
+				long start = _pFormatContext->streams[_streamIndex]->start_time;
+				return start == ffmpeg.AV_NOPTS_VALUE ? 0 : start;
+			}
+		}
+
+		/// <summary>Container start time in seconds (AVFormatContext.start_time; 0 when unknown).</summary>
+		internal double FormatStartSeconds =>
+			_pFormatContext->start_time == ffmpeg.AV_NOPTS_VALUE ? 0 : _pFormatContext->start_time / (double)ffmpeg.AV_TIME_BASE;
+
+		/// <summary>Nominal duration of one video frame in seconds (0 when the stream reports no rate).</summary>
+		internal double NominalFrameDurationSeconds {
+			get {
+				AVStream* st = _pFormatContext->streams[_streamIndex];
+				AVRational rate = st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0 ? st->avg_frame_rate : st->r_frame_rate;
+				return rate.num > 0 && rate.den > 0 ? rate.den / (double)rate.num : 0;
+			}
+		}
+
+		bool _keyframePacketPending;
+
+		/// <summary>Size in bytes of the keyframe packet found by the last <see cref="TrySeekKeyframePacket"/>.</summary>
+		internal int LastKeyframePacketSize { get; private set; }
+
+		/// <summary>
+		/// Seeks backward to <paramref name="targetPts"/> (stream time base, absolute) and reads
+		/// up to the first video packet flagged AV_PKT_FLAG_KEY, which stays pending for
+		/// <see cref="TryDecodePendingKeyframe"/>. Only that packet's bytes are read off disk
+		/// (plus any interleaved audio around it) instead of everything up to the target - the
+		/// difference between seconds and minutes per file on spinning disks. The packet's
+		/// timestamp (pts, else dts) and byte position identify the keyframe without decoding it.
+		/// </summary>
+		internal bool TrySeekKeyframePacket(long targetPts, out long packetPts, out long packetDts, out long packetPos) {
+			DiscardPendingKeyframe();
+			packetPts = packetDts = ffmpeg.AV_NOPTS_VALUE;
+			packetPos = -1;
+			ResetTimeout();
+			if (ffmpeg.av_seek_frame(_pFormatContext, _streamIndex, targetPts, ffmpeg.AVSEEK_FLAG_BACKWARD) < 0)
+				return false;
+			ffmpeg.avcodec_flush_buffers(_pCodecContext);
+			_pCodecContext->skip_frame = AVDiscard.AVDISCARD_DEFAULT;
+
+			// Interleaved audio/subtitle packets (and, rarely, a non-key packet the demuxer
+			// returns first) are skipped; a sane seek reaches the keyframe within a few reads.
+			const int maxPackets = 256;
+			for (int read = 0; read < maxPackets; read++) {
+				ffmpeg.av_packet_unref(_pPacket);
+				ResetTimeout();
+				int error = ffmpeg.av_read_frame(_pFormatContext, _pPacket);
+				if (error == ffmpeg.AVERROR_EOF)
+					break;
+				if (error == ffmpeg.AVERROR_INVALIDDATA)
+					continue;
+				error.ThrowExceptionIfError("av_read_frame while seeking a keyframe");
+				if (_pPacket->stream_index != _streamIndex || (_pPacket->flags & ffmpeg.AV_PKT_FLAG_KEY) == 0)
+					continue;
+				packetPts = _pPacket->pts != ffmpeg.AV_NOPTS_VALUE ? _pPacket->pts : _pPacket->dts;
+				packetDts = _pPacket->dts;
+				packetPos = _pPacket->pos;
+				LastKeyframePacketSize = _pPacket->size;
+				_keyframePacketPending = true;
+				return true;
+			}
+			ffmpeg.av_packet_unref(_pPacket);
+			return false;
+		}
+
+		internal void DiscardPendingKeyframe() {
+			if (_keyframePacketPending)
+				ffmpeg.av_packet_unref(_pPacket);
+			_keyframePacketPending = false;
+		}
+
+		/// <summary>
+		/// Decodes the packet found by <see cref="TrySeekKeyframePacket"/>: sends exactly that
+		/// keyframe and drains the decoder so the picture comes out without waiting for B-frame
+		/// reordering. The frame stays a hardware frame when decoded on the GPU (see
+		/// <see cref="TransferCurrentFrame"/>). The next seek's avcodec_flush_buffers leaves
+		/// the draining state again.
+		/// </summary>
+		internal bool TryDecodePendingKeyframe(out AVFrame frame, out long framePts) {
+			ffmpeg.av_frame_unref(_pFrame);
+			ffmpeg.av_frame_unref(_pReceivedFrame);
+			frame = *_pFrame;
+			framePts = ffmpeg.AV_NOPTS_VALUE;
+			if (!_keyframePacketPending)
+				return false;
+			_keyframePacketPending = false;
+			ResetTimeout();
+			int sendError = ffmpeg.avcodec_send_packet(_pCodecContext, _pPacket);
+			ffmpeg.av_packet_unref(_pPacket);
+			if (sendError == ffmpeg.AVERROR_INVALIDDATA)
+				return false;
+			sendError.ThrowExceptionIfError("avcodec_send_packet while decoding a keyframe");
+
+			ResetTimeout();
+			int drainError = ffmpeg.avcodec_send_packet(_pCodecContext, null);
+			if (drainError < 0 && drainError != ffmpeg.AVERROR_EOF)
+				drainError.ThrowExceptionIfError("avcodec_send_packet(NULL) while decoding a keyframe");
+			while (true) {
+				ResetTimeout();
+				int receiveError = ffmpeg.avcodec_receive_frame(_pCodecContext, _pFrame);
+				if (receiveError == 0)
+					break;
+				if (receiveError == ffmpeg.AVERROR_EOF || receiveError == ffmpeg.AVERROR(ffmpeg.EAGAIN) || receiveError == ffmpeg.AVERROR_INVALIDDATA)
+					return false;
+				receiveError.ThrowExceptionIfError("avcodec_receive_frame while decoding a keyframe");
+			}
+			framePts = GetFrameTimestamp(_pFrame);
+			frame = *_pFrame;
+			return true;
+		}
+
+		/// <summary>
+		/// Decodes only the keyframe at or before <paramref name="offsetFromStart"/> (measured from
+		/// the stream's first timestamp); see <see cref="TrySeekKeyframePacket"/>.
+		/// </summary>
+		internal bool TryDecodeKeyframeAtOrBefore(TimeSpan offsetFromStart, out AVFrame frame, out long keyframePts) {
+			frame = default;
+			keyframePts = ffmpeg.AV_NOPTS_VALUE;
+			if (!TrySeekKeyframePacket(StreamStartPts + ToStreamPts(offsetFromStart), out _, out _, out _))
+				return false;
+			return TryDecodePendingKeyframe(out frame, out keyframePts);
+		}
 
 		internal AVRational StreamTimeBase => _pFormatContext->streams[_streamIndex]->time_base;
 		internal AVRational StreamSampleAspectRatio => _pFormatContext->streams[_streamIndex]->sample_aspect_ratio;
