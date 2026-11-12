@@ -145,21 +145,36 @@ namespace VDF.Core {
 							batch.Clear();
 							batchSlots.Clear();
 						}
+						void OnFrame(byte[] frame) {
+							int slot = embedded.Count;
+							embedded.Add(Array.Empty<byte>());
+							if (filter.IsUsable(frame)) {
+								batch.Add(frame);
+								batchSlots.Add(slot);
+								if (batch.Count == OnnxEmbedder.MaxBatch)
+									FlushBatch();
+							}
+							else
+								FramePool.Shared.Return(frame);
+						}
 						int frameCount;
 						try {
-							frameCount = FfmpegEngine.StreamDenseAiFrames(entry.Path, interval, AiPartialMaxFramesPerFile,
-								Settings.ExtendedFFToolsLogging, frame => {
-									int slot = embedded.Count;
-									embedded.Add(Array.Empty<byte>());
-									if (filter.IsUsable(frame)) {
-										batch.Add(frame);
-										batchSlots.Add(slot);
-										if (batch.Count == OnnxEmbedder.MaxBatch)
-											FlushBatch();
-									}
-									else
-										FramePool.Shared.Return(frame);
-								}, cancelationTokenSource.Token);
+							// Seek-based sweep first: reads only the sampled keyframes instead of the
+							// whole file (what made HDD libraries take days), on the GPU when configured.
+							frameCount = FfmpegEngine.StreamDenseAiFramesNative(entry, interval, AiPartialMaxFramesPerFile,
+								Settings.ExtendedFFToolsLogging, OnFrame, cancelationTokenSource.Token);
+							if (frameCount == FfmpegEngine.DenseNativeUnavailable) {
+								// Start over on the CLI sweep: drop what the native attempt delivered
+								// (the filter compares against the previous frame, so it restarts too).
+								foreach (byte[] frame in batch)
+									FramePool.Shared.Return(frame);
+								batch.Clear();
+								batchSlots.Clear();
+								embedded.Clear();
+								filter = new DenseFrameFilter();
+								frameCount = FfmpegEngine.StreamDenseAiFrames(entry.Path, interval, AiPartialMaxFramesPerFile,
+									Settings.ExtendedFFToolsLogging, OnFrame, cancelationTokenSource.Token);
+							}
 							if (frameCount >= 0)
 								FlushBatch();
 						}
@@ -198,9 +213,9 @@ namespace VDF.Core {
 				}
 
 				try {
-					// Per-drive concurrency (#857): this phase reads WHOLE files off disk
-					// (GetDenseAiFrames decodes the full video), so it must respect the same
-					// per-drive caps as the gather pass. The previous flat global degree let
+					// Per-drive concurrency (#857): this phase seeks keyframe after keyframe (the
+					// native sampler) or reads WHOLE files (the CLI sweep it falls back to), so it
+					// must respect the same per-drive caps as the gather pass. The previous flat global degree let
 					// every worker pile onto whatever drive the queue served next,
 					// seek-thrashing spinning disks and network shares.
 					List<DriveScanGroup> driveGroups = DriveScanPlanner.PartitionByDrive(videos);
