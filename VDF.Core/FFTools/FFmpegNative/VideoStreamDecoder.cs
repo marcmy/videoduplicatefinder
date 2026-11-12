@@ -82,8 +82,9 @@ namespace VDF.Core.FFTools.FFmpegNative {
 			if (_pCodecContext == null)
 				throw new FFInvalidExitCodeException("Failed to allocate AVCodecContext.");
 			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE) {
-				ResetTimeout();
-				ffmpeg.av_hwdevice_ctx_create(&_pCodecContext->hw_device_ctx, HWDeviceType, null, null, 0).ThrowExceptionIfError($"av_hwdevice_ctx_create({HWDeviceType})");
+				// D3D11VA decoders share one device (see SharedHardwareDevice); the context
+				// owns this reference and avcodec_free_context releases it.
+				_pCodecContext->hw_device_ctx = SharedHardwareDevice.Acquire(HWDeviceType);
 			}
 			ffmpeg.avcodec_parameters_to_context(_pCodecContext, _pFormatContext->streams[_streamIndex]->codecpar).ThrowExceptionIfError("avcodec_parameters_to_context");
 			if (HWDeviceType != AVHWDeviceType.AV_HWDEVICE_TYPE_NONE &&
@@ -133,6 +134,8 @@ namespace VDF.Core.FFTools.FFmpegNative {
 		public Size FrameSize { get; }
 		public AVPixelFormat PixelFormat { get; }
 		public bool IsHardwareDecode { get; }
+		/// <summary>The ID3D11Device this decoder decodes on (zero unless D3D11VA).</summary>
+		internal nint D3D11DevicePointer => _pCodecContext == null ? 0 : SharedHardwareDevice.GetD3D11Device(_pCodecContext->hw_device_ctx);
 
 		/// <summary>Demuxer short name list, e.g. "mov,mp4,m4a,3gp,3g2,mj2" or "matroska,webm".</summary>
 		internal string FormatName =>
