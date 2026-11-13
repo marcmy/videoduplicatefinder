@@ -113,6 +113,18 @@ public class LogRedactorTests {
 	}
 
 	[Fact]
+	public void PartialVisualGateLine_HidesBothNames_AndKeepsWording() {
+		string output = NewRedactor().Redact("10:00:00 => [Partial] Visual gate dropped 'Beach Day 2.mkv' in 'Family Holiday 2019.mkv': visualSim=41.0% (threshold 60%)");
+		Assert.Equal("10:00:00 => [Partial] Visual gate dropped 'video_0001.mkv' in 'video_0002.mkv': visualSim=41.0% (threshold 60%)", output);
+	}
+
+	[Fact]
+	public void TaggedName_WithApostropheInsideAWord() {
+		string output = NewRedactor().Redact("[ChromaprintEngine] Bob's Big Day.mp4: no audio stream");
+		Assert.Equal("[ChromaprintEngine] video_0001.mp4: no audio stream", output);
+	}
+
+	[Fact]
 	public void ImagesGetImageTokens() {
 		string output = NewRedactor().Redact(@"ERROR: Graybytes too dark of: E:\Photos\2023\IMG_0042.HEIC");
 		Assert.Equal(@"ERROR: Graybytes too dark of: E:\image_0001.HEIC", output);

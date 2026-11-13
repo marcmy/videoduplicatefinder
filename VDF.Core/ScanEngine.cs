@@ -2410,7 +2410,7 @@ namespace VDF.Core {
 					else {
 						Interlocked.Increment(ref dropped);
 						if (Settings.ExtendedFFToolsLogging)
-							Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
+							Logger.Instance.Info($"[Partial] Visual gate dropped '{System.IO.Path.GetFileName(videos[a.clipIdx].Path)}' in '{System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}': visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
 					}
 					IncrementProgress(System.IO.Path.GetFileName(videos[a.clipIdx].Path));
 				});

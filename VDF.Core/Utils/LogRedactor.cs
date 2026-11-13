@@ -91,8 +91,10 @@ namespace VDF.Core.Utils {
 		static readonly string UnixPath = $"(?<![\\w:/\\\\.~])/(?<dir>(?:[^/\\r\\n\"'<>|:*?]+/)*)(?<name>[^/\\r\\n\"'<>|:*?]+?)\\.{Ext}";
 		// 'name.ext' or "name.ext"
 		static readonly string QuotedName = $"(?<=['\"])(?<name>[^'\"\\\\/:*?<>|\\r\\n]+?)\\.{Ext}(?=['\"])";
-		// [ChromaprintEngine] name with spaces.ext
-		static readonly string TaggedName = $"(?<=\\]\\s)(?<name>{Seg}+?)\\.{Ext}";
+		// [ChromaprintEngine] name with spaces.ext — an apostrophe inside a word ("Bob's") is
+		// part of the name, but one after a space opens a quote, which QuotedName handles;
+		// without that stop, "[Partial] Visual gate dropped 'a.mkv'" would lose its wording.
+		static readonly string TaggedName = $"(?<=\\]\\s)(?<name>(?:[^\\\\/:*?\"<>|\\r\\n']|(?<!\\s)')+?)\\.{Ext}";
 		// name.ext as one word
 		static readonly string WordName = $"(?<=^|[\\s'\"=,;(\\[{{>])(?<name>[^\\s\\\\/:*?\"<>|'=,;(\\[{{][^\\s\\\\/:*?\"<>|'=,;]*?)\\.{Ext}";
 
