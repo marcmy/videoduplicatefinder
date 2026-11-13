@@ -253,6 +253,13 @@ namespace VDF.GUI.Data {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, value);
 		}
+		// Copy diagnostics / Export log replace file names and paths with tokens (LogRedactor).
+		// On by default: the point of both is sharing. log.txt itself is never redacted.
+		[JsonPropertyName("RedactSharedDiagnostics")]
+		public bool RedactSharedDiagnostics {
+			get;
+			set => this.RaiseAndSetIfChanged(ref field, value);
+		} = true;
 		[JsonPropertyName("AlwaysRetryFailedSampling")]
 		public bool AlwaysRetryFailedSampling {
 			get;
