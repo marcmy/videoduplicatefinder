@@ -1118,9 +1118,15 @@
                 <StackPanel Orientation="Horizontal" Spacing="8">
                   <Button Command="{Binding CopyDiagnosticsCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.Copy]}" />
+                  <Button Command="{Binding ExportLogCommand}"
+                          Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.ExportLog]}" />
                   <Button Command="{Binding ExportGrayBytesCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.ExportGrayBytes]}" />
                 </StackPanel>
+                <CheckBox IsChecked="{Binding Source={x:Static Settings:SettingsFile.Instance}, Path=RedactSharedDiagnostics}"
+                          Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.Redact]}" />
+                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
+                           Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.RedactTooltip]}" />
                 <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,6,0,0"
                            Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.DataFolder]}" />
                 <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"

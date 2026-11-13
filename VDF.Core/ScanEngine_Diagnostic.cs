@@ -383,7 +383,6 @@ namespace VDF.Core {
 			// ── Hard link gate ──────────────────────────────────────────────
 			if (isDuplicate && Settings.ExcludeHardLinks &&
 				a.FileSize == b.FileSize &&
-				(a.IsImage || a.mediaInfo!.Duration == b.mediaInfo!.Duration) &&
 				HardLinkUtils.AreSameFile(a.Path, b.Path)) {
 				sb.AppendLine("--- Hard link check ---");
 				sb.AppendLine("FAIL — both paths are hard links to the same data on disk and 'exclude hard links' is enabled.");

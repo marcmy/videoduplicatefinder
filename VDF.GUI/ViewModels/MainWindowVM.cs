@@ -1173,6 +1173,12 @@ namespace VDF.GUI.ViewModels {
 				Duplicates.Clear();
 				LastScanWasPartial = false; // imported results carry no "stopped early" state
 				AddDuplicatesInBulk(items);
+				// Saved results may come from a scan that let hard links through (before the
+				// engine collapsed them per group), or from a scan run with the setting off.
+				if (SettingsFile.Instance.ExcludeHardLinks) {
+					DropHardLinkDuplicates();
+					DropSingletonGroups();
+				}
 
 				BuildActiveResultsView();
 				RefreshGroupStats();

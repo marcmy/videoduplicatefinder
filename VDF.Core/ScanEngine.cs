@@ -492,6 +492,7 @@ namespace VDF.Core {
 					ResultsArePartial = true;
 					Logger.Instance.Info($"Scan stopped while comparing: keeping the {Duplicates.Count:N0} duplicate(s) found so far; the remaining passes were skipped.");
 				}
+				CollapseHardLinkedDuplicates();
 				SearchTimer.Stop();
 				ElapsedTimer.Stop();
 				Logger.Instance.Info(T("Log.FinishedScanForDuplicates", SearchTimer.Elapsed));
@@ -1977,12 +1978,15 @@ namespace VDF.Core {
 				bool isDuplicate = TryCheckDuplicate(entry, compItem, flippedGrayBytes, flippedPHashes, out float difference, out DuplicateFlags flags);
 
 				// Hard links are the same data on disk, so a pair can only be one if the sizes match;
-				// for videos the equal-duration test is a second cheap prefilter before the
-				// AreSameFile syscalls. Images never carry a duration and are exempt from that
-				// test. The diagnostic's copy of this gate in ScanEngine_Diagnostic.cs must agree.
+				// that is the cheap prefilter before the AreSameFile syscalls. Durations are not
+				// compared: they come from the database cache, and two links probed at different
+				// times (CLI ffprobe vs the native binding, or an older VDF) can disagree by a few
+				// milliseconds, which let hard-linked pairs through. This gate only stops a direct
+				// pair; links that meet through a third file are collapsed afterwards by
+				// CollapseHardLinkedDuplicates. The diagnostic's copy in ScanEngine_Diagnostic.cs
+				// must agree.
 				if (isDuplicate &&
 					entry.FileSize == compItem.FileSize &&
-					(entry.IsImage || entry.mediaInfo!.Duration == compItem.mediaInfo!.Duration) &&
 					Settings.ExcludeHardLinks &&
 					HardLinkUtils.AreSameFile(entry.Path, compItem.Path)) {
 					isDuplicate = false;
@@ -2406,7 +2410,7 @@ namespace VDF.Core {
 					else {
 						Interlocked.Increment(ref dropped);
 						if (Settings.ExtendedFFToolsLogging)
-							Logger.Instance.Info($"[Partial] Visual gate dropped {System.IO.Path.GetFileName(videos[a.clipIdx].Path)} in {System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}: visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
+							Logger.Instance.Info($"[Partial] Visual gate dropped '{System.IO.Path.GetFileName(videos[a.clipIdx].Path)}' in '{System.IO.Path.GetFileName(videos[a.sourceIdx].Path)}': visualSim={visualSim:P1} (threshold {Settings.PartialClipVisualThreshold:P0})");
 					}
 					IncrementProgress(System.IO.Path.GetFileName(videos[a.clipIdx].Path));
 				});
@@ -2735,6 +2739,63 @@ namespace VDF.Core {
 
 			if (groupsSplit > 0 || groupsSkipped > 0)
 				Logger.Instance.Info($"Daisy-chain validation: split {groupsSplit} group(s), removed {itemsRemoved} singleton item(s){(groupsSkipped > 0 ? $", skipped {groupsSkipped} oversized group(s)" : string.Empty)}");
+		}
+
+		/// <summary>
+		/// With <see cref="Settings.ExcludeHardLinks"/> on, keeps one entry per physical file in
+		/// every group and drops groups left with fewer than two. The per-pair gate in the main
+		/// compare only stops a direct link-to-link pair: two links that each match a third file
+		/// still landed in that file's group (union by transitivity), the daisy-chain split
+		/// re-clusters with no gate at all, and the partial-clip passes (audio and AI) never
+		/// checked. Running once over the final groups covers every mode the same way.
+		/// Within a set of links the entry kept is the group's base (not a partial clip), then
+		/// the closest match, then the first path, so the result is deterministic.
+		/// </summary>
+		internal void CollapseHardLinkedDuplicates() {
+			if (!Settings.ExcludeHardLinks || Duplicates.Count < 2)
+				return;
+
+			var identities = new Dictionary<string, HardLinkUtils.FileIdentity?>(
+				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+			HardLinkUtils.FileIdentity? IdentityOf(string path) {
+				if (!identities.TryGetValue(path, out var id)) {
+					id = HardLinkUtils.TryGetFileIdentity(path, out var found) ? found : null;
+					identities[path] = id;
+				}
+				return id;
+			}
+
+			var toRemove = new HashSet<DuplicateItem>(ReferenceEqualityComparer.Instance);
+			int linksRemoved = 0, groupsDropped = 0;
+			foreach (var group in Duplicates.GroupBy(d => d.GroupId).ToList()) {
+				var members = group.ToList();
+				int remaining = members.Count;
+				// Only same-size members can be links of each other; that keeps the file-id
+				// lookups to the few candidates instead of every member of every group.
+				foreach (var sameSize in members.GroupBy(m => m.SizeLong).Where(g => g.Count() > 1)) {
+					var seen = new HashSet<HardLinkUtils.FileIdentity>();
+					foreach (var m in sameSize
+						.OrderBy(m => m.Flags.HasFlag(DuplicateFlags.PartialClip) ? 1 : 0)
+						.ThenByDescending(m => m.Similarity)
+						.ThenBy(m => m.Path, StringComparer.Ordinal)) {
+						if (IdentityOf(m.Path) is not { } id || seen.Add(id))
+							continue;
+						toRemove.Add(m);
+						linksRemoved++;
+						remaining--;
+					}
+				}
+				if (remaining < 2 && remaining < members.Count) {
+					foreach (var m in members)
+						toRemove.Add(m);
+					groupsDropped++;
+				}
+			}
+
+			foreach (var item in toRemove)
+				Duplicates.Remove(item);
+			if (linksRemoved > 0)
+				Logger.Instance.Info($"Exclude hard links: removed {linksRemoved} entr{(linksRemoved == 1 ? "y" : "ies")} that were hard links of another entry in the same group{(groupsDropped > 0 ? $", dropping {groupsDropped} group(s) left with a single file" : string.Empty)}");
 		}
 
 		void LogGroupStatistics() {

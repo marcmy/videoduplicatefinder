@@ -68,7 +68,7 @@ namespace VDF.Core.Utils {
 		/// </summary>
 		public static void CreateHardLink(string linkPath, string existingFilePath) {
 			if (CoreUtils.IsWindows) {
-				if (!CreateHardLinkW(linkPath, existingFilePath, IntPtr.Zero))
+				if (!CreateHardLinkW(ToWin32Path(linkPath), ToWin32Path(existingFilePath), IntPtr.Zero))
 					throw new IOException($"Failed to create hard link '{linkPath}' -> '{existingFilePath}' (Win32 error {Marshal.GetLastPInvokeError()}). Note: hard links require both paths to be on the same volume.");
 				return;
 			}
@@ -100,10 +100,39 @@ namespace VDF.Core.Utils {
 		const uint FILE_READ_ATTRIBUTES = 0x0080;
 		const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 
+		/// <summary>
+		/// The identity of the data a path points at: two paths with equal identities are
+		/// hard links of one file. Windows: volume serial plus the 64-bit file index from
+		/// GetFileInformationByHandle. Elsewhere: st_dev plus st_ino.
+		/// </summary>
+		internal readonly record struct FileIdentity(ulong Volume, ulong FileIndex);
+
 		public static bool AreSameFile(string filepath, string otherFilepath) {
 			if (CoreUtils.IsWindows)
 				return AreSameFileWindows(filepath, otherFilepath);
 			return AreSameFilePosix(filepath, otherFilepath);
+		}
+
+		/// <summary>
+		/// Reads the physical identity of <paramref name="filepath"/>. Returns false when it
+		/// cannot be read (missing file, no permission, or a filesystem that reports no file
+		/// index); the caller must then treat the file as unique.
+		/// </summary>
+		public static bool TryGetFileIdentity(string filepath, out FileIdentity identity) {
+			identity = default;
+			if (!CoreUtils.IsWindows) {
+				if (Mono.Unix.Native.Syscall.stat(filepath, out var st) != 0)
+					return false;
+				identity = new FileIdentity(st.st_dev, st.st_ino);
+				return true;
+			}
+			if (!TryGetFileIdWindows(filepath, out var id))
+				return false;
+			// Some providers (network redirectors, FUSE-style drivers) return zeros: unknown.
+			if ((id.VolumeSerial, id.FileIndexHigh, id.FileIndexLow) == (0u, 0u, 0u))
+				return false;
+			identity = new FileIdentity(id.VolumeSerial, ((ulong)id.FileIndexHigh << 32) | id.FileIndexLow);
+			return true;
 		}
 
 		static bool AreSameFilePosix(string filepath, string otherFilepath) {
@@ -115,34 +144,50 @@ namespace VDF.Core.Utils {
 		}
 
 		static bool AreSameFileWindows(string filepath, string otherFilepath) {
-			if (!TryGetFileIdWindows(filepath, out var fileA)) {
-				return FallbackWindows(filepath, otherFilepath);
-			}
-			if (!TryGetFileIdWindows(otherFilepath, out var fileB)) {
-				return FallbackWindows(filepath, otherFilepath);
-			}
-
-			// Heuristic: some providers may return zeros; treat as unknown
-			if ((fileA.VolumeSerial, fileA.FileIndexHigh, fileA.FileIndexLow) == (0u, 0u, 0u))
-				return FallbackWindows(filepath, otherFilepath);
-			if ((fileB.VolumeSerial, fileB.FileIndexHigh, fileB.FileIndexLow) == (0u, 0u, 0u))
-				return FallbackWindows(filepath, otherFilepath);
-
-			return fileA.Equals(fileB);
+			if (TryGetFileIdentity(filepath, out var fileA) && TryGetFileIdentity(otherFilepath, out var fileB))
+				return fileA == fileB;
+			return FallbackWindows(filepath, otherFilepath);
 		}
 		static bool FallbackWindows(string filepath, string otherFilepath) {
+			// GetHardLinksWindows rebuilds each link as volume + path. NTFS names are
+			// case-insensitive, and either side may carry the extended-length prefix.
+			string other = StripExtendedPrefix(otherFilepath);
 			foreach (var link in GetHardLinksWindows(filepath))
-				if (otherFilepath == link) {
+				if (string.Equals(StripExtendedPrefix(link), other, StringComparison.OrdinalIgnoreCase))
 					return true;
-				}
 			return false;
+		}
+
+		const string ExtendedPrefix = @"\\?\";
+		const string ExtendedUncPrefix = @"\\?\UNC\";
+
+		static string StripExtendedPrefix(string path) {
+			if (path.StartsWith(ExtendedUncPrefix, StringComparison.Ordinal))
+				return @"\\" + path.Substring(ExtendedUncPrefix.Length);
+			if (path.StartsWith(ExtendedPrefix, StringComparison.Ordinal))
+				return path.Substring(ExtendedPrefix.Length);
+			return path;
+		}
+
+		/// <summary>
+		/// The raw Win32 calls here bypass .NET's own long-path handling, so a path at or past
+		/// MAX_PATH failed to open and its file silently counted as "not a hard link". Long
+		/// paths are passed in the extended-length form, which has no such limit.
+		/// </summary>
+		internal static string ToWin32Path(string path) {
+			if (path.Length < 248 || path.StartsWith(ExtendedPrefix, StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal))
+				return path;
+			string full = Path.GetFullPath(path);
+			if (full.StartsWith(@"\\", StringComparison.Ordinal))
+				return ExtendedUncPrefix + full.Substring(2);
+			return ExtendedPrefix + full;
 		}
 
 		static bool TryGetFileIdWindows(string filepath, out (uint VolumeSerial, uint FileIndexHigh, uint FileIndexLow) fileId) {
 			fileId = default;
 			try {
 				using SafeFileHandle handle = CreateFileW(
-					filepath,
+					ToWin32Path(filepath),
 					FILE_READ_ATTRIBUTES,
 					FileShare.ReadWrite | FileShare.Delete,
 					IntPtr.Zero,
@@ -163,6 +208,7 @@ namespace VDF.Core.Utils {
 		}
 
 		static IEnumerable<string> GetHardLinksWindows(string filepath) {
+			filepath = ToWin32Path(filepath);
 			char[] buffer = ArrayPool<char>.Shared.Rent(512);
 			try {
 				int stringLength = buffer.Length;

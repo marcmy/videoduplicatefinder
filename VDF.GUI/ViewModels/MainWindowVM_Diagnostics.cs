@@ -15,6 +15,8 @@
 //
 
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Reactive;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -24,6 +26,7 @@ using ReactiveUI;
 using VDF.Core.FFTools;
 using VDF.Core.FFTools.FFmpegNative;
 using VDF.Core.Utils;
+using VDF.GUI.Data;
 using VDF.GUI.Views;
 
 namespace VDF.GUI.ViewModels {
@@ -78,10 +81,50 @@ namespace VDF.GUI.ViewModels {
 			}
 		});
 
+		// A redactor primed with the folders the user scans, so "D:\Private" is hidden even
+		// when no file inside it shows up in the text. One instance per shared artifact.
+		static LogRedactor CreateSharingRedactor() => new(LogRedactorOptions.ForCurrentUser(
+			SettingsFile.Instance.Includes.Concat(SettingsFile.Instance.Blacklists)));
+
 		public ReactiveCommand<Unit, Unit> CopyDiagnosticsCommand => ReactiveCommand.Create(() => {
 			string report = BuildDiagnosticsReport();
+			if (SettingsFile.Instance.RedactSharedDiagnostics)
+				report = CreateSharingRedactor().Redact(report);
 			FilePairTestResult = report; // show it too, so the user can see what's being shared
 			ApplicationHelpers.MainWindow.Clipboard?.SetTextAsync(report);
+		});
+
+		// Writes a copy of log.txt for an issue or a forum post. Redaction happens on the way
+		// out so the user's own log keeps real paths for their own troubleshooting.
+		public ReactiveCommand<Unit, Unit> ExportLogCommand => ReactiveCommand.CreateFromTask(async () => {
+			bool redact = SettingsFile.Instance.RedactSharedDiagnostics;
+			var result = await Utils.PickerDialogUtils.SaveFilePicker(new FilePickerSaveOptions {
+				Title = App.Lang["MainWindow.Settings.Diagnostics.ExportLog"],
+				SuggestedFileName = redact ? "vdf-log-redacted.txt" : "vdf-log.txt",
+				DefaultExtension = ".txt"
+			});
+			if (string.IsNullOrEmpty(result))
+				return;
+			string message;
+			try {
+				string text = File.Exists(Logger.LogFilePath) ? LogRedactor.ReadShared(Logger.LogFilePath) : string.Empty;
+				if (redact) {
+					var redactor = CreateSharingRedactor();
+					text = redactor.Redact(text);
+					message = string.Format(App.Lang["MainWindow.Settings.Diagnostics.ExportLog.DoneRedacted"], result, redactor.RedactedFileCount, redactor.RedactedFolderCount);
+				}
+				else {
+					message = string.Format(App.Lang["MainWindow.Settings.Diagnostics.ExportLog.Done"], result);
+				}
+				if (string.Equals(Path.GetFullPath(result), Path.GetFullPath(Logger.LogFilePath), StringComparison.OrdinalIgnoreCase))
+					throw new IOException("The export must not overwrite log.txt.");
+				await File.WriteAllTextAsync(result, text, new UTF8Encoding(false));
+			}
+			catch (Exception ex) {
+				Logger.Instance.Error($"Could not export the log: {ex.Message}");
+				message = App.Lang["MainWindow.Settings.Diagnostics.ExportLog.Failed"];
+			}
+			await MessageBoxService.Show(message);
 		});
 
 		public ReactiveCommand<Unit, Unit> ExportGrayBytesCommand => ReactiveCommand.CreateFromTask(async () => {
