@@ -511,8 +511,12 @@ namespace VDF.Core {
 			}
 		}
 
+		// Engine-local counter for verifying follow-up dispatch without relying on the global logger.
+		internal int FollowUpPassInvocations { get; private set; }
+
 		/// <summary>The passes after the duplicate compare; each one honours Stop itself.</summary>
 		async Task RunFollowUpPasses() {
+			FollowUpPassInvocations++;
 			if (!cancelationTokenSource.IsCancellationRequested && Settings.EnablePartialClipDetection)
 				await Task.Run(ScanForPartialDuplicates);
 			// After the audio pass: videos it already grouped are excluded, the visual
