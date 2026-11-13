@@ -428,7 +428,7 @@ namespace VDF.GUI.ViewModels {
 			catch { Utils.ThumbCacheHelpers.Provider = null; }
 
 			try {
-				File.Delete(Path.Combine(CoreUtils.CurrentFolder, "log.txt"));
+				File.Delete(Logger.LogFilePath);
 			}
 			catch { }
 			Logger.Instance.LogEntryAdded += Instance_LogEntryAdded;

@@ -36,11 +36,11 @@ namespace VDF.Core.Utils {
 		public event LogEventHandler? LogEntryAdded;
 		public delegate void LogEventHandler(LogEntry entry);
 		static readonly object lockObject = new();
-		static readonly Lazy<string> _logFilePath = new(() =>
-			Path.Combine(CoreUtils.IsCurrentFolderWritable
-				? CoreUtils.CurrentFolder
-				: CoreUtils.GetDefaultStateFolder(), "log.txt"));
+		static readonly Lazy<string> _logFilePath = new(() => Path.Combine(CoreUtils.StateFolder, "log.txt"));
 		public static string LogFilePath => _logFilePath.Value;
+		// The data-folder resolver runs before the log has a home, so it hands its
+		// migration report over here and the first log call writes it out.
+		static int _dataFolderReported;
 
 		public void Info(string text) => Add(new LogEntry(DateTime.Now, LogSeverity.Info, text));
 		public void Warn(string text) => Add(new LogEntry(DateTime.Now, LogSeverity.Warning, text));
@@ -49,6 +49,11 @@ namespace VDF.Core.Utils {
 		public void BeginSession(string label) => Add(new LogEntry(DateTime.Now, LogSeverity.Info, label, IsSessionStart: true));
 
 		void Add(LogEntry entry) {
+			if (Interlocked.Exchange(ref _dataFolderReported, 1) == 0) {
+				_ = _logFilePath.Value;
+				foreach (var message in CoreUtils.DataFolderMigration.Messages)
+					Add(new LogEntry(DateTime.Now, LogSeverity.Info, message));
+			}
 			LogEntryAdded?.Invoke(entry);
 			lock (lockObject) {
 				// Best-effort: a reader holding log.txt (tail, editor, antivirus) must
