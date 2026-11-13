@@ -157,45 +157,30 @@ public sealed class StoppedScanPartialResultsTests : IDisposable {
 	public async Task FinishingAStoppedSearch_SkipsTheFollowUpPasses() {
 		var engine = NewEngine(keepPartial: true);
 		engine.Settings.EnablePartialClipDetection = true;
-		var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
-		Logger.LogEventHandler listen = entry => messages.Enqueue(entry.Message);
-		Logger.Instance.LogEntryAdded += listen;
-		try {
-			var done = new TaskCompletionSource<Outcome>(TaskCreationOptions.RunContinuationsAsynchronously);
-			engine.ScanDone += (_, _) => done.TrySetResult(Outcome.Done);
-			engine.ScanAborted += (_, _) => done.TrySetResult(Outcome.Aborted);
-			engine.StartCompareFinishingStoppedScan();
-			var winner = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+		var done = new TaskCompletionSource<Outcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+		engine.ScanDone += (_, _) => done.TrySetResult(Outcome.Done);
+		engine.ScanAborted += (_, _) => done.TrySetResult(Outcome.Aborted);
+		engine.StartCompareFinishingStoppedScan();
+		var winner = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(30)));
 
-			Assert.True(winner == done.Task, "the compare never finished");
-			Assert.Equal(Outcome.Done, done.Task.Result);
-			Assert.True(engine.ResultsArePartial);
-			Assert.Equal(6, engine.Duplicates.Count); // the compare itself ran in full
-			Assert.DoesNotContain(messages, m => m.StartsWith("Partial clip detection", StringComparison.Ordinal));
-		}
-		finally {
-			Logger.Instance.LogEntryAdded -= listen;
-		}
+		Assert.True(winner == done.Task, "the compare never finished");
+		Assert.Equal(Outcome.Done, done.Task.Result);
+		Assert.True(engine.ResultsArePartial);
+		Assert.Equal(6, engine.Duplicates.Count); // the compare itself ran in full
+		Assert.Equal(0, engine.FollowUpPassInvocations); // no follow-up was dispatched by this engine
 	}
 
 	/// <summary>
-	/// Control for the test above: an ordinary compare does run the partial-clip pass, so its
-	/// log line is a valid witness that the pass started.
+	/// Control for the test above: an ordinary compare dispatches follow-up passes.
+	/// Check the engine itself rather than the shared logger, which other concurrent tests use.
 	/// </summary>
 	[Fact]
-	public async Task OrdinaryCompare_RunsThePartialClipPass() {
+	public async Task OrdinaryCompare_RunsTheFollowUpPasses() {
 		var engine = NewEngine(keepPartial: true);
 		engine.Settings.EnablePartialClipDetection = true;
-		var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
-		Logger.LogEventHandler listen = entry => messages.Enqueue(entry.Message);
-		Logger.Instance.LogEntryAdded += listen;
-		try {
-			Assert.Equal(Outcome.Done, await RunCompare(engine));
-			Assert.Contains(messages, m => m.StartsWith("Partial clip detection", StringComparison.Ordinal));
-		}
-		finally {
-			Logger.Instance.LogEntryAdded -= listen;
-		}
+
+		Assert.Equal(Outcome.Done, await RunCompare(engine));
+		Assert.Equal(1, engine.FollowUpPassInvocations);
 	}
 
 	/// <summary>

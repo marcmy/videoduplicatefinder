@@ -10,6 +10,7 @@ on:
     paths:
       - 'VDF.Core/FFTools/**'
       - 'VDF.Core/Settings.cs'
+      - 'VDF.Core/ScanEngine.cs'
       - 'VDF.Benchmarks/**'
       - '.github/scripts/perf-regression-gate.ps1'
       - '.github/workflows/releases.yml'
