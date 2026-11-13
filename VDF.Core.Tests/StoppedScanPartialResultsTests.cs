@@ -97,7 +97,7 @@ public sealed class StoppedScanPartialResultsTests : IDisposable {
 		engine.ScanAborted += (_, _) => done.TrySetResult(Outcome.Aborted);
 		engine.StartCompare();
 		var winner = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(30)));
-		return winner == done.Task ? done.Task.Result : Outcome.TimedOut;
+		return winner == done.Task ? await done.Task : Outcome.TimedOut;
 	}
 
 	[Fact]
@@ -164,7 +164,7 @@ public sealed class StoppedScanPartialResultsTests : IDisposable {
 		var winner = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(30)));
 
 		Assert.True(winner == done.Task, "the compare never finished");
-		Assert.Equal(Outcome.Done, done.Task.Result);
+		Assert.Equal(Outcome.Done, await done.Task);
 		Assert.True(engine.ResultsArePartial);
 		Assert.Equal(6, engine.Duplicates.Count); // the compare itself ran in full
 		Assert.Equal(0, engine.FollowUpPassInvocations); // no follow-up was dispatched by this engine
