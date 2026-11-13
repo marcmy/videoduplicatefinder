@@ -41,4 +41,11 @@
     </ItemGroup>
   </Target>
 
+  <!-- Test hosts run in portable mode (VDF.Core/Utils/DataFolder.cs): a portable.txt next to
+       the test binaries keeps databases, settings and log.txt there, so a test run never
+       reads or writes the developer's real VDF data folder. -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('Tests'))">
+    <None Include="$(MSBuildThisFileDirectory)VDF.TestSupport\portable.txt" Link="portable.txt" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
 </Project>

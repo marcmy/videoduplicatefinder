@@ -1,0 +1,2 @@
+Test runs keep VDF data (databases, settings, log) next to the test binaries
+instead of the developer's real per-user data folder. See VDF.Core/Utils/DataFolder.cs.

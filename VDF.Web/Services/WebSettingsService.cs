@@ -96,14 +96,8 @@ namespace VDF.Web.Services {
 		static string SettingsPath {
 			get {
 				if (TestOverrideSettingsPath != null) return TestOverrideSettingsPath;
-				string folder;
-				if (OperatingSystem.IsWindows())
-					folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VDF");
-				else if (OperatingSystem.IsMacOS())
-					folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Preferences", "VDF");
-				else
-					folder = Path.Combine(Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
-						?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config"), "VDF");
+				// VDF_DATA_DIR / portable.txt / OS default, shared with the GUI and CLI.
+				string folder = VDF.Core.Utils.CoreUtils.SettingsFolder;
 				return Path.Combine(folder, "web-settings.json");
 			}
 		}

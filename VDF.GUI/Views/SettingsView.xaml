@@ -1121,6 +1121,17 @@
                   <Button Command="{Binding ExportGrayBytesCommand}"
                           Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.ExportGrayBytes]}" />
                 </StackPanel>
+                <TextBlock FontSize="13" FontWeight="SemiBold" Margin="0,6,0,0"
+                           Text="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.DataFolder]}" />
+                <TextBlock TextWrapping="Wrap" FontSize="12.5" Opacity="{DynamicResource VdfTextDim70Opacity}"
+                           Text="{Binding DataFolderSourceText}" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <SelectableTextBlock VerticalAlignment="Center" TextWrapping="Wrap"
+                                       FontFamily="Cascadia Mono,Consolas,Menlo,monospace" FontSize="12"
+                                       Text="{Binding DataFolderPath}" />
+                  <Button Command="{Binding OpenDataFolderCommand}"
+                          Content="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.Settings.Diagnostics.DataFolder.Open]}" />
+                </StackPanel>
               </StackPanel>
             </StackPanel>
 

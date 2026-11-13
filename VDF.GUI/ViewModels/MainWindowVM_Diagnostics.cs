@@ -14,6 +14,7 @@
 // */
 //
 
+using System.Diagnostics;
 using System.Reactive;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -55,8 +56,27 @@ namespace VDF.GUI.ViewModels {
 			sb.AppendLine($"Custom FF args:     {(string.IsNullOrWhiteSpace(Scanner.Settings.CustomFFArguments) ? "(none)" : Scanner.Settings.CustomFFArguments)}");
 			sb.AppendLine($"Database entries:   {DatabaseUtils.Database.Count}");
 			sb.AppendLine($"Process memory:     {CoreUtils.DescribeProcessMemory()}");
+			sb.AppendLine($"Data folder:        {CoreUtils.StateFolder} ({CoreUtils.DataFolderInfo.Describe()})");
+			if (!string.Equals(CoreUtils.StateFolder, CoreUtils.SettingsFolder, StringComparison.Ordinal))
+				sb.AppendLine($"Settings folder:    {CoreUtils.SettingsFolder}");
 			return sb.ToString();
 		}
+
+		// Where databases, settings, logs and AI components live (see VDF.Core.Utils.DataFolder).
+		public string DataFolderPath => CoreUtils.StateFolder;
+		public string DataFolderSourceText => string.Format(App.Lang["MainWindow.Settings.Diagnostics.DataFolder.Source"], CoreUtils.DataFolderInfo.Describe());
+
+		public ReactiveCommand<Unit, Unit> OpenDataFolderCommand => ReactiveCommand.Create(() => {
+			try {
+				Process.Start(new ProcessStartInfo {
+					FileName = CoreUtils.StateFolder,
+					UseShellExecute = true,
+				});
+			}
+			catch (Exception ex) {
+				Logger.Instance.Warn($"Could not open the data folder {CoreUtils.StateFolder}: {ex.Message}");
+			}
+		});
 
 		public ReactiveCommand<Unit, Unit> CopyDiagnosticsCommand => ReactiveCommand.Create(() => {
 			string report = BuildDiagnosticsReport();
