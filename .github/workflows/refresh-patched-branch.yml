@@ -37,6 +37,7 @@ jobs:
   refresh:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
+    environment: upstream-sync
 
     steps:
       - name: Checkout perf branch
