@@ -16,11 +16,13 @@
 // End-to-end cover for Settings.ExcludeHardLinks in the main compare (#904 follow-up): two real
 // hard links of one file with identical frames are driven through ScanForDuplicates on every
 // path the gate lives on - images, the linear video loop and the bucketed video loop - and the
-// gate must drop the pair only when the setting is on, and only for true hard links. The image
-// exemption from the equal-duration prefilter is pinned explicitly: a still image's duration is
-// zero today, but a legacy or animated entry may carry one, and that must not re-admit the pair.
+// gate must drop the pair only when the setting is on, and only for true hard links. Beyond the
+// direct pair, CollapseHardLinkedDuplicates must keep one entry per physical file in every final
+// group (links meeting through a third file, partial-clip groups), cached entries whose durations
+// differ slightly must still be excluded, and paths past MAX_PATH must still be recognised.
 
 using VDF.Core.Utils;
+using VDF.Core.ViewModels;
 
 namespace VDF.Core.Tests;
 
@@ -144,9 +146,9 @@ public class HardLinkExclusionTests : IDisposable {
 		Assert.True(PairReported(reporting, a, b), "with ExcludeHardLinks off the pair is an ordinary duplicate");
 	}
 
-	// The gate's equal-duration prefilter is for videos only. Image entries normally carry no
-	// duration, but one from a legacy database or an animated format may; that must not turn
-	// the prefilter into a bypass that re-admits a hard-linked image pair.
+	// Durations play no part in the gate (see the cached-duration test below). Image entries
+	// normally carry none, but one from a legacy database or an animated format may; that must
+	// not re-admit a hard-linked image pair.
 	[Fact]
 	public void Images_StillDroppedWhenOneSideCarriesADuration() {
 		var (original, link) = CreateHardLinkedPair(".jpg");
@@ -167,6 +169,151 @@ public class HardLinkExclusionTests : IDisposable {
 		var excluding = NewEngine(excludeHardLinks: true);
 		excluding.ScanForDuplicates();
 		Assert.True(PairReported(excluding, a, b), "ExcludeHardLinks must only drop true hard links, not byte-identical copies");
+	}
+
+	/// <summary>Number of entries among <paramref name="paths"/> that are in the results.</summary>
+	static int Reported(ScanEngine engine, params string[] paths) =>
+		paths.Count(p => engine.Duplicates.Any(d => d.Path == p));
+
+	// The bug the user saw: two links never pair with each other, but each matches a real copy,
+	// so the union-by-transitivity grouping put both links into the copy's group anyway.
+	[Fact]
+	public void Videos_LinksMeetingThroughAThirdFile_KeepOneEntryPerPhysicalFile() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		string copyPath = Path.Combine(dir, "copy.mp4");
+		File.WriteAllBytes(copyPath, FileBytes);
+		AddVideo(original, 100);
+		AddVideo(link, 100);
+		AddVideo(copyPath, 100);
+
+		var excluding = NewEngine(excludeHardLinks: true);
+		excluding.ScanForDuplicates();
+		excluding.CollapseHardLinkedDuplicates();
+		Assert.Equal(1, Reported(excluding, original, link));
+		Assert.Equal(1, Reported(excluding, copyPath));
+		Assert.Single(excluding.Duplicates.Select(d => d.GroupId).Distinct());
+		Assert.Equal(2, excluding.Duplicates.Count);
+
+		var reporting = NewEngine(excludeHardLinks: false);
+		reporting.ScanForDuplicates();
+		reporting.CollapseHardLinkedDuplicates();
+		Assert.Equal(3, reporting.Duplicates.Count);
+	}
+
+	// Entries come from ScannedFiles.db: a round trip through the on-disk format, with the two
+	// links' durations a few milliseconds apart as they are when one was probed by the ffprobe
+	// CLI and the other by the native binding (or an older VDF). The old pair gate required
+	// equal durations and let exactly this pair through.
+	[Fact]
+	public void Videos_FromDatabaseCache_WithSlightlyDifferentDurations_AreExcluded() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		var wrapper = new DatabaseWrapper { Entries = new() };
+		foreach (var (path, seconds) in new[] { (original, 100.0), (link, 100.021) }) {
+			var e = new FileEntry {
+				_Path = path,
+				FileSize = FileBytes.Length,
+				invalid = false,
+				IsImage = false,
+				mediaInfo = new MediaInfo { Duration = TimeSpan.FromSeconds(seconds) },
+			};
+			e.grayBytes[e.GetGrayBytesIndex(0.5f)] = SharedFrame;
+			wrapper.Entries.Add(e);
+		}
+		using var ms = new MemoryStream();
+		DatabaseUtils.SerializeDatabaseStreaming(ms, wrapper);
+		ms.Position = "VDFDB002"u8.Length; // LoadDatabase consumes the file magic before deserializing
+		var loaded = DatabaseUtils.DeserializeDatabaseStreaming(ms);
+		Assert.Equal(2, loaded.Entries.Count);
+		foreach (var e in loaded.Entries) {
+			Assert.True(e.invalid, "a freshly loaded cache entry is invalid until the scan re-validates it");
+			e.invalid = false; // what the scan does for a cached file that still exists unchanged
+			DatabaseUtils.Database.Add(e);
+			added.Add(e);
+		}
+
+		var excluding = NewEngine(excludeHardLinks: true);
+		excluding.ScanForDuplicates();
+		Assert.Equal(0, Reported(excluding, original, link));
+		excluding.CollapseHardLinkedDuplicates();
+		Assert.Empty(excluding.Duplicates);
+
+		var reporting = NewEngine(excludeHardLinks: false);
+		reporting.ScanForDuplicates();
+		Assert.Equal(2, Reported(reporting, original, link));
+	}
+
+	FileEntry NewVideoEntry(string path) => new() {
+		_Path = path,
+		FileSize = FileBytes.Length,
+		invalid = false,
+		IsImage = false,
+		mediaInfo = new MediaInfo { Duration = TimeSpan.FromSeconds(100) },
+	};
+
+	// The partial-clip passes (audio and AI) emit their groups directly, with no pair gate:
+	// two links of one clip assigned to the same source must collapse to one clip entry, and
+	// the source is preferred over a partial-clip entry when the links span both roles.
+	[Fact]
+	public void PartialClipGroups_KeepOneEntryPerPhysicalFile() {
+		var (clip, clipLink) = CreateHardLinkedPair(".mp4");
+		string source = Path.Combine(dir, "source.mp4");
+		File.WriteAllBytes(source, new byte[] { 9, 9, 9, 9, 9, 9, 9, 9 });
+		var groupId = Guid.NewGuid();
+
+		var engine = NewEngine(excludeHardLinks: true);
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(source), 0f, groupId, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(clip), 0.10f, groupId, DuplicateFlags.PartialClip));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(clipLink), 0.05f, groupId, DuplicateFlags.PartialClip | DuplicateFlags.AiMatched));
+		engine.CollapseHardLinkedDuplicates();
+
+		Assert.Equal(2, engine.Duplicates.Count);
+		Assert.Equal(1, Reported(engine, source));
+		// The closer match of the two links is the one kept.
+		Assert.Equal(1, Reported(engine, clipLink));
+
+		// A source and its own hard link as the only clip: nothing real is left to compare.
+		var (src2, src2Link) = CreateHardLinkedPair(".mkv");
+		var group2 = Guid.NewGuid();
+		var engine2 = NewEngine(excludeHardLinks: true);
+		engine2.Duplicates.Add(new DuplicateItem(NewVideoEntry(src2), 0f, group2, DuplicateFlags.None));
+		engine2.Duplicates.Add(new DuplicateItem(NewVideoEntry(src2Link), 0.02f, group2, DuplicateFlags.PartialClip));
+		engine2.CollapseHardLinkedDuplicates();
+		Assert.Empty(engine2.Duplicates);
+	}
+
+	[Fact]
+	public void Collapse_DoesNothingWhenSettingIsOff() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		var groupId = Guid.NewGuid();
+		var engine = NewEngine(excludeHardLinks: false);
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(original), 0f, groupId, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(link), 0f, groupId, DuplicateFlags.None));
+		engine.CollapseHardLinkedDuplicates();
+		Assert.Equal(2, engine.Duplicates.Count);
+	}
+
+	// The raw CreateFileW call bypasses .NET's long-path handling: past MAX_PATH the file id
+	// could not be read and the pair silently counted as "not hard links".
+	[Fact]
+	public void LongPaths_AreRecognisedAsHardLinks() {
+		string deep = dir;
+		while (deep.Length < 300)
+			deep = Path.Combine(deep, new string('d', 40));
+		Directory.CreateDirectory(deep);
+		string original = Path.Combine(deep, "original.mp4");
+		string link = Path.Combine(deep, "link.mp4");
+		File.WriteAllBytes(original, FileBytes);
+		HardLinkUtils.CreateHardLink(link, original);
+
+		Assert.True(original.Length > 260);
+		Assert.True(HardLinkUtils.TryGetFileIdentity(original, out var a));
+		Assert.True(HardLinkUtils.TryGetFileIdentity(link, out var b));
+		Assert.Equal(a, b);
+		Assert.True(HardLinkUtils.AreSameFile(original, link));
+
+		string other = Path.Combine(deep, "other.mp4");
+		File.WriteAllBytes(other, FileBytes);
+		Assert.False(HardLinkUtils.AreSameFile(original, other));
 	}
 
 	// Libraries at or above ScanEngine.BucketActivationThreshold videos take the duration-bucketed
