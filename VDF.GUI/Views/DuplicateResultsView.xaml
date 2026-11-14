@@ -666,6 +666,13 @@
                     Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).ToggleCheckboxCommand}"
                     Header="{Binding Source={x:Static local:App.Lang}, Path=[Results.Row.ToggleCheck]}"
                     InputGesture="{Binding Source={x:Static Settings:KeyboardShortcutManager.Instance}, Path=[ToggleCheckbox]}" />
+                <!-- Checks every listed name of this file, in any group: deleting only some
+                     links of a file frees no space. -->
+                <MenuItem
+                    IsVisible="{Binding Item.IsHardLink}"
+                    Command="{Binding $parent[UserControl].((vm:MainWindowVM)DataContext).SelectAllHardLinksCommand}"
+                    CommandParameter="{Binding Item}"
+                    Header="{Binding Source={x:Static local:App.Lang}, Path=[MainWindow.ContextMenu.SelectAllHardLinks]}" />
                 <!-- Both are mouse-only on the row itself: the details button cannot be
                      tabbed to inside a list, and the differences show on hover. -->
                 <MenuItem
@@ -948,6 +955,17 @@
                      the neighboring metadata columns. -->
                 <DockPanel LastChildFill="True">
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" Margin="6,0,0,0">
+                  <!-- Hard-link badge: names of one file share its colour and number, so they
+                       match at a glance across groups. The tooltip lists the file's other
+                       names in the results and how many more exist outside them. -->
+                  <Border IsVisible="{Binding Item.IsHardLink}"
+                          Background="{Binding Item.HardLinkBadgeBrush}"
+                          CornerRadius="3" Padding="5,0" VerticalAlignment="Center"
+                          AutomationProperties.Name="{Binding Item.HardLinkBadgeText}"
+                          ToolTip.Tip="{Binding Item.HardLinkTooltip}">
+                    <TextBlock Text="{Binding Item.HardLinkBadgeText}"
+                               FontSize="10" FontWeight="Bold" Foreground="White" />
+                  </Border>
                   <!-- AI chip: pair found only by the AI embedding pass, not the classic
                        check. Lives with the badges — as a docked pseudo-column it shifted
                        every metadata cell on AI-matched rows out of alignment (#837). -->

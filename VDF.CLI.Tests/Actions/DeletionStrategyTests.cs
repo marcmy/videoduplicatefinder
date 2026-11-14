@@ -50,6 +50,36 @@ public class DeletionStrategyTests {
 	static readonly Guid Group1 = Guid.NewGuid();
 	static readonly Guid Group2 = Guid.NewGuid();
 
+	// Hard links of one file (shared HardLinkSetId): when that file is kept, none of its names
+	// is deleted, in its own group or another; a losing linked file loses every name.
+	[Fact]
+	public void SelectForDeletion_KeepsEveryNameOfTheKeptFile() {
+		DuplicateItem Linked(Guid group, long size, string name, int linkSet) {
+			var item = MakeItem(group, size);
+			item.Path = $"/test/{name}.mp4";
+			item.HardLinkSetId = linkSet;
+			item.HardLinkCount = 3;
+			return item;
+		}
+		var keptA = Linked(Group1, 5000, "kept-a", 1);
+		var keptB = Linked(Group1, 5000, "kept-b", 1);
+		var copy = MakeItem(Group1, size: 1000);
+		var keptC = Linked(Group2, 5000, "kept-c", 1);
+		var other = MakeItem(Group2, size: 9000);
+		var loserA = Linked(Group2, 2000, "loser-a", 2);
+		var loserB = Linked(Group2, 2000, "loser-b", 2);
+
+		var toDelete = DeletionStrategy.SelectForDeletion(
+			new List<DuplicateItem> { keptA, keptB, copy, keptC, other, loserA, loserB }, Strategy.SmallestFile);
+
+		Assert.DoesNotContain(keptA, toDelete);
+		Assert.DoesNotContain(keptB, toDelete);
+		Assert.DoesNotContain(keptC, toDelete);
+		Assert.Contains(copy, toDelete);
+		Assert.Contains(loserA, toDelete);
+		Assert.Contains(loserB, toDelete);
+	}
+
 	[Fact]
 	public void SelectForDeletion_SmallestFile_KeepsLargestFile() {
 		var items = new List<DuplicateItem> {

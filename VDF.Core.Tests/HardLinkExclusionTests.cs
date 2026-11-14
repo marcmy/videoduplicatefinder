@@ -17,9 +17,10 @@
 // hard links of one file with identical frames are driven through ScanForDuplicates on every
 // path the gate lives on - images, the linear video loop and the bucketed video loop - and the
 // gate must drop the pair only when the setting is on, and only for true hard links. Beyond the
-// direct pair, CollapseHardLinkedDuplicates must keep one entry per physical file in every final
-// group (links meeting through a third file, partial-clip groups), cached entries whose durations
-// differ slightly must still be excluded, and paths past MAX_PATH must still be recognised.
+// direct pair, ResolveHardLinkedDuplicates must drop groups made only of links of one file and
+// keep every entry of the rest, tagging links of one file with a shared link-set id (across
+// groups too) and the file's link count. Cached entries whose durations differ slightly must
+// still be excluded, and paths past MAX_PATH must still be recognised.
 
 using VDF.Core.Utils;
 using VDF.Core.ViewModels;
@@ -175,10 +176,13 @@ public class HardLinkExclusionTests : IDisposable {
 	static int Reported(ScanEngine engine, params string[] paths) =>
 		paths.Count(p => engine.Duplicates.Any(d => d.Path == p));
 
-	// The bug the user saw: two links never pair with each other, but each matches a real copy,
-	// so the union-by-transitivity grouping put both links into the copy's group anyway.
+	static DuplicateItem Item(ScanEngine engine, string path) => engine.Duplicates.Single(d => d.Path == path);
+
+	// Two links never pair with each other, but each matches a real copy, so union-by-transitivity
+	// puts both links into the copy's group. Every entry stays listed (the user picks which name
+	// to keep); the two links share a link-set id and the copy has none.
 	[Fact]
-	public void Videos_LinksMeetingThroughAThirdFile_KeepOneEntryPerPhysicalFile() {
+	public void Videos_LinksMeetingThroughAThirdFile_KeepEveryEntryWithSharedLinkSetId() {
 		var (original, link) = CreateHardLinkedPair(".mp4");
 		string copyPath = Path.Combine(dir, "copy.mp4");
 		File.WriteAllBytes(copyPath, FileBytes);
@@ -188,16 +192,134 @@ public class HardLinkExclusionTests : IDisposable {
 
 		var excluding = NewEngine(excludeHardLinks: true);
 		excluding.ScanForDuplicates();
-		excluding.CollapseHardLinkedDuplicates();
-		Assert.Equal(1, Reported(excluding, original, link));
-		Assert.Equal(1, Reported(excluding, copyPath));
+		excluding.ResolveHardLinkedDuplicates();
+		Assert.Equal(3, excluding.Duplicates.Count);
 		Assert.Single(excluding.Duplicates.Select(d => d.GroupId).Distinct());
-		Assert.Equal(2, excluding.Duplicates.Count);
+		int setId = Item(excluding, original).HardLinkSetId;
+		Assert.NotEqual(0, setId);
+		Assert.Equal(setId, Item(excluding, link).HardLinkSetId);
+		Assert.Equal(0, Item(excluding, copyPath).HardLinkSetId);
+		Assert.Equal(2, Item(excluding, original).HardLinkCount);
+		Assert.Equal(2, Item(excluding, link).HardLinkCount);
+		Assert.Equal(0, Item(excluding, copyPath).HardLinkCount);
 
 		var reporting = NewEngine(excludeHardLinks: false);
 		reporting.ScanForDuplicates();
-		reporting.CollapseHardLinkedDuplicates();
+		reporting.ResolveHardLinkedDuplicates();
 		Assert.Equal(3, reporting.Duplicates.Count);
+		Assert.All(reporting.Duplicates, d => Assert.Equal(0, d.HardLinkSetId));
+	}
+
+	// A group whose every entry is a name of one file has nothing to compare: it is dropped,
+	// however the entries got there (partial-clip pass, daisy-chain split, imported results).
+	[Fact]
+	public void GroupMadeOnlyOfLinksOfOneFile_IsDropped() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		string third = Path.Combine(dir, "third-name.mp4");
+		HardLinkUtils.CreateHardLink(third, original);
+		var onlyLinks = Guid.NewGuid();
+
+		string copyPath = Path.Combine(dir, "copy.mp4");
+		string copy2Path = Path.Combine(dir, "copy2.mp4");
+		File.WriteAllBytes(copyPath, FileBytes);
+		File.WriteAllBytes(copy2Path, FileBytes);
+		var realGroup = Guid.NewGuid();
+
+		var engine = NewEngine(excludeHardLinks: true);
+		foreach (var p in new[] { original, link, third })
+			engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(p), 0f, onlyLinks, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(copyPath), 0f, realGroup, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(copy2Path), 0f, realGroup, DuplicateFlags.None));
+		engine.ResolveHardLinkedDuplicates();
+
+		Assert.Equal(0, Reported(engine, original, link, third));
+		Assert.Equal(2, Reported(engine, copyPath, copy2Path));
+		Assert.All(engine.Duplicates, d => Assert.Equal(0, d.HardLinkSetId));
+	}
+
+	// Links of one file listed in two different groups share one id, so the GUI can match them.
+	[Fact]
+	public void LinksOfOneFileInTwoGroups_ShareTheLinkSetId() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		var (other, otherLink) = CreateHardLinkedPair(".mkv");
+		string copyA = Path.Combine(dir, "copy-a.mp4");
+		string copyB = Path.Combine(dir, "copy-b.mp4");
+		File.WriteAllBytes(copyA, FileBytes);
+		File.WriteAllBytes(copyB, FileBytes);
+		var groupA = Guid.NewGuid();
+		var groupB = Guid.NewGuid();
+
+		var engine = NewEngine(excludeHardLinks: true);
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(original), 0f, groupA, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(copyA), 0f, groupA, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(other), 0f, groupA, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(link), 0f, groupB, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(copyB), 0f, groupB, DuplicateFlags.None));
+		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(otherLink), 0f, groupB, DuplicateFlags.None));
+		engine.ResolveHardLinkedDuplicates();
+
+		Assert.Equal(6, engine.Duplicates.Count);
+		int first = Item(engine, original).HardLinkSetId;
+		int second = Item(engine, other).HardLinkSetId;
+		Assert.NotEqual(0, first);
+		Assert.NotEqual(0, second);
+		Assert.NotEqual(first, second);
+		Assert.Equal(first, Item(engine, link).HardLinkSetId);
+		Assert.Equal(second, Item(engine, otherLink).HardLinkSetId);
+		Assert.Equal(0, Item(engine, copyA).HardLinkSetId);
+		Assert.Equal(0, Item(engine, copyB).HardLinkSetId);
+	}
+
+	// The link count comes from the file system, so links outside the results show up: a file with
+	// three names, two of them listed, reports three; a file listed once whose other name lives
+	// elsewhere is still tagged, because deleting the listed name frees nothing either.
+	[Fact]
+	public void LinkCount_IncludesLinksOutsideTheResults() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		HardLinkUtils.CreateHardLink(Path.Combine(dir, "elsewhere.mp4"), original);
+		string lone = Path.Combine(dir, "lone.mkv");
+		File.WriteAllBytes(lone, new byte[] { 5, 6, 7 });
+		HardLinkUtils.CreateHardLink(Path.Combine(dir, "lone-elsewhere.mkv"), lone);
+		string copyPath = Path.Combine(dir, "copy.mp4");
+		File.WriteAllBytes(copyPath, FileBytes);
+		var groupId = Guid.NewGuid();
+
+		Assert.True(HardLinkUtils.TryGetLinkInfo(original, out _, out uint count));
+		Assert.Equal(3u, count);
+		Assert.True(HardLinkUtils.TryGetLinkInfo(copyPath, out _, out uint copyCount));
+		Assert.Equal(1u, copyCount);
+
+		var engine = NewEngine(excludeHardLinks: true);
+		foreach (var p in new[] { original, link, lone, copyPath })
+			engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(p), 0f, groupId, DuplicateFlags.None));
+		engine.ResolveHardLinkedDuplicates();
+
+		Assert.Equal(4, engine.Duplicates.Count);
+		Assert.Equal(3, Item(engine, original).HardLinkCount);
+		Assert.Equal(3, Item(engine, link).HardLinkCount);
+		Assert.NotEqual(0, Item(engine, lone).HardLinkSetId);
+		Assert.NotEqual(Item(engine, original).HardLinkSetId, Item(engine, lone).HardLinkSetId);
+		Assert.Equal(2, Item(engine, lone).HardLinkCount);
+		Assert.Equal(0, Item(engine, copyPath).HardLinkSetId);
+	}
+
+	// A missing file has no readable identity: it counts as a file of its own and is never
+	// tagged, and a group holding it beside links of one file is not "all the same file".
+	[Fact]
+	public void UnreadableEntry_CountsAsItsOwnFile() {
+		var (original, link) = CreateHardLinkedPair(".mp4");
+		string missing = Path.Combine(dir, "gone.mp4");
+		var groupId = Guid.NewGuid();
+
+		var engine = NewEngine(excludeHardLinks: true);
+		foreach (var p in new[] { original, link, missing })
+			engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(p), 0f, groupId, DuplicateFlags.None));
+		engine.ResolveHardLinkedDuplicates();
+
+		Assert.Equal(3, engine.Duplicates.Count);
+		Assert.Equal(0, Item(engine, missing).HardLinkSetId);
+		Assert.NotEqual(0, Item(engine, original).HardLinkSetId);
+		Assert.Equal(Item(engine, original).HardLinkSetId, Item(engine, link).HardLinkSetId);
 	}
 
 	// Entries come from ScannedFiles.db: a round trip through the on-disk format, with the two
@@ -234,7 +356,7 @@ public class HardLinkExclusionTests : IDisposable {
 		var excluding = NewEngine(excludeHardLinks: true);
 		excluding.ScanForDuplicates();
 		Assert.Equal(0, Reported(excluding, original, link));
-		excluding.CollapseHardLinkedDuplicates();
+		excluding.ResolveHardLinkedDuplicates();
 		Assert.Empty(excluding.Duplicates);
 
 		var reporting = NewEngine(excludeHardLinks: false);
@@ -251,10 +373,10 @@ public class HardLinkExclusionTests : IDisposable {
 	};
 
 	// The partial-clip passes (audio and AI) emit their groups directly, with no pair gate:
-	// two links of one clip assigned to the same source must collapse to one clip entry, and
-	// the source is preferred over a partial-clip entry when the links span both roles.
+	// two links of one clip assigned to the same source both stay, tagged as one file; a source
+	// whose only "clip" is its own hard link leaves nothing real to compare and is dropped.
 	[Fact]
-	public void PartialClipGroups_KeepOneEntryPerPhysicalFile() {
+	public void PartialClipGroups_TagLinksAndDropSelfMatches() {
 		var (clip, clipLink) = CreateHardLinkedPair(".mp4");
 		string source = Path.Combine(dir, "source.mp4");
 		File.WriteAllBytes(source, new byte[] { 9, 9, 9, 9, 9, 9, 9, 9 });
@@ -264,12 +386,12 @@ public class HardLinkExclusionTests : IDisposable {
 		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(source), 0f, groupId, DuplicateFlags.None));
 		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(clip), 0.10f, groupId, DuplicateFlags.PartialClip));
 		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(clipLink), 0.05f, groupId, DuplicateFlags.PartialClip | DuplicateFlags.AiMatched));
-		engine.CollapseHardLinkedDuplicates();
+		engine.ResolveHardLinkedDuplicates();
 
-		Assert.Equal(2, engine.Duplicates.Count);
-		Assert.Equal(1, Reported(engine, source));
-		// The closer match of the two links is the one kept.
-		Assert.Equal(1, Reported(engine, clipLink));
+		Assert.Equal(3, engine.Duplicates.Count);
+		Assert.Equal(0, Item(engine, source).HardLinkSetId);
+		Assert.NotEqual(0, Item(engine, clip).HardLinkSetId);
+		Assert.Equal(Item(engine, clip).HardLinkSetId, Item(engine, clipLink).HardLinkSetId);
 
 		// A source and its own hard link as the only clip: nothing real is left to compare.
 		var (src2, src2Link) = CreateHardLinkedPair(".mkv");
@@ -277,19 +399,20 @@ public class HardLinkExclusionTests : IDisposable {
 		var engine2 = NewEngine(excludeHardLinks: true);
 		engine2.Duplicates.Add(new DuplicateItem(NewVideoEntry(src2), 0f, group2, DuplicateFlags.None));
 		engine2.Duplicates.Add(new DuplicateItem(NewVideoEntry(src2Link), 0.02f, group2, DuplicateFlags.PartialClip));
-		engine2.CollapseHardLinkedDuplicates();
+		engine2.ResolveHardLinkedDuplicates();
 		Assert.Empty(engine2.Duplicates);
 	}
 
 	[Fact]
-	public void Collapse_DoesNothingWhenSettingIsOff() {
+	public void Resolve_DoesNothingWhenSettingIsOff() {
 		var (original, link) = CreateHardLinkedPair(".mp4");
 		var groupId = Guid.NewGuid();
 		var engine = NewEngine(excludeHardLinks: false);
 		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(original), 0f, groupId, DuplicateFlags.None));
 		engine.Duplicates.Add(new DuplicateItem(NewVideoEntry(link), 0f, groupId, DuplicateFlags.None));
-		engine.CollapseHardLinkedDuplicates();
+		engine.ResolveHardLinkedDuplicates();
 		Assert.Equal(2, engine.Duplicates.Count);
+		Assert.All(engine.Duplicates, d => Assert.Equal(0, d.HardLinkSetId));
 	}
 
 	// The raw CreateFileW call bypasses .NET's long-path handling: past MAX_PATH the file id
