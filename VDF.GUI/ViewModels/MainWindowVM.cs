@@ -298,14 +298,11 @@ namespace VDF.GUI.ViewModels {
 
 		internal static string FormatCheckedSummary(int checkedCount, int groupCount, string pluralFormat, string singleGroupFormat) =>
 			string.Format(groupCount == 1 ? singleGroupFormat : pluralFormat, checkedCount, groupCount);
-		long _DuplicatesCheckedSizeInternal;
-		long DuplicatesCheckedSizeInternal {
-			get => _DuplicatesCheckedSizeInternal;
-			set {
-				_DuplicatesCheckedSizeInternal = value;
-				this.RaisePropertyChanged(nameof(DuplicatesCheckedSize));
-			}
-		}
+		// Space to be freed by the checked entries. A hard-linked file counts once, and only while
+		// every one of its links is checked: deleting some names of a file frees nothing.
+		readonly CheckedSizeTracker checkedSizeTracker = new();
+		internal long DuplicatesCheckedSizeInternal => checkedSizeTracker.Total;
+		void RaiseCheckedSizeChanged() => this.RaisePropertyChanged(nameof(DuplicatesCheckedSize));
 		public string DuplicatesCheckedSize => DuplicatesCheckedSizeInternal.BytesToString();
 		// SizeLong is -1 when the file no longer exists on disk; don't let those
 		// items distort the checked-size total.
@@ -477,7 +474,8 @@ namespace VDF.GUI.ViewModels {
 					item.PropertyChanged -= DuplicateItemVM_PropertyChanged;
 					if (((DuplicateItemVM)item).Checked) {
 						DuplicatesCheckedCounter--;
-						DuplicatesCheckedSizeInternal -= CheckedSizeOf((DuplicateItemVM)item);
+						checkedSizeTracker.Remove((DuplicateItemVM)item);
+						RaiseCheckedSizeChanged();
 						AdjustCheckedGroupIndex((DuplicateItemVM)item, -1);
 					}
 				}
@@ -489,14 +487,16 @@ namespace VDF.GUI.ViewModels {
 					// so the counters and the per-group index stay accurate.
 					if (((DuplicateItemVM)item).Checked) {
 						DuplicatesCheckedCounter++;
-						DuplicatesCheckedSizeInternal += CheckedSizeOf((DuplicateItemVM)item);
+						checkedSizeTracker.Add((DuplicateItemVM)item);
+						RaiseCheckedSizeChanged();
 						AdjustCheckedGroupIndex((DuplicateItemVM)item, +1);
 					}
 				}
 			}
 			if (e.Action == NotifyCollectionChangedAction.Reset) {
 				DuplicatesCheckedCounter = 0;
-				DuplicatesCheckedSizeInternal = 0;
+				checkedSizeTracker.Clear();
+				RaiseCheckedSizeChanged();
 				checkedCountByGroup.Clear();
 				selectionUndoStack.Clear();
 			}
@@ -513,7 +513,6 @@ namespace VDF.GUI.ViewModels {
 		internal void AddDuplicatesInBulk(IEnumerable<DuplicateItemVM> items) {
 			Duplicates.CollectionChanged -= Duplicates_CollectionChanged;
 			int addedChecked = 0;
-			long addedCheckedSize = 0;
 			try {
 				foreach (var item in items) {
 					item.PropertyChanged += DuplicateItemVM_PropertyChanged;
@@ -522,7 +521,7 @@ namespace VDF.GUI.ViewModels {
 					// so the counters and the per-group index stay accurate.
 					if (item.Checked) {
 						addedChecked++;
-						addedCheckedSize += CheckedSizeOf(item);
+						checkedSizeTracker.Add(item);
 						checkedCountByGroup.TryGetValue(item.ItemInfo.GroupId, out int count);
 						checkedCountByGroup[item.ItemInfo.GroupId] = count + 1;
 					}
@@ -533,7 +532,7 @@ namespace VDF.GUI.ViewModels {
 			}
 			if (addedChecked > 0) {
 				DuplicatesCheckedCounter += addedChecked;
-				DuplicatesCheckedSizeInternal += addedCheckedSize;
+				RaiseCheckedSizeChanged();
 			}
 			RaiseScannerStateChanged();
 		}
@@ -543,12 +542,14 @@ namespace VDF.GUI.ViewModels {
 			RecordCheckedChangeForUndo((DuplicateItemVM)sender);
 			if (((DuplicateItemVM)sender).Checked) {
 				DuplicatesCheckedCounter++;
-				DuplicatesCheckedSizeInternal += CheckedSizeOf((DuplicateItemVM)sender);
+				checkedSizeTracker.Add((DuplicateItemVM)sender);
+				RaiseCheckedSizeChanged();
 				AdjustCheckedGroupIndex((DuplicateItemVM)sender, +1);
 			}
 			else {
 				DuplicatesCheckedCounter--;
-				DuplicatesCheckedSizeInternal -= CheckedSizeOf((DuplicateItemVM)sender);
+				checkedSizeTracker.Remove((DuplicateItemVM)sender);
+				RaiseCheckedSizeChanged();
 				AdjustCheckedGroupIndex((DuplicateItemVM)sender, -1);
 			}
 		}
@@ -848,21 +849,34 @@ namespace VDF.GUI.ViewModels {
 			int groupCount = 0;
 			long totalSize = 0;
 			long savings = 0;
+			// Hard links of one file are one file on disk: its size counts once, in the totals
+			// and in each group's savings (keeping one name of it keeps all of the data).
+			var countedLinkSets = new HashSet<int>();
 			foreach (var group in Duplicates.GroupBy(x => x.ItemInfo.GroupId)) {
 				groupCount++;
 				long groupTotal = 0;
 				long largest = 0;
+				HashSet<int>? groupLinkSets = null;
 				foreach (var item in group) {
 					long size = Math.Max(0, item.ItemInfo.SizeLong);
+					int linkSet = item.ItemInfo.HardLinkSetId;
+					if (linkSet != 0) {
+						if (countedLinkSets.Add(linkSet))
+							totalSize += size;
+						if (!(groupLinkSets ??= new()).Add(linkSet))
+							continue;
+					}
+					else
+						totalSize += size;
 					groupTotal += size;
 					if (size > largest) largest = size;
 				}
-				totalSize += groupTotal;
 				savings += groupTotal - largest;
 			}
 			TotalDuplicatesSize = totalSize.BytesToString();
 			TotalDuplicateGroups = groupCount;
 			PotentialSavings = savings.BytesToString();
+			RefreshHardLinkDisplay();
 		}
 
 		DuplicateItemVM? GetSelectedDuplicateItem() =>
@@ -1173,12 +1187,12 @@ namespace VDF.GUI.ViewModels {
 				Duplicates.Clear();
 				LastScanWasPartial = false; // imported results carry no "stopped early" state
 				AddDuplicatesInBulk(items);
-				// Saved results may come from a scan that let hard links through (before the
-				// engine collapsed them per group), or from a scan run with the setting off.
-				if (SettingsFile.Instance.ExcludeHardLinks) {
-					DropHardLinkDuplicates();
+				// Saved results may come from an older VDF, from a scan run with the setting off,
+				// or from before links were added or removed on disk: read the link sets again.
+				// With the setting off this clears any tags the file carried.
+				await ResolveHardLinksAsync(onlyTagged: false);
+				if (SettingsFile.Instance.ExcludeHardLinks)
 					DropSingletonGroups();
-				}
 
 				BuildActiveResultsView();
 				RefreshGroupStats();
@@ -2016,6 +2030,8 @@ Non-Windows setup:
 			foreach (var item in groupItems)
 				if (item.ItemInfo.Path != keep.ItemInfo.Path)
 					item.Checked = true;
+			// The kept file stays under every one of its names, here and in other groups.
+			HardLinkSelection.KeepWholeLinkSets(Duplicates, new[] { keep });
 		}
 
 		/// <summary>
@@ -2058,9 +2074,15 @@ Non-Windows setup:
 			if (toDelete.Count == 0) return;
 			bool createLinks = createSymbolLinksInstead || createHardLinksInstead;
 
+			// Disk-touching modes report the space actually freed: a hard-linked file counts once,
+			// and only when every one of its links goes. Removing from the list frees nothing on
+			// disk, so it keeps reporting what the entries add up to.
 			long totalSizeToDelete = 0;
-			foreach (var item in toDelete)
-				totalSizeToDelete += CheckedSizeOf(item);
+			if (fromDisk || createLinks)
+				totalSizeToDelete = HardLinkSelection.FreedBytes(toDelete);
+			else
+				foreach (var item in toDelete)
+					totalSizeToDelete += CheckedSizeOf(item);
 
 			string confirmMessage = createLinks
 					? App.Lang["Message.ReplaceWithLinksConfirm"]
@@ -2069,6 +2091,11 @@ Non-Windows setup:
 					: (blackList ? App.Lang["Message.DeleteFromListBlacklistConfirm"] : App.Lang["Message.DeleteFromListConfirm"]);
 			confirmMessage += Environment.NewLine + Environment.NewLine +
 				string.Format(App.Lang["Message.DeleteConfirmStats"], toDelete.Count, totalSizeToDelete.BytesToString());
+			// Warn here rather than on every click: the bulk selection tools would otherwise
+			// raise a dialog per link. Deleting some links of a file only removes those names;
+			// deleting all of them deletes the video.
+			if (fromDisk && !createLinks && BuildHardLinkDeleteWarning(toDelete) is { } hardLinkWarning)
+				confirmMessage += Environment.NewLine + Environment.NewLine + hardLinkWarning;
 
 			MessageBoxButtons? dlgResult = await MessageBoxService.Show(confirmMessage,
 				MessageBoxButtons.Yes | MessageBoxButtons.No);
@@ -2088,6 +2115,14 @@ Non-Windows setup:
 			// caught. This set records the groups that already kept theirs.
 			var tombstonedGroups = new HashSet<Guid>();
 			long freedBytes = 0;
+			// Hard-linked entries free space only as a whole set, so they are summed afterwards.
+			var freedLinks = new List<DuplicateItemVM>();
+			void CountFreed(DuplicateItemVM d) {
+				if (d.ItemInfo.HardLinkSetId != 0)
+					freedLinks.Add(d);
+				else
+					freedBytes += CheckedSizeOf(d);
+			}
 			int missingOnDisk = 0;
 			int total = toDelete.Count;
 			IsBusy = true;
@@ -2154,7 +2189,7 @@ Non-Windows setup:
 										HardLinkUtils.CreateHardLink(dub.ItemInfo.Path, keeper.ItemInfo.Path);
 									else
 										File.CreateSymbolicLink(dub.ItemInfo.Path, keeper.ItemInfo.Path);
-									freedBytes += CheckedSizeOf(dub);
+									CountFreed(dub);
 								}
 							}
 							else if (fromDisk) {
@@ -2162,7 +2197,7 @@ Non-Windows setup:
 										wasBatchRecycled, File.Exists, File.Delete, FileUtils.MoveToTrash)) {
 									case DiskDeletion.Outcome.Deleted:
 									case DiskDeletion.Outcome.AlreadyRecycled:
-										freedBytes += CheckedSizeOf(dub);
+										CountFreed(dub);
 										break;
 									case DiskDeletion.Outcome.MissingEntryOnly:
 										// File was already gone; the entry is still removed from the
@@ -2212,6 +2247,7 @@ Non-Windows setup:
 				IsBusy = false;
 			}
 
+			freedBytes += HardLinkSelection.FreedBytes(freedLinks);
 			if (freedBytes > 0)
 				TotalSizeRemovedInternal += freedBytes;
 
@@ -2237,10 +2273,10 @@ Non-Windows setup:
 					if (actuallyDeleted.Contains(Duplicates[i]))
 						Duplicates.RemoveAt(i);
 
-				// When ExcludeHardLinks is enabled, remove items within each group
-				// that are hardlinks of another remaining item in the same group.
+				// Deleting links changes the link counts of the files they belonged to, and can
+				// leave a group made only of links of one file: read the link sets again.
 				if (SettingsFile.Instance.ExcludeHardLinks)
-					DropHardLinkDuplicates();
+					await ResolveHardLinksAsync(onlyTagged: true);
 
 				// Drop groups that have only one item left (no longer duplicates)
 				DropSingletonGroups();
@@ -2272,38 +2308,6 @@ Non-Windows setup:
 					Duplicates.RemoveAt(i);
 		}
 
-		/// <summary>
-		/// After deletion, re-check remaining groups for items that are hardlinks
-		/// of each other. Within each group, keep only one representative per set
-		/// of hardlinked files.
-		/// </summary>
-		void DropHardLinkDuplicates() {
-			var toRemove = new List<DuplicateItemVM>();
-			foreach (var group in Duplicates.GroupBy(d => d.ItemInfo.GroupId)) {
-				var items = group.ToList();
-				if (items.Count <= 1) continue;
-				var kept = new List<DuplicateItemVM>();
-				foreach (var item in items) {
-					bool isHardLinkOfKept = false;
-					foreach (var k in kept) {
-						if (item.ItemInfo.SizeLong == k.ItemInfo.SizeLong &&
-							HardLinkUtils.AreSameFile(item.ItemInfo.Path, k.ItemInfo.Path)) {
-							isHardLinkOfKept = true;
-							break;
-						}
-					}
-					if (isHardLinkOfKept)
-						toRemove.Add(item);
-					else
-						kept.Add(item);
-				}
-			}
-
-			foreach (var item in toRemove)
-				for (int i = Duplicates.Count - 1; i >= 0; i--)
-					if (ReferenceEquals(Duplicates[i], item)) { Duplicates.RemoveAt(i); break; }
-		}
-
 		public ReactiveCommand<Unit, Unit> ExpandAllGroupsCommand => ReactiveCommand.Create(() => {
 			collapsedResultsGroups.Clear();
 			RebuildResultsList();
@@ -2328,6 +2332,7 @@ Non-Windows setup:
 				foreach (var item in Duplicates)
 					if (item.ItemInfo.GroupId == keeper.ItemInfo.GroupId && !ReferenceEquals(item, keeper))
 						item.Checked = true;
+				HardLinkSelection.KeepWholeLinkSets(Duplicates, new[] { keeper });
 			}
 			NavigateGroup(forward: true);
 		});

@@ -76,6 +76,7 @@ namespace VDF.CLI.Actions {
 		/// </summary>
 		public static IReadOnlyList<DuplicateItem> SelectForDeletion(IEnumerable<DuplicateItem> duplicates, Strategy strategy) {
 			var toDelete = new List<DuplicateItem>();
+			var keptLinkSets = new HashSet<int>();
 
 			var groups = duplicates.GroupBy(d => d.GroupId);
 
@@ -90,9 +91,16 @@ namespace VDF.CLI.Actions {
 				}
 
 				DuplicateItem keeper = PickKeeper(items, strategy);
+				if (keeper.HardLinkSetId != 0)
+					keptLinkSets.Add(keeper.HardLinkSetId);
 				toDelete.AddRange(items.Where(i => i != keeper));
 			}
 
+			// With "exclude hard links" on, names of one file share a HardLinkSetId. A kept file
+			// stays under every one of its names, in any group: deleting its other names would
+			// free nothing while the data survives under the kept one.
+			if (keptLinkSets.Count > 0)
+				toDelete.RemoveAll(i => keptLinkSets.Contains(i.HardLinkSetId));
 			return toDelete;
 		}
 

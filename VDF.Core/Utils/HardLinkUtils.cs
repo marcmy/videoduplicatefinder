@@ -118,12 +118,23 @@ namespace VDF.Core.Utils {
 		/// cannot be read (missing file, no permission, or a filesystem that reports no file
 		/// index); the caller must then treat the file as unique.
 		/// </summary>
-		public static bool TryGetFileIdentity(string filepath, out FileIdentity identity) {
+		public static bool TryGetFileIdentity(string filepath, out FileIdentity identity) =>
+			TryGetLinkInfo(filepath, out identity, out _);
+
+		/// <summary>
+		/// Like <see cref="TryGetFileIdentity"/>, and also reads how many names the file has on
+		/// its volume: Windows' nNumberOfLinks, st_nlink elsewhere. A count above the number of
+		/// links in the results means some links live outside them, so deleting every listed
+		/// link still leaves the data on disk.
+		/// </summary>
+		public static bool TryGetLinkInfo(string filepath, out FileIdentity identity, out uint linkCount) {
 			identity = default;
+			linkCount = 0;
 			if (!CoreUtils.IsWindows) {
 				if (Mono.Unix.Native.Syscall.stat(filepath, out var st) != 0)
 					return false;
 				identity = new FileIdentity(st.st_dev, st.st_ino);
+				linkCount = (uint)st.st_nlink;
 				return true;
 			}
 			if (!TryGetFileIdWindows(filepath, out var id))
@@ -132,6 +143,7 @@ namespace VDF.Core.Utils {
 			if ((id.VolumeSerial, id.FileIndexHigh, id.FileIndexLow) == (0u, 0u, 0u))
 				return false;
 			identity = new FileIdentity(id.VolumeSerial, ((ulong)id.FileIndexHigh << 32) | id.FileIndexLow);
+			linkCount = id.NumberOfLinks;
 			return true;
 		}
 
@@ -183,7 +195,7 @@ namespace VDF.Core.Utils {
 			return ExtendedPrefix + full;
 		}
 
-		static bool TryGetFileIdWindows(string filepath, out (uint VolumeSerial, uint FileIndexHigh, uint FileIndexLow) fileId) {
+		static bool TryGetFileIdWindows(string filepath, out (uint VolumeSerial, uint FileIndexHigh, uint FileIndexLow, uint NumberOfLinks) fileId) {
 			fileId = default;
 			try {
 				using SafeFileHandle handle = CreateFileW(
@@ -198,7 +210,7 @@ namespace VDF.Core.Utils {
 					return false;
 				if (!GetFileInformationByHandle(handle, out var info))
 					return false;
-				fileId = (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+				fileId = (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow, info.NumberOfLinks);
 				return true;
 			}
 			catch (Exception ex) {

@@ -492,7 +492,7 @@ namespace VDF.Core {
 					ResultsArePartial = true;
 					Logger.Instance.Info($"Scan stopped while comparing: keeping the {Duplicates.Count:N0} duplicate(s) found so far; the remaining passes were skipped.");
 				}
-				CollapseHardLinkedDuplicates();
+				ResolveHardLinkedDuplicates();
 				SearchTimer.Stop();
 				ElapsedTimer.Stop();
 				Logger.Instance.Info(T("Log.FinishedScanForDuplicates", SearchTimer.Elapsed));
@@ -1986,8 +1986,8 @@ namespace VDF.Core {
 				// compared: they come from the database cache, and two links probed at different
 				// times (CLI ffprobe vs the native binding, or an older VDF) can disagree by a few
 				// milliseconds, which let hard-linked pairs through. This gate only stops a direct
-				// pair; links that meet through a third file are collapsed afterwards by
-				// CollapseHardLinkedDuplicates. The diagnostic's copy in ScanEngine_Diagnostic.cs
+				// pair; links that meet through a third file are settled afterwards by
+				// ResolveHardLinkedDuplicates. The diagnostic's copy in ScanEngine_Diagnostic.cs
 				// must agree.
 				if (isDuplicate &&
 					entry.FileSize == compItem.FileSize &&
@@ -2746,60 +2746,27 @@ namespace VDF.Core {
 		}
 
 		/// <summary>
-		/// With <see cref="Settings.ExcludeHardLinks"/> on, keeps one entry per physical file in
-		/// every group and drops groups left with fewer than two. The per-pair gate in the main
-		/// compare only stops a direct link-to-link pair: two links that each match a third file
-		/// still landed in that file's group (union by transitivity), the daisy-chain split
-		/// re-clusters with no gate at all, and the partial-clip passes (audio and AI) never
-		/// checked. Running once over the final groups covers every mode the same way.
-		/// Within a set of links the entry kept is the group's base (not a partial clip), then
-		/// the closest match, then the first path, so the result is deterministic.
+		/// With <see cref="Settings.ExcludeHardLinks"/> on, settles hard links in the final
+		/// groups. The per-pair gate in the main compare only stops a direct link-to-link pair:
+		/// two links that each match a third file still land in that file's group (union by
+		/// transitivity), the daisy-chain split re-clusters with no gate at all, and the
+		/// partial-clip passes (audio and AI) never check. Running once over the final groups
+		/// covers every mode the same way.
+		/// A group made only of links of one file is dropped. Otherwise every entry stays, so
+		/// the user can pick which name to keep, and links of one file share a
+		/// <see cref="DuplicateItem.HardLinkSetId"/> (across groups too) plus the file's link
+		/// count; the GUI warns at delete time that removing some links frees no space.
 		/// </summary>
-		internal void CollapseHardLinkedDuplicates() {
-			if (!Settings.ExcludeHardLinks || Duplicates.Count < 2)
+		internal void ResolveHardLinkedDuplicates() {
+			if (!Settings.ExcludeHardLinks || Duplicates.Count == 0)
 				return;
-
-			var identities = new Dictionary<string, HardLinkUtils.FileIdentity?>(
-				CoreUtils.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-			HardLinkUtils.FileIdentity? IdentityOf(string path) {
-				if (!identities.TryGetValue(path, out var id)) {
-					id = HardLinkUtils.TryGetFileIdentity(path, out var found) ? found : null;
-					identities[path] = id;
-				}
-				return id;
-			}
-
-			var toRemove = new HashSet<DuplicateItem>(ReferenceEqualityComparer.Instance);
-			int linksRemoved = 0, groupsDropped = 0;
-			foreach (var group in Duplicates.GroupBy(d => d.GroupId).ToList()) {
-				var members = group.ToList();
-				int remaining = members.Count;
-				// Only same-size members can be links of each other; that keeps the file-id
-				// lookups to the few candidates instead of every member of every group.
-				foreach (var sameSize in members.GroupBy(m => m.SizeLong).Where(g => g.Count() > 1)) {
-					var seen = new HashSet<HardLinkUtils.FileIdentity>();
-					foreach (var m in sameSize
-						.OrderBy(m => m.Flags.HasFlag(DuplicateFlags.PartialClip) ? 1 : 0)
-						.ThenByDescending(m => m.Similarity)
-						.ThenBy(m => m.Path, StringComparer.Ordinal)) {
-						if (IdentityOf(m.Path) is not { } id || seen.Add(id))
-							continue;
-						toRemove.Add(m);
-						linksRemoved++;
-						remaining--;
-					}
-				}
-				if (remaining < 2 && remaining < members.Count) {
-					foreach (var m in members)
-						toRemove.Add(m);
-					groupsDropped++;
-				}
-			}
-
-			foreach (var item in toRemove)
+			var outcome = HardLinkSets.Resolve(Duplicates.ToList(), HardLinkSets.ReadFromDisk);
+			foreach (var item in outcome.Dropped)
 				Duplicates.Remove(item);
-			if (linksRemoved > 0)
-				Logger.Instance.Info($"Exclude hard links: removed {linksRemoved} entr{(linksRemoved == 1 ? "y" : "ies")} that were hard links of another entry in the same group{(groupsDropped > 0 ? $", dropping {groupsDropped} group(s) left with a single file" : string.Empty)}");
+			if (outcome.GroupsDropped > 0)
+				Logger.Instance.Info($"Exclude hard links: dropped {outcome.GroupsDropped} group(s) made only of hard links of one file ({outcome.Dropped.Count} entries)");
+			if (outcome.LinkSets > 0)
+				Logger.Instance.Info($"Exclude hard links: {outcome.LinkedEntries} listed entr{(outcome.LinkedEntries == 1 ? "y is a hard link" : "ies are hard links")} of {outcome.LinkSets} file(s); deleting only some links of a file frees no space");
 		}
 
 		void LogGroupStatistics() {

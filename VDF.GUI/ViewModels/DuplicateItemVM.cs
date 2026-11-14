@@ -15,6 +15,7 @@
 //
 
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading;
 using Avalonia;
@@ -197,6 +198,41 @@ namespace VDF.GUI.ViewModels {
 		public bool Checked {
 			get;
 			set => this.RaiseAndSetIfChanged(ref field, value);
+		}
+
+		// ---- Hard-link badge ----
+		// Links of one file share a colour and a number, so two names of the same file match at a
+		// glance even in different groups. Dark tones keep white badge text readable in both themes.
+		static readonly Avalonia.Media.Immutable.ImmutableSolidColorBrush[] HardLinkPalette = new[] {
+			"#1F6FB2", "#8E44AD", "#B03A2E", "#1E8449", "#A04000", "#117A65", "#6C3483", "#7D6608",
+		}.Select(c => new Avalonia.Media.Immutable.ImmutableSolidColorBrush(Avalonia.Media.Color.Parse(c))).ToArray();
+
+		internal static Avalonia.Media.IBrush HardLinkBrushFor(int setId) =>
+			HardLinkPalette[(Math.Max(1, setId) - 1) % HardLinkPalette.Length];
+
+		[JsonIgnore]
+		public bool IsHardLink { get; private set; }
+		[JsonIgnore]
+		public string? HardLinkBadgeText { get; private set; }
+		[JsonIgnore]
+		public string? HardLinkTooltip { get; private set; }
+		[JsonIgnore]
+		public Avalonia.Media.IBrush? HardLinkBadgeBrush { get; private set; }
+
+		/// <summary>Sets the badge from <see cref="DuplicateItem.HardLinkSetId"/>; null text hides it.</summary>
+		internal void SetHardLinkDisplay(string? badgeText, string? tooltip) {
+			bool isLink = badgeText != null;
+			var brush = isLink ? HardLinkBrushFor(ItemInfo.HardLinkSetId) : null;
+			if (isLink == IsHardLink && badgeText == HardLinkBadgeText && tooltip == HardLinkTooltip && ReferenceEquals(brush, HardLinkBadgeBrush))
+				return;
+			IsHardLink = isLink;
+			HardLinkBadgeText = badgeText;
+			HardLinkTooltip = tooltip;
+			HardLinkBadgeBrush = brush;
+			this.RaisePropertyChanged(nameof(IsHardLink));
+			this.RaisePropertyChanged(nameof(HardLinkBadgeText));
+			this.RaisePropertyChanged(nameof(HardLinkTooltip));
+			this.RaisePropertyChanged(nameof(HardLinkBadgeBrush));
 		}
 
 		/// <summary>Transient "Copied" badge next to the path after a deliberate copy click (#849).</summary>

@@ -139,44 +139,56 @@ namespace VDF.GUI.ViewModels {
 
 		public ReactiveCommand<Unit, Unit> CheckWhenIdenticalCommand => ReactiveCommand.Create(() => {
 			using var undoBatch = BeginSelectionUndoBatch();
-			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsFull(first), (first, cluster) => {
-				foreach (var dup in cluster)
-					dup.Checked = true;
-				first.Checked = false;
-			});
+			var scope = ScopedDuplicates();
+			RunKeepingWholeLinkSets(scope, keep =>
+				ForEachGroupCluster(scope, (d, first) => d.EqualsFull(first), (first, cluster) => {
+					foreach (var dup in cluster)
+						dup.Checked = true;
+					first.Checked = false;
+					keep(first);
+				}));
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckWhenIdenticalButSizeCommand => ReactiveCommand.Create(() => {
 			using var undoBatch = BeginSelectionUndoBatch();
-			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
-				cluster.Add(first);
-				cluster = cluster.OrderBy(s => s.ItemInfo.SizeLong).ToList();
-				cluster[0].Checked = false;
-				for (int i = 1; i < cluster.Count; i++)
-					cluster[i].Checked = true;
-			});
+			var scope = ScopedDuplicates();
+			RunKeepingWholeLinkSets(scope, keep =>
+				ForEachGroupCluster(scope, (d, first) => d.EqualsButQuality(first), (first, cluster) => {
+					cluster.Add(first);
+					cluster = cluster.OrderBy(s => s.ItemInfo.SizeLong).ToList();
+					cluster[0].Checked = false;
+					for (int i = 1; i < cluster.Count; i++)
+						cluster[i].Checked = true;
+					keep(cluster[0]);
+				}));
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckOldestCommand => ReactiveCommand.Create(() => {
 			using var undoBatch = BeginSelectionUndoBatch();
-			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
-				cluster.Add(first);
-				cluster = cluster.OrderByDescending(s => s.ShownDate).ToList();
-				cluster[0].Checked = false;
-				for (int i = 1; i < cluster.Count; i++)
-					cluster[i].Checked = true;
-			});
+			var scope = ScopedDuplicates();
+			RunKeepingWholeLinkSets(scope, keep =>
+				ForEachGroupCluster(scope, (d, first) => d.EqualsButQuality(first), (first, cluster) => {
+					cluster.Add(first);
+					cluster = cluster.OrderByDescending(s => s.ShownDate).ToList();
+					cluster[0].Checked = false;
+					for (int i = 1; i < cluster.Count; i++)
+						cluster[i].Checked = true;
+					keep(cluster[0]);
+				}));
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckNewestCommand => ReactiveCommand.Create(() => {
 			using var undoBatch = BeginSelectionUndoBatch();
-			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
-				cluster.Add(first);
-				cluster = cluster.OrderBy(s => s.ShownDate).ToList();
-				cluster[0].Checked = false;
-				for (int i = 1; i < cluster.Count; i++)
-					cluster[i].Checked = true;
-			});
+			var scope = ScopedDuplicates();
+			RunKeepingWholeLinkSets(scope, keep =>
+				ForEachGroupCluster(scope, (d, first) => d.EqualsButQuality(first), (first, cluster) => {
+					cluster.Add(first);
+					cluster = cluster.OrderBy(s => s.ShownDate).ToList();
+					cluster[0].Checked = false;
+					for (int i = 1; i < cluster.Count; i++)
+						cluster[i].Checked = true;
+					keep(cluster[0]);
+				}));
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckLowestQualityCommand => ReactiveCommand.CreateFromTask(async () => {
@@ -190,19 +202,22 @@ namespace VDF.GUI.ViewModels {
 
 			using var undoBatch = BeginSelectionUndoBatch();
 			var criteria = ActiveQualityCriteria.ToList();
-			ForEachGroupCluster(ScopedDuplicates(), (d, first) => d.EqualsButQuality(first), (first, cluster) => {
-				cluster.Insert(0, first);
+			var scope = ScopedDuplicates();
+			RunKeepingWholeLinkSets(scope, keep =>
+				ForEachGroupCluster(scope, (d, first) => d.EqualsButQuality(first), (first, cluster) => {
+					cluster.Insert(0, first);
 
-				var keep = VDF.Core.Utils.QualityRanker.PickKeeper(
-					cluster,
-					criteria,
-					d => d.ItemInfo.IsImage);
+					var keeper = VDF.Core.Utils.QualityRanker.PickKeeper(
+						cluster,
+						criteria,
+						d => d.ItemInfo.IsImage);
 
-				keep.Checked = false;
-				for (int i = 0; i < cluster.Count; i++)
-					if (cluster[i].ItemInfo.Path != keep.ItemInfo.Path)
-						cluster[i].Checked = true;
-			});
+					keeper.Checked = false;
+					for (int i = 0; i < cluster.Count; i++)
+						if (cluster[i].ItemInfo.Path != keeper.ItemInfo.Path)
+							cluster[i].Checked = true;
+					keep(keeper);
+				}));
 		});
 
 		public ReactiveCommand<Unit, Unit> CheckMissingFilesCommand => ReactiveCommand.Create(() => {
@@ -426,10 +441,14 @@ namespace VDF.GUI.ViewModels {
 			var plan = ComputeCustomSelection(visibleItems, data);
 
 			using var undoBatch = BeginSelectionUndoBatch();
-			foreach (var keeper in plan.Keepers)
-				keeper.Checked = false;
-			foreach (var item in plan.ToCheck)
-				item.Checked = true;
+			RunKeepingWholeLinkSets(visibleItems, keep => {
+				foreach (var keeper in plan.Keepers)
+					keeper.Checked = false;
+				foreach (var item in plan.ToCheck)
+					item.Checked = true;
+				foreach (var keeper in plan.Keepers)
+					keep(keeper);
+			});
 		}
 
 		/// <summary>

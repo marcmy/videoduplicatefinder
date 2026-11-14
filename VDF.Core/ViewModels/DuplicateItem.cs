@@ -175,6 +175,19 @@ namespace VDF.Core.ViewModels {
 			codec.Equals("tiff", StringComparison.OrdinalIgnoreCase));
 
 		public Guid GroupId { get; set; }
+		/// <summary>
+		/// With "Exclude hard links" on: entries that are hard links of the same physical file
+		/// share this id, across groups too. 0 = not a hard link (or not checked). Deleting one
+		/// link frees no space; deleting every link (<see cref="HardLinkCount"/>) deletes the data.
+		/// </summary>
+		public int HardLinkSetId { get; set; }
+		/// <summary>
+		/// How many names the file has on its volume (Windows nNumberOfLinks), counting links
+		/// outside the results. Only set on entries with a <see cref="HardLinkSetId"/>.
+		/// </summary>
+		public int HardLinkCount { get; set; }
+		[JsonIgnore]
+		public bool IsHardLink => HardLinkSetId != 0;
 		/// <summary>Encoded thumbnails (JPEG bytes; or the shared placeholder bytes when extraction failed).</summary>
 		[JsonIgnore]
 		public List<byte[]> ImageList { get; private set; } = new List<byte[]>();
