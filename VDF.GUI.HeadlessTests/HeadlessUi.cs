@@ -36,6 +36,8 @@ namespace VDF.GUI.HeadlessTests;
 public static class HeadlessEntryPoint {
 	public static AppBuilder BuildAvaloniaApp() =>
 		AppBuilder.Configure<App>()
+			.WithInterFont()
+			.With(new Avalonia.Media.FontManagerOptions { DefaultFamilyName = "fonts:Inter#Inter" })
 			.UseSkia()
 			.UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
 			.UseReactiveUI(_ => { });
