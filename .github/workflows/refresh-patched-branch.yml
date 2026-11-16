@@ -15,6 +15,10 @@ on:
       - perf/4.1-native-hwaccel
     paths:
       - '.github/scripts/reconcile-perf.py'
+      - '.github/scripts/patch-perf-net11.py'
+      - '.github/scripts/resolve-reviewed-sync-conflicts.py'
+      - '.github/scripts/test_resolve_reviewed_sync_conflicts.py'
+      - '.github/sync-resolutions/**'
       - '.github/scripts/patch-perf-merge.py'
       - '.github/scripts/patch-perf-upstream-parity.py'
       - '.github/scripts/patch-perf-upstream-safety.py'
@@ -50,6 +54,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Test reviewed sync resolutions
+        run: python -m unittest discover -s .github/scripts -p test_resolve_reviewed_sync_conflicts.py -v
 
       - name: Fetch origin branches
         run: |
@@ -100,26 +107,6 @@ jobs:
               fi
             done
 
-            # VDF.Core.csproj is shared: upstream owns the general dependency set while
-            # the perf branch additionally requires Vortice.Direct3D11 for native HW accel.
-            if grep -Fxq 'VDF.Core/VDF.Core.csproj' <<< "$conflicted_files"; then
-              echo 'Taking origin/master VDF.Core.csproj and restoring the perf Vortice dependency'
-              git checkout --theirs -- VDF.Core/VDF.Core.csproj
-              python - <<'PY'
-          from pathlib import Path
-          path = Path('VDF.Core/VDF.Core.csproj')
-          text = path.read_text(encoding='utf-8')
-          dependency = '    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />\n'
-          if 'Include="Vortice.Direct3D11"' not in text:
-              anchor = '    <PackageReference Include="Mono.Posix.NETStandard" Version="5.20.1-preview" />\n'
-              if anchor not in text:
-                  raise SystemExit('Unable to locate package dependency insertion point')
-              text = text.replace(anchor, anchor + dependency, 1)
-              path.write_text(text, encoding='utf-8')
-          PY
-              git add VDF.Core/VDF.Core.csproj
-            fi
-
             if grep -Fxq 'VDF.Core/FFTools/FfmpegEngine.cs' <<< "$conflicted_files"; then
               echo 'Keeping perf FfmpegEngine.cs; compatibility partials/reconciliation carry upstream contracts'
               git checkout --ours -- VDF.Core/FFTools/FfmpegEngine.cs
@@ -141,6 +128,9 @@ jobs:
               git checkout --ours -- VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
               git add VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
             fi
+
+            # Apply only the exact blob pairs and output hashes reviewed for this migration.
+            python .github/scripts/resolve-reviewed-sync-conflicts.py
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
@@ -229,7 +219,7 @@ jobs:
           KEEP_FORK_PATHS: .github/workflows
           PR_NOTE: >-
             The refresh normally auto-resolves `README.md`, the FFmpeg setup shells and tests (master wins),
-            `VDF.Core/VDF.Core.csproj` (master plus the Vortice.Direct3D11 reference), and `FfmpegEngine.cs`,
+            the reviewed .NET 11 project/hard-link conflicts, and `FfmpegEngine.cs`,
             `VideoStreamDecoder.cs` and `FFmpegHelper.cs` (perf wins), so those may be listed too.
             After this PR is merged, run **Refresh perf branch** once so `reconcile-perf.py` and the validation run on the result.
         # Windows checkouts may convert the script to CRLF, which bash can't run
@@ -265,6 +255,8 @@ jobs:
           fi
 
           dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
+          dotnet test VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj -c Release -v q --logger 'console;verbosity=minimal'
+          dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
 
       - name: Upload validation failure state
         if: failure()

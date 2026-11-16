@@ -1,0 +1,70 @@
+{
+  "VDF.CLI.Tests/VDF.CLI.Tests.csproj": {
+    "ours": "3bbfa6ce6ff6aa2415c64de8b367bc2b94438d4d",
+    "theirs": "6fa3275833cbcebf58b7c4df7b8e84db15f29aba",
+    "result": "ad5ef7c38f561e6c151c352c754431831ea8f39a",
+    "kind": "project"
+  },
+  "VDF.CLI/VDF.CLI.csproj": {
+    "ours": "52e6948f3988c3823d853b291e3ab94640a6d79a",
+    "theirs": "78dce75082af37fbeeaf7ec9e1e5582ecd92476d",
+    "result": "78dce75082af37fbeeaf7ec9e1e5582ecd92476d",
+    "kind": "project"
+  },
+  "VDF.Core.Tests/VDF.Core.Tests.csproj": {
+    "ours": "ad630f8b8d4fb89a0a7d58c6c19eda7c21ad1dba",
+    "theirs": "01e4051782c5ac210068d050db8d851e86e83878",
+    "result": "d54bbd88d19295c18e66e6bd7a81dd9c93f8647b",
+    "kind": "project"
+  },
+  "VDF.Core/VDF.Core.csproj": {
+    "ours": "e80c3e7700c31dec3f1b989ae89e268d34b254d2",
+    "theirs": "94a039baf91dec19f82efddb1e77540050c6f2dd",
+    "result": "0e14eea2c9609305a6385d8ac28884533ebf3f65",
+    "kind": "project",
+    "preserve_package": "Vortice.Direct3D11"
+  },
+  "VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj": {
+    "ours": "e10d0dca54ce697a51334fd8186ee5a1f1189bd6",
+    "theirs": "aa50a1f075c731d02f397500378abb8c5c12dae6",
+    "result": "3a42308af81aff1ccae603dfe69be6c0771c406e",
+    "kind": "project"
+  },
+  "VDF.GUI.Tests/VDF.GUI.Tests.csproj": {
+    "ours": "24209a0b9f4cf1c0ce4381d2dec7cae8ab6bcb56",
+    "theirs": "58f8345b5d879f6bd222010a04bc3e7afbe253dd",
+    "result": "8b6aad1563c3603191dd505c41f77d002bab4cf4",
+    "kind": "project"
+  },
+  "VDF.GUI/VDF.GUI.csproj": {
+    "ours": "e2f1e5a304d9e7154e1a68542a71e63e0eb798ec",
+    "theirs": "c59db670b84a41e45d008e8dd99e38f02eafe8a1",
+    "result": "089d2dc5dff0f6ff3515d5ef67d00ae886cffb84",
+    "kind": "project"
+  },
+  "VDF.IntegrationTests/VDF.IntegrationTests.csproj": {
+    "ours": "ad021639a8bcc061c4624d450c1258b64eb60b79",
+    "theirs": "c1022637459c5dfaef542f0488213f0bbb81b7c9",
+    "result": "c1022637459c5dfaef542f0488213f0bbb81b7c9",
+    "kind": "project"
+  },
+  "VDF.Web.Tests/VDF.Web.Tests.csproj": {
+    "ours": "2e01083f53bbd45733cb3b6cc49b2dda99f9b41e",
+    "theirs": "1f0a1938911716e74c74c308f35431c776ce0ac2",
+    "result": "8f7685a3522d3379168ae99c157c1ac4f321a0d0",
+    "kind": "project"
+  },
+  "VDF.Web.Tests/Components/ResultsPageTests.cs": {
+    "ours": "a15858342f8e31ddb5811a0d737b24ebb6a25c92",
+    "theirs": "e6b8a56219e1d3fd38a992baea8d8571f4531ec5",
+    "result": "1d599f68e9f7910077b5d2a64bdb3fd4d9ac21fb",
+    "kind": "hunks"
+  },
+  "VDF.Core/Utils/HardLinkUtils.cs": {
+    "ours": "df568e5643718e90f7f0475101ad129f394e31d6",
+    "theirs": "a8991a918c4f76b1a0b1bae73a37dfaa64bd28a0",
+    "result": "7e19bb5cf5b116055457dc34e5aaf19919b1ba0f",
+    "kind": "template",
+    "template": ".github/sync-resolutions/HardLinkUtils.net11.cs"
+  }
+}

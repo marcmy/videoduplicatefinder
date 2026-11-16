@@ -20,6 +20,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+    - name: Test reviewed sync resolutions
+      run: python -m unittest discover -s .github/scripts -p test_resolve_reviewed_sync_conflicts.py -v
     - name: Setup .NET
       uses: actions/setup-dotnet@v6
       with:
