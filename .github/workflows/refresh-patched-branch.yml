@@ -15,6 +15,10 @@ on:
       - perf/4.1-native-hwaccel
     paths:
       - '.github/scripts/reconcile-perf.py'
+      - '.github/scripts/patch-perf-net11.py'
+      - '.github/scripts/resolve-reviewed-sync-conflicts.py'
+      - '.github/scripts/test_resolve_reviewed_sync_conflicts.py'
+      - '.github/sync-resolutions/**'
       - '.github/scripts/patch-perf-merge.py'
       - '.github/scripts/patch-perf-upstream-parity.py'
       - '.github/scripts/patch-perf-upstream-safety.py'
@@ -251,6 +255,8 @@ jobs:
           fi
 
           dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
+          dotnet test VDF.GUI.HeadlessTests/VDF.GUI.HeadlessTests.csproj -c Release -v q --logger 'console;verbosity=minimal'
+          dotnet test VDF.Web.Tests/VDF.Web.Tests.csproj -c Release -v q --logger 'console;verbosity=minimal'
 
       - name: Upload validation failure state
         if: failure()
