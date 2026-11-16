@@ -16,7 +16,7 @@ def write_if_changed(path, text):
 
 
 def main():
-    core = (ROOT / "VDF.Core/VDF.Core.csproj").read_text()
+    core = (ROOT / "VDF.Core/VDF.Core.csproj").read_text(encoding="utf-8-sig")
     if "<TargetFramework>net11.0</TargetFramework>" not in core:
         return
 
@@ -50,9 +50,9 @@ def main():
 
     folder = ROOT / "VDF.GUI/Assets/Locales"
     russian_path = folder / "ru.json"
-    english = json.loads((folder / "en.json").read_text())
-    russian = json.loads(russian_path.read_text())
-    additions = json.loads((ROOT / ".github/sync-resolutions/ru-perf.json").read_text())
+    english = json.loads((folder / "en.json").read_text(encoding="utf-8-sig"))
+    russian = json.loads(russian_path.read_text(encoding="utf-8-sig"))
+    additions = json.loads((ROOT / ".github/sync-resolutions/ru-perf.json").read_text(encoding="utf-8-sig"))
     for key, value in additions.items():
         if key not in english:
             raise ValueError(f"Reviewed locale key no longer exists: {key}")
