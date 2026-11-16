@@ -1,6 +1,7 @@
 name: Windows 64-bit
 
 on:
+  workflow_dispatch:
   pull_request:
     paths-ignore:
       - '.github/workflows/**'
