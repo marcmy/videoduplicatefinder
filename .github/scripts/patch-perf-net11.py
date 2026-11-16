@@ -41,6 +41,11 @@ def main():
         if anchor not in text:
             raise ValueError("Headless test entrypoint changed; review font initialization.")
         text = text.replace(anchor, anchor + "\n\t\t\t.WithInterFont()", 1)
+    if 'DefaultFamilyName = "fonts:Inter#Inter"' not in text:
+        # Headless Skia can have no installed default font. Registering the
+        # collection alone does not provide the final fallback for composite
+        # families such as Cascadia Mono,Consolas,monospace.
+        text = text.replace(".WithInterFont()", '.WithInterFont()\n\t\t\t.With(new Avalonia.Media.FontManagerOptions { DefaultFamilyName = "fonts:Inter#Inter" })', 1)
     write_if_changed(entrypoint, text)
 
     folder = ROOT / "VDF.GUI/Assets/Locales"
