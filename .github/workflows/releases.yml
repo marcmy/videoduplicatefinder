@@ -45,7 +45,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       - name: Verify 4.1 performance engine
         shell: pwsh
@@ -97,13 +99,26 @@ jobs:
       - name: Run GUI tests
         run: dotnet test VDF.GUI.Tests/VDF.GUI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
 
-      - name: Install shared FFmpeg 8.1
+      - name: Install shared FFmpeg matching the binding
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = '8.1'
+          $project = [xml](Get-Content VDF.Core/VDF.Core.csproj -Raw)
+          $binding = $project.SelectSingleNode("//PackageReference[@Include='FFmpeg.AutoGen']")
+          if (!$binding) { throw 'FFmpeg.AutoGen package reference is missing.' }
+          switch ($binding.GetAttribute('Version').Split('.')[0]) {
+            '8' {
+              $version = '8.1'
+              $nativeLibraries = @('avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll')
+            }
+            '9' {
+              $version = '9.0'
+              $nativeLibraries = @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll', 'swresample-7.dll')
+            }
+            default { throw 'No verified shared FFmpeg fixture is configured for this binding major.' }
+          }
           $archive = "ffmpeg-n$version-latest-win64-gpl-shared-$version.zip"
-          $baseUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest'
+          $baseUrl = 'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest'
           $zipPath = Join-Path $env:RUNNER_TEMP $archive
           $extractRoot = Join-Path $env:RUNNER_TEMP 'vdf-ffmpeg-shared'
           $checksumPath = Join-Path $env:RUNNER_TEMP 'ffmpeg-checksums.sha256'
@@ -131,7 +146,7 @@ jobs:
           if ($ffmpeg.DirectoryName -ne $ffprobe.DirectoryName) { throw 'ffmpeg.exe and ffprobe.exe were not co-located' }
 
           $bin = $ffmpeg.DirectoryName
-          foreach ($dll in @('avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll')) {
+          foreach ($dll in $nativeLibraries) {
             if (!(Test-Path (Join-Path $bin $dll) -PathType Leaf)) {
               throw "Shared FFmpeg build is missing required native library: $dll"
             }
