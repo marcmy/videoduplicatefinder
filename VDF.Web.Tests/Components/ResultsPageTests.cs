@@ -129,11 +129,12 @@ public sealed class ResultsPageTests : BunitContext {
 		return new[] { C("creation_time", "2023-08-15T12:34:56Z"), C("com.apple.quicktime.creationdate", date) };
 	};
 
-	// The metadata is read off the render thread, so the page is still rendering for a moment
-	// after the table first shows. bUnit's sync Click()/Change()/KeyDown() don't wait for an event
-	// the busy renderer queues; the awaited Async ones finish each step and its render first.
 	async Task<IRenderedComponent<VDF.Web.Components.Pages.Results>> OpenMetadataOfFirstGroup() {
 		var page = RenderPage();
+		// Await the click handler itself, not the first sight of the table: OpenMetadata renders
+		// the table, then Blazor renders once more when the handler's task completes. A test that
+		// finds an input between those two renders and then changes it hits an event handler id
+		// the second render dropped (UnknownEventHandlerIdException, only under CPU load).
 		await page.Find(".metadata-btn").ClickAsync(new());
 		Assert.NotEmpty(page.FindAll(".metadata-table"));
 		return page;
@@ -383,5 +384,41 @@ public sealed class ResultsPageTests : BunitContext {
 		Assert.EndsWith(",IsImage,Checked,AudioLanguages,SubtitleLanguages", lines[0]);
 		Assert.Equal("True", ResultsCsvTests.Field(lines[0], Assert.Single(lines, l => l.Contains("drop.mp4")), "Checked"));
 		Assert.Equal("False", ResultsCsvTests.Field(lines[0], Assert.Single(lines, l => l.Contains("keep.mp4")), "Checked"));
+	}
+
+	// === Script calls the browser may no longer answer ===
+
+	[Fact]
+	public void KeyboardNavigation_SurvivesABrowserThatIsGone() {
+		// Blazor Server: the tab can close or reconnect while a key press is on its way. The
+		// scroll call then throws, and escaping the handler would end the whole circuit.
+		Seed("a1.mp4", Guid.NewGuid());
+		Seed("b1.mp4", Guid.NewGuid());
+		JSInterop.SetupVoid("vdf.scrollToGroup", _ => true)
+			.SetException(new Microsoft.JSInterop.JSDisconnectedException("circuit gone"));
+		var page = RenderPage();
+
+		page.Find(".results-toolbar").KeyDown("j");
+		page.Find(".results-toolbar").KeyDown("j");
+		page.Find(".results-toolbar").KeyDown("k");
+
+		// Down, down, up: back on the first group, and only there.
+		Assert.Single(page.FindAll(".dup-group.focused"));
+		Assert.Contains("focused", page.FindAll(".dup-group")[0].ClassName);
+	}
+
+	[Fact]
+	public void CompareMode_SurvivesAFailingScript() {
+		Guid group = Guid.NewGuid();
+		Seed("a.mp4", group);
+		Seed("b.mp4", group);
+		JSInterop.SetupVoid("vdf.setCompareMode", _ => true)
+			.SetException(new Microsoft.JSInterop.JSException("vdf is not defined"));
+		var page = RenderPage();
+		page.Find(".compare-btn").Click();
+
+		page.FindAll(".compare-mode-tabs button").Single(b => b.TextContent == "Swipe").Click();
+
+		Assert.Contains("active", page.FindAll(".compare-mode-tabs button").Single(b => b.TextContent == "Swipe").ClassName);
 	}
 }

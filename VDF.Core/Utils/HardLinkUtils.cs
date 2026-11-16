@@ -72,8 +72,102 @@ namespace VDF.Core.Utils {
 					throw new IOException($"Failed to create hard link '{linkPath}' -> '{existingFilePath}' (Win32 error {Marshal.GetLastPInvokeError()}). Note: hard links require both paths to be on the same volume.");
 				return;
 			}
-			if (Mono.Unix.Native.Syscall.link(existingFilePath, linkPath) != 0)
-				throw new IOException($"Failed to create hard link '{linkPath}' -> '{existingFilePath}' (errno {Mono.Unix.Native.Stdlib.GetLastError()}). Note: hard links require both paths to be on the same filesystem.");
+			int result = OperatingSystem.IsMacOS() ? LinkMac(existingFilePath, linkPath) : LinkLinux(existingFilePath, linkPath);
+			if (result != 0) {
+				int errno = Marshal.GetLastPInvokeError();
+				throw new IOException($"Failed to create hard link '{linkPath}' -> '{existingFilePath}' ({Marshal.GetPInvokeErrorMessage(errno)}, errno {errno}). Note: hard links require both paths to be on the same filesystem.");
+			}
+		}
+
+		// POSIX: link(2) makes the hard link, and two paths are one file when device and inode
+		// number match. struct stat differs per OS, architecture and glibc version (glibc before
+		// 2.33 does not even export a "stat" symbol), which is why Mono.Posix went through a native
+		// helper library of its own, one without an arm64 build for macOS. Linux uses statx(2)
+		// instead, whose struct is the same on every architecture (glibc 2.28+, musl 1.2.5+), and
+		// macOS its 64-bit-inode stat, which is the same on x64 and arm64.
+		const string LinuxLibc = "libc";
+		const string MacLibc = "/usr/lib/libc.dylib";
+
+		[LibraryImport(LinuxLibc, EntryPoint = "link", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+		private static partial int LinkLinux(string existingPath, string newPath);
+
+		[LibraryImport(MacLibc, EntryPoint = "link", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+		private static partial int LinkMac(string existingPath, string newPath);
+
+		[LibraryImport(LinuxLibc, EntryPoint = "statx", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+		private static partial int Statx(int dirFd, string path, int flags, uint mask, out StatxBuffer buffer);
+
+		// x64 macOS keeps the old 32-bit-inode struct under the plain name; arm64 only has the 64-bit one.
+		[LibraryImport(MacLibc, EntryPoint = "stat$INODE64", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+		private static partial int StatMacX64(string path, out DarwinStat buffer);
+
+		[LibraryImport(MacLibc, EntryPoint = "stat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+		private static partial int StatMacArm64(string path, out DarwinStat buffer);
+
+		const int AT_FDCWD = -100;
+		const uint STATX_INO = 0x100;
+		const uint STATX_NLINK = 0x4;
+
+		/// <summary>struct statx (linux/stat.h): 256 bytes on every architecture; device is always filled.</summary>
+		[StructLayout(LayoutKind.Explicit, Size = 256)]
+		struct StatxBuffer {
+			[FieldOffset(0)] public uint Mask;
+			[FieldOffset(16)] public uint LinkCount;
+			[FieldOffset(32)] public ulong Ino;
+			[FieldOffset(136)] public uint DevMajor;
+			[FieldOffset(140)] public uint DevMinor;
+		}
+
+		/// <summary>macOS struct stat with 64-bit inodes (sys/stat.h): 144 bytes, sized up as headroom.</summary>
+		[StructLayout(LayoutKind.Explicit, Size = 256)]
+		struct DarwinStat {
+			[FieldOffset(0)] public int Dev;
+			[FieldOffset(6)] public ushort LinkCount;
+			[FieldOffset(8)] public ulong Ino;
+		}
+
+		/// <summary>glibc's makedev, so <see cref="TryGetFileIdPosix"/> reports the st_dev that stat(1) prints.</summary>
+		static ulong MakeDev(uint major, uint minor) =>
+			((ulong)(major & 0xfffff000u) << 32) | ((ulong)(major & 0xfffu) << 8) |
+			((ulong)(minor & 0xffffff00u) << 12) | (minor & 0xffu);
+
+		static bool posixFileIdUnavailableLogged;
+
+		/// <summary>
+		/// The device and inode number of <paramref name="path"/> (following symlinks, like stat), or
+		/// false when the file cannot be read or the C library lacks the call.
+		/// </summary>
+		internal static bool TryGetFileIdPosix(string path, out (ulong Device, ulong Inode) id) =>
+			TryGetFileIdPosix(path, out id, out _);
+
+		static bool TryGetFileIdPosix(string path, out (ulong Device, ulong Inode) id, out uint linkCount) {
+			id = default;
+			linkCount = 0;
+			try {
+				if (OperatingSystem.IsMacOS()) {
+					DarwinStat st;
+					int result = RuntimeInformation.ProcessArchitecture == Architecture.X64
+						? StatMacX64(path, out st)
+						: StatMacArm64(path, out st);
+					if (result != 0)
+						return false;
+					id = ((uint)st.Dev, st.Ino);
+					linkCount = st.LinkCount;
+					return true;
+				}
+				if (Statx(AT_FDCWD, path, 0, STATX_INO | STATX_NLINK, out var stx) != 0 || (stx.Mask & STATX_INO) == 0)
+					return false;
+				id = (MakeDev(stx.DevMajor, stx.DevMinor), stx.Ino);
+				linkCount = (stx.Mask & STATX_NLINK) != 0 ? stx.LinkCount : 0;
+				return true;
+			}
+			catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) {
+				if (!posixFileIdUnavailableLogged) {
+					posixFileIdUnavailableLogged = true;
+					Logger.Instance.Warn($"Hard links cannot be recognized on this system, treating them as separate files: {ex.Message}");
+				}
+				return false;
+			}
 		}
 
 		[StructLayout(LayoutKind.Sequential)]
@@ -113,33 +207,25 @@ namespace VDF.Core.Utils {
 			return AreSameFilePosix(filepath, otherFilepath);
 		}
 
-		/// <summary>
-		/// Reads the physical identity of <paramref name="filepath"/>. Returns false when it
-		/// cannot be read (missing file, no permission, or a filesystem that reports no file
-		/// index); the caller must then treat the file as unique.
-		/// </summary>
+		/// <summary>Reads a physical identity; unreadable paths remain unique.</summary>
 		public static bool TryGetFileIdentity(string filepath, out FileIdentity identity) =>
 			TryGetLinkInfo(filepath, out identity, out _);
 
 		/// <summary>
-		/// Like <see cref="TryGetFileIdentity"/>, and also reads how many names the file has on
-		/// its volume: Windows' nNumberOfLinks, st_nlink elsewhere. A count above the number of
-		/// links in the results means some links live outside them, so deleting every listed
-		/// link still leaves the data on disk.
+		/// Reads the physical identity and total name count, including links outside the results.
+		/// The count is needed to decide whether a deletion frees the underlying file's data.
 		/// </summary>
 		public static bool TryGetLinkInfo(string filepath, out FileIdentity identity, out uint linkCount) {
 			identity = default;
 			linkCount = 0;
 			if (!CoreUtils.IsWindows) {
-				if (Mono.Unix.Native.Syscall.stat(filepath, out var st) != 0)
+				if (!TryGetFileIdPosix(filepath, out var posixId, out linkCount) || linkCount == 0)
 					return false;
-				identity = new FileIdentity(st.st_dev, st.st_ino);
-				linkCount = (uint)st.st_nlink;
+				identity = new FileIdentity(posixId.Device, posixId.Inode);
 				return true;
 			}
 			if (!TryGetFileIdWindows(filepath, out var id))
 				return false;
-			// Some providers (network redirectors, FUSE-style drivers) return zeros: unknown.
 			if ((id.VolumeSerial, id.FileIndexHigh, id.FileIndexLow) == (0u, 0u, 0u))
 				return false;
 			identity = new FileIdentity(id.VolumeSerial, ((ulong)id.FileIndexHigh << 32) | id.FileIndexLow);
@@ -147,13 +233,10 @@ namespace VDF.Core.Utils {
 			return true;
 		}
 
-		static bool AreSameFilePosix(string filepath, string otherFilepath) {
-			if (Mono.Unix.Native.Syscall.stat(filepath, out var statA) != 0)
-				return false;
-			if (Mono.Unix.Native.Syscall.stat(otherFilepath, out var statB) != 0)
-				return false;
-			return statA.st_ino == statB.st_ino && statA.st_dev == statB.st_dev;
-		}
+		static bool AreSameFilePosix(string filepath, string otherFilepath) =>
+			TryGetFileIdPosix(filepath, out var fileA) &&
+			TryGetFileIdPosix(otherFilepath, out var fileB) &&
+			fileA == fileB;
 
 		static bool AreSameFileWindows(string filepath, string otherFilepath) {
 			if (TryGetFileIdentity(filepath, out var fileA) && TryGetFileIdentity(otherFilepath, out var fileB))
