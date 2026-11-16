@@ -4,7 +4,8 @@ param(
     [int]$Iterations = 9,
     [int]$WarmupIterations = 2,
     [double]$MaxRegressionPercent = 15,
-    [string]$ArtifactsDir = 'artifacts/perf-gate'
+    [string]$ArtifactsDir = 'artifacts/perf-gate',
+    [string]$BaselineFfmpegBin = ''
 )
 
 Set-StrictMode -Version Latest
@@ -58,7 +59,13 @@ function Build-BenchmarkHarness {
 function Get-BenchmarkDll {
     param([Parameter(Mandatory)] [string]$WorkingDirectory)
 
-    $dll = Join-Path $WorkingDirectory 'VDF.Benchmarks/bin/Release/net10.0/VDF.Benchmarks.dll'
+    $project = [xml](Get-Content (Join-Path $WorkingDirectory 'VDF.Benchmarks/VDF.Benchmarks.csproj') -Raw)
+    $frameworkNode = $project.SelectSingleNode('//TargetFramework')
+    if (!$frameworkNode -or $frameworkNode.InnerText -notmatch '^net\d+\.\d+$') {
+        throw 'Benchmark harness must declare a supported single target framework.'
+    }
+    $framework = $frameworkNode.InnerText
+    $dll = Join-Path $WorkingDirectory "VDF.Benchmarks/bin/Release/$framework/VDF.Benchmarks.dll"
     if (!(Test-Path -LiteralPath $dll -PathType Leaf)) {
         throw "Benchmark harness DLL was not produced: $dll"
     }
@@ -70,7 +77,8 @@ function Invoke-RegressionProbe {
         [Parameter(Mandatory)] [string]$WorkingDirectory,
         [Parameter(Mandatory)] [string]$OutputPath,
         [Parameter(Mandatory)] [string]$LogPath,
-        [string]$BaselinePath
+        [string]$BaselinePath,
+        [string]$FfmpegBin
     )
 
     $benchmarkDll = Get-BenchmarkDll -WorkingDirectory $WorkingDirectory
@@ -90,12 +98,17 @@ function Invoke-RegressionProbe {
         )
     }
 
+    $originalPath = $env:PATH
+    if ($FfmpegBin) {
+        $env:PATH = "$FfmpegBin$([IO.Path]::PathSeparator)$originalPath"
+    }
     Push-Location $WorkingDirectory
     try {
         & dotnet @arguments 2>&1 | Tee-Object -FilePath $LogPath | Out-Host
         return [int]$LASTEXITCODE
     }
     finally {
+        $env:PATH = $originalPath
         Pop-Location
     }
 }
@@ -116,7 +129,8 @@ function Invoke-PairedMeasurement {
     $baselineExit = Invoke-RegressionProbe `
         -WorkingDirectory $baselineWorktree `
         -OutputPath $baselineJson `
-        -LogPath $baselineLog
+        -LogPath $baselineLog `
+        -FfmpegBin $BaselineFfmpegBin
     if ($baselineExit -ne 0) {
         throw "Known-good baseline probe$Suffix failed with exit code $baselineExit."
     }
@@ -165,6 +179,21 @@ try {
         Where-Object { $_.Name -notin @('bin', 'obj') } |
         Copy-Item -Destination $baselineHarness -Recurse -Force
     Write-Host 'Synchronized current benchmark harness source into the baseline worktree.'
+
+    # Keep the baseline product/dependencies pinned. A binding-major migration
+    # requires its own matching native libraries, isolated to the baseline process.
+    $baselineCore = [xml](Get-Content (Join-Path $baselineWorktree 'VDF.Core/VDF.Core.csproj') -Raw)
+    $currentCore = [xml](Get-Content (Join-Path $repoRoot 'VDF.Core/VDF.Core.csproj') -Raw)
+    $baselineBinding = $baselineCore.SelectSingleNode("//PackageReference[@Include='FFmpeg.AutoGen']").GetAttribute('Version').Split('.')[0]
+    $currentBinding = $currentCore.SelectSingleNode("//PackageReference[@Include='FFmpeg.AutoGen']").GetAttribute('Version').Split('.')[0]
+    if ($baselineBinding -ne $currentBinding -and !$BaselineFfmpegBin) {
+        . (Join-Path $PSScriptRoot 'install-perf-ffmpeg.ps1')
+        $BaselineFfmpegBin = Install-PerfFfmpeg -BindingMajor $baselineBinding
+    }
+    if ($BaselineFfmpegBin -and !(Test-Path (Join-Path $BaselineFfmpegBin $(if ($IsWindows) { 'ffmpeg.exe' } else { 'ffmpeg' })) -PathType Leaf)) {
+        throw "Baseline FFmpeg executable is missing from $BaselineFfmpegBin."
+    }
+    Write-Host "FFmpeg binding majors: baseline=$baselineBinding; current=$currentBinding"
 
     # Build both refs before any timing starts. This keeps restore/compiler/Defender
     # activity out of the immediate baseline-vs-candidate measurement sequence.
