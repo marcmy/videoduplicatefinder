@@ -15,6 +15,7 @@ SCRIPTS = (
     "patch-perf-upstream-parity.py",
     "patch-perf-upstream-safety.py",
     "patch-perf-ai-process.py",
+    "patch-perf-net11.py",
 )
 
 

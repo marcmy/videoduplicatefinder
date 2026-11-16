@@ -51,6 +51,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Test reviewed sync resolutions
+        run: python -m unittest discover -s .github/scripts -p test_resolve_reviewed_sync_conflicts.py -v
+
       - name: Fetch origin branches
         run: |
           git fetch origin master
@@ -141,6 +144,9 @@ jobs:
               git checkout --ours -- VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
               git add VDF.Core/FFTools/FFmpegNative/FFmpegHelper.cs
             fi
+
+            # Apply only the exact blob pairs and output hashes reviewed for this migration.
+            python .github/scripts/resolve-reviewed-sync-conflicts.py
 
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "$remaining_conflicts" ]; then
