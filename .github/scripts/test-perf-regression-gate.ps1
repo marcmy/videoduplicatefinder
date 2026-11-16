@@ -50,3 +50,5 @@ finally {
     $env:PATH = $originalPath
     Remove-Item $root -Recurse -Force
 }
+# The intentional nonzero mock exit must not become the CI shell's exit status.
+exit 0
