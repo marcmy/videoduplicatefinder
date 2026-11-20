@@ -797,14 +797,29 @@ namespace VDF.GUI.ViewModels {
 
 			if (IsSwipe) {
 				var w = frameW * ModeSliderValue;
-				SwipeClip = new RectangleGeometry(new Rect(0, 0, w, frameH));
+				SwipeClip = CreateSwipeClip(new Rect(0, 0, w, frameH));
 				SeparatorX = frameLeft + Math.Max(0, w - 1);
 			}
 			else if (IsStacked) {
 				var h = frameH * ModeSliderValue;
-				SwipeClip = new RectangleGeometry(new Rect(0, 0, frameW, h));
+				SwipeClip = CreateSwipeClip(new Rect(0, 0, frameW, h));
 				SeparatorY = frameTop + Math.Max(0, h - 1);
 			}
+		}
+
+		// A new clip is built on every drag step of the swipe line. Avalonia.Skia makes it
+		// `new SKPath(); AddRect(...)`, which SkiaSharp 4 only queues in a lazy builder, then
+		// flushes without a lock on the first read of the path. The render thread (ClipPath) and
+		// the UI thread's hit test (Clip.FillContains) both make that first read, and when they
+		// race, one disposes the builder while the other is still detaching it: an access
+		// violation in libSkiaSharp that closes the app with no error. Reading the path once here,
+		// before the clip is published, flushes it on this thread alone. Avalonia's own
+		// GeometryImpl.CachePathBounds does the same for other geometry types, but
+		// RectangleGeometryImpl skips it.
+		internal static RectangleGeometry CreateSwipeClip(Rect rect) {
+			var clip = new RectangleGeometry(rect);
+			clip.FillContains(default);
+			return clip;
 		}
 
 		public async Task LoadThumbnailsAsync(int maxParallel = 2) {
