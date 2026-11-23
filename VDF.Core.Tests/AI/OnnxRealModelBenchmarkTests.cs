@@ -9,6 +9,10 @@ using Xunit.Abstractions;
 namespace VDF.Core.Tests.AI;
 
 public sealed class OnnxRealModelBenchmarkTests {
+	// SHA256 from Xenova/dinov2-small/onnx/model.onnx on Hugging Face.
+	// The FP32 model is benchmark-only; VDF production retains its pinned INT8 model.
+	private const string Fp32Url = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
+	private const string Fp32Sha256 = "83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea";
 	private readonly ITestOutputHelper output;
 	public OnnxRealModelBenchmarkTests(ITestOutputHelper output) => this.output = output;
 
@@ -29,9 +33,19 @@ public sealed class OnnxRealModelBenchmarkTests {
 		try {
 			await AiComponents.DownloadAsync(progress: null, CancellationToken.None);
 			AiComponents.EnsureReady();
-			using (var stream = File.OpenRead(AiComponents.ModelPath)) {
+			string modelVariant = (Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_MODEL") ?? "int8")
+				.Trim().ToLowerInvariant();
+			Assert.True(modelVariant is "int8" or "fp32",
+				"VDF_ONNX_BENCH_MODEL must be 'int8' or 'fp32'.");
+			string modelPath = modelVariant == "fp32"
+				? Path.Combine(componentDir, "dinov2-small-fp32.onnx")
+				: AiComponents.ModelPath;
+			string modelSha256 = modelVariant == "fp32" ? Fp32Sha256 : AiComponents.ModelSha256;
+			if (modelVariant == "fp32")
+				await EnsureFp32ModelAsync(modelPath, CancellationToken.None);
+			using (var stream = File.OpenRead(modelPath)) {
 				string hash = Convert.ToHexString(SHA256.HashData(stream));
-				Assert.Equal(AiComponents.ModelSha256, hash, ignoreCase: true);
+				Assert.Equal(modelSha256, hash, ignoreCase: true);
 			}
 
 			bool cuda = AiComponents.UsesCudaRuntime;
@@ -47,7 +61,7 @@ public sealed class OnnxRealModelBenchmarkTests {
 				samples[0], samples[1], samples[2], samples[3],
 				samples[4], samples[5], samples[0], samples[2]
 			};
-			using (var embedder = new OnnxEmbedder(AiComponents.ModelPath, device)) {
+			using (var embedder = new OnnxEmbedder(modelPath, device)) {
 				description = embedder.Description;
 				Assert.Equal(cuda || directML, embedder.UsesGpu);
 				// Warm up the native kernels and memory allocators before measuring.
@@ -71,9 +85,9 @@ public sealed class OnnxRealModelBenchmarkTests {
 			string? profilePath;
 			try {
 				string prefix = Path.Combine(Path.GetDirectoryName(reportPath)!,
-					$"onnx-profile-{provider}-{Environment.ProcessId}");
+					$"onnx-profile-{modelVariant}-{provider}-{Environment.ProcessId}");
 				Environment.SetEnvironmentVariable("VDF_AI_PROFILE_PREFIX", prefix);
-				using var embedder = new OnnxEmbedder(AiComponents.ModelPath, device);
+				using var embedder = new OnnxEmbedder(modelPath, device);
 				embedder.EmbedBatch(batch);
 				profilePath = embedder.EndProfiling();
 			}
@@ -93,12 +107,13 @@ public sealed class OnnxRealModelBenchmarkTests {
 						 }).ToArray();
 			var profile = ProfileSummary(profilePath!);
 			var report = new {
-				formatVersion = 1,
+				formatVersion = 2,
+				modelVariant,
 				provider,
 				description,
 				nativeRuntime = AiComponents.RuntimeVersion,
 				managedRuntime = "1.24.4",
-				modelSha256 = AiComponents.ModelSha256,
+				modelSha256,
 				operatingSystem = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
 				architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
 				processorCount = Environment.ProcessorCount,
@@ -114,12 +129,43 @@ public sealed class OnnxRealModelBenchmarkTests {
 			};
 			await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report,
 				new JsonSerializerOptions { WriteIndented = true }));
-			output.WriteLine($"DINOv2 {provider}: 1-frame median {Median(singleMs):F2} ms, 8-frame median {Median(batchMs):F2} ms");
+			output.WriteLine($"DINOv2 {modelVariant} {provider}: 1-frame median {Median(singleMs):F2} ms, 8-frame median {Median(batchMs):F2} ms");
 			output.WriteLine($"Profile: {profilePath}; GPU nodes: {profile.gpuNodes}, CPU nodes: {profile.cpuNodes}");
 			output.WriteLine($"JSON report: {reportPath}");
 		}
 		finally {
 			AiComponents.TestAiFolder.Value = null;
+		}
+	}
+
+	private static async Task EnsureFp32ModelAsync(string modelPath, CancellationToken token) {
+		if (File.Exists(modelPath)) {
+			using var existing = File.OpenRead(modelPath);
+			if (Convert.ToHexString(SHA256.HashData(existing))
+				.Equals(Fp32Sha256, StringComparison.OrdinalIgnoreCase))
+				return;
+		}
+		string tempPath = modelPath + "." + Guid.NewGuid().ToString("N") + ".download";
+		try {
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+			timeout.CancelAfter(TimeSpan.FromMinutes(15));
+			using var http = new HttpClient();
+			using var response = await http.GetAsync(Fp32Url, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+			response.EnsureSuccessStatusCode();
+			if (response.Content.Headers.ContentLength is > 200_000_000)
+				throw new IOException("Unexpectedly large FP32 ONNX model.");
+			await using (var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+				FileShare.None, 81920, useAsync: true))
+				await response.Content.CopyToAsync(dest, timeout.Token);
+			using (var stream = File.OpenRead(tempPath)) {
+				string actual = Convert.ToHexString(SHA256.HashData(stream));
+				if (!actual.Equals(Fp32Sha256, StringComparison.OrdinalIgnoreCase))
+					throw new IOException($"FP32 model SHA256 mismatch: got {actual}; expected {Fp32Sha256}.");
+			}
+			File.Move(tempPath, modelPath, overwrite: true);
+		}
+		finally {
+			if (File.Exists(tempPath)) File.Delete(tempPath);
 		}
 	}
 
