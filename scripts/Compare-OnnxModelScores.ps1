@@ -42,8 +42,8 @@ for ($i = 0; $i -lt $a.pairs.Count; $i++) {
     $rightScore = [double]$right.quantizedSimilarity * 100
     $rows += [pscustomobject]@{
         Pair = "$($left.a)-$($left.b)"
-        BaselinePct = [math]::Round($leftScore, 3)
-        CandidatePct = [math]::Round($rightScore, 3)
+        BaselinePct = $leftScore
+        CandidatePct = $rightScore
         DeltaPoints = [math]::Round($rightScore - $leftScore, 3)
         AbsoluteDelta = [math]::Abs($rightScore - $leftScore)
     }
@@ -63,5 +63,8 @@ foreach ($threshold in $Thresholds) {
     Write-Host ("Threshold {0}%: {1} flips in {2} pairs; {3} pair(s) within 5 points of threshold" -f
         $threshold, $flips.Count, $rows.Count, $near.Count)
 }
-$summary | Select-Object -First 15 Pair,BaselinePct,CandidatePct,DeltaPoints | Format-Table -AutoSize
+$summary | Select-Object -First 15 Pair,
+    @{Name='BaselinePct';Expression={[math]::Round($_.BaselinePct,3)}},
+    @{Name='CandidatePct';Expression={[math]::Round($_.CandidatePct,3)}},
+    DeltaPoints | Format-Table -AutoSize
 Write-Warning 'Synthetic samples are not a labeled positive/negative video validation set. Never use these results alone to recalibrate production thresholds.'
