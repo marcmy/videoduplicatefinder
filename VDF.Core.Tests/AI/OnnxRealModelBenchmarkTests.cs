@@ -13,6 +13,8 @@ public sealed class OnnxRealModelBenchmarkTests {
 	// The FP32 model is benchmark-only; VDF production retains its pinned INT8 model.
 	private const string Fp32Url = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
 	private const string Fp32Sha256 = "83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea";
+	private const string Fp16Url = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model_fp16.onnx";
+	private const string Fp16Sha256 = "4e9ea6fe106e2225e28ee3c1c3d53b5b92aa4af62142f6ed6b66b6a92213cf04";
 	private readonly ITestOutputHelper output;
 	public OnnxRealModelBenchmarkTests(ITestOutputHelper output) => this.output = output;
 
@@ -35,14 +37,20 @@ public sealed class OnnxRealModelBenchmarkTests {
 			AiComponents.EnsureReady();
 			string modelVariant = (Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_MODEL") ?? "int8")
 				.Trim().ToLowerInvariant();
-			Assert.True(modelVariant is "int8" or "fp32",
-				"VDF_ONNX_BENCH_MODEL must be 'int8' or 'fp32'.");
-			string modelPath = modelVariant == "fp32"
-				? Path.Combine(componentDir, "dinov2-small-fp32.onnx")
-				: AiComponents.ModelPath;
-			string modelSha256 = modelVariant == "fp32" ? Fp32Sha256 : AiComponents.ModelSha256;
-			if (modelVariant == "fp32")
-				await EnsureFp32ModelAsync(modelPath, CancellationToken.None);
+			Assert.True(modelVariant is "int8" or "fp32" or "fp16",
+				"VDF_ONNX_BENCH_MODEL must be 'int8', 'fp32' or 'fp16'.");
+			string modelPath = modelVariant switch {
+				"fp32" => Path.Combine(componentDir, "dinov2-small-fp32.onnx"),
+				"fp16" => Path.Combine(componentDir, "dinov2-small-fp16.onnx"),
+				_ => AiComponents.ModelPath
+			};
+			string modelSha256 = modelVariant switch {
+				"fp32" => Fp32Sha256, "fp16" => Fp16Sha256, _ => AiComponents.ModelSha256
+			};
+			if (modelVariant == "fp32" || modelVariant == "fp16")
+				await EnsureModelAsync(modelPath,
+					modelVariant == "fp16" ? Fp16Url : Fp32Url,
+					modelSha256, CancellationToken.None);
 			using (var stream = File.OpenRead(modelPath)) {
 				string hash = Convert.ToHexString(SHA256.HashData(stream));
 				Assert.Equal(modelSha256, hash, ignoreCase: true);
@@ -138,11 +146,12 @@ public sealed class OnnxRealModelBenchmarkTests {
 		}
 	}
 
-	private static async Task EnsureFp32ModelAsync(string modelPath, CancellationToken token) {
+	private static async Task EnsureModelAsync(string modelPath, string modelUrl,
+		string expectedSha256, CancellationToken token) {
 		if (File.Exists(modelPath)) {
 			using var existing = File.OpenRead(modelPath);
 			if (Convert.ToHexString(SHA256.HashData(existing))
-				.Equals(Fp32Sha256, StringComparison.OrdinalIgnoreCase))
+				.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
 				return;
 		}
 		string tempPath = modelPath + "." + Guid.NewGuid().ToString("N") + ".download";
@@ -150,17 +159,17 @@ public sealed class OnnxRealModelBenchmarkTests {
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
 			timeout.CancelAfter(TimeSpan.FromMinutes(15));
 			using var http = new HttpClient();
-			using var response = await http.GetAsync(Fp32Url, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+			using var response = await http.GetAsync(modelUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
 			response.EnsureSuccessStatusCode();
 			if (response.Content.Headers.ContentLength is > 200_000_000)
-				throw new IOException("Unexpectedly large FP32 ONNX model.");
+				throw new IOException("Unexpectedly large ONNX model.");
 			await using (var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
 				FileShare.None, 81920, useAsync: true))
 				await response.Content.CopyToAsync(dest, timeout.Token);
 			using (var stream = File.OpenRead(tempPath)) {
 				string actual = Convert.ToHexString(SHA256.HashData(stream));
-				if (!actual.Equals(Fp32Sha256, StringComparison.OrdinalIgnoreCase))
-					throw new IOException($"FP32 model SHA256 mismatch: got {actual}; expected {Fp32Sha256}.");
+				if (!actual.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+					throw new IOException($"ONNX model SHA256 mismatch: got {actual}; expected {expectedSha256}.");
 			}
 			File.Move(tempPath, modelPath, overwrite: true);
 		}
