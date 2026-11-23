@@ -83,7 +83,7 @@ public sealed class OnnxRealModelBenchmarkTests {
 			Assert.False(string.IsNullOrWhiteSpace(profilePath));
 			Assert.True(File.Exists(profilePath), "ONNX profiling output was not written.");
 
-			byte[][] q = embeddings.Select(EmbeddingMath.QuantizeUnitVector).ToArray();
+			byte[][] q = embeddings.Select(e => EmbeddingMath.QuantizeUnitVector(e)).ToArray();
 			var pairs = (from i in Enumerable.Range(0, samples.Length)
 						 from j in Enumerable.Range(i + 1, samples.Length - i - 1)
 						 select new {
@@ -110,7 +110,7 @@ public sealed class OnnxRealModelBenchmarkTests {
 				embeddings,
 				pairs,
 				profilePath,
-				profile,
+				profile = new { profile.gpuNodes, profile.cpuNodes, profile.otherNodes },
 			};
 			await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report,
 				new JsonSerializerOptions { WriteIndented = true }));
