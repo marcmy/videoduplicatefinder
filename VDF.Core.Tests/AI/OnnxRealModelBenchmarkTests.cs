@@ -58,6 +58,10 @@ public sealed class OnnxRealModelBenchmarkTests {
 
 			bool cuda = AiComponents.UsesCudaRuntime;
 			bool directML = AiComponents.UsesDirectMLRuntime;
+			string? cudaGraphOptimization = cuda
+				? (Environment.GetEnvironmentVariable(OnnxEmbedder.CudaGraphOptimizationEnvVar) ?? "basic")
+					.Trim().ToLowerInvariant()
+				: null;
 			string provider = cuda ? "cuda" : directML ? "directml" : "cpu";
 			AiInferenceDevice device = cuda || directML ? AiInferenceDevice.Gpu : AiInferenceDevice.Cpu;
 			byte[][] samples = MakeSamples();
@@ -92,8 +96,10 @@ public sealed class OnnxRealModelBenchmarkTests {
 			string? oldPrefix = Environment.GetEnvironmentVariable("VDF_AI_PROFILE_PREFIX");
 			string? profilePath;
 			try {
+				string optimizationTag = cuda && cudaGraphOptimization != "basic"
+					? $"-{cudaGraphOptimization}" : "";
 				string prefix = Path.Combine(Path.GetDirectoryName(reportPath)!,
-					$"onnx-profile-{modelVariant}-{provider}-{Environment.ProcessId}");
+					$"onnx-profile-{modelVariant}-{provider}{optimizationTag}-{Environment.ProcessId}");
 				Environment.SetEnvironmentVariable("VDF_AI_PROFILE_PREFIX", prefix);
 				using var embedder = new OnnxEmbedder(modelPath, device);
 				embedder.EmbedBatch(batch);
@@ -118,6 +124,7 @@ public sealed class OnnxRealModelBenchmarkTests {
 				formatVersion = 2,
 				modelVariant,
 				provider,
+				cudaGraphOptimization,
 				description,
 				nativeRuntime = AiComponents.RuntimeVersion,
 				managedRuntime = "1.24.4",
