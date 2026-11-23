@@ -216,6 +216,37 @@ namespace VDF.Core.AI {
 					$"AI matching components are not available ({state}). " +
 					$"Download them in Settings → Matching, or place onnxruntime {RuntimeVersion} and {SelectedModelFileName} into '{AiFolder}'.");
 			LoadRuntime();
+			// Creating a CUDA session does not guarantee cuDNN is available: some
+			// kernels initialize cuDNN only when the first inference executes.
+			// The opt-in FP16 path must fail before any video is scanned, rather
+			// than silently reporting fewer duplicate groups after failed inference.
+			if (IsFp16Selected && UsesCudaRuntime)
+				VerifyExperimentalCudaInference();
+		}
+
+		static readonly object experimentalCudaPreflightLock = new();
+		static bool experimentalCudaPreflightSucceeded;
+
+		internal static void VerifyExperimentalCudaInference() {
+			lock (experimentalCudaPreflightLock) {
+				if (experimentalCudaPreflightSucceeded) return;
+				try {
+					using var embedder = new OnnxEmbedder(ModelPath, AiInferenceDevice.Gpu);
+					byte[] sample = new byte[OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3];
+					byte[][] result = embedder.EmbedBatchQuantized(new[] { sample });
+					if (result.Length != 1 || result[0].Length != EmbeddingMath.Dimensions)
+						throw new InvalidDataException("Unexpected FP16 CUDA embedding dimensions.");
+					experimentalCudaPreflightSucceeded = true;
+				}
+				catch (Exception e) {
+					throw new InvalidOperationException(
+						"Experimental FP16 CUDA inference failed before scanning. " +
+						"Verify NVIDIA CUDA/cuDNN 9 are installed and their DLL directories " +
+						"(including the one with cudnn64_9.dll on Windows) are on PATH. " +
+						"You can set VDF_CUDNN_BIN to the cuDNN bin directory for the " +
+						"experimental test launcher. Original inference error: " + e.Message, e);
+				}
+			}
 		}
 
 		// For experimental FP16, validate even a pre-existing file: a mismatched
