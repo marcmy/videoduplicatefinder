@@ -16,6 +16,7 @@
 
 using System.Runtime.InteropServices;
 using VDF.Core.AI;
+using VDF.TestSupport;
 
 namespace VDF.Core.Tests.AI;
 
