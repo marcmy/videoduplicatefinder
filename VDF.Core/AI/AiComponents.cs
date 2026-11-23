@@ -81,6 +81,37 @@ namespace VDF.Core.AI {
 		public const string ModelFileName = "dinov2-small-int8.onnx";
 		/// <summary>SHA256 of the model file (Xenova/dinov2-small ONNX export, quantized, Apache-2.0).</summary>
 		public const string ModelSha256 = "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917";
+		// The legacy VDF sidecar files have no model fingerprint in their header.
+		// These exact bytes are known to have generated their contents. Keep this
+		// constant independent of ModelSha256 if the production model changes.
+		internal const string LegacyInt8ModelSha256 = "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917";
+		// Bump when changing preprocessing, CLS/output selection or quantization
+		// semantics even if the model ONNX file has not changed.
+		internal const int EmbeddingPreprocessingRevision = 1;
+
+		/// <summary>
+		/// Sidecar cache names are scoped by the model hash and preprocessing revision.
+		/// Keep existing untagged INT8 caches intact; a different model uses a new
+		/// sidecar, avoiding comparisons between incompatible embedding spaces.
+		/// This is a filename partition, not a migration or destructive cleanup.
+		/// </summary>
+		internal static string EmbeddingSidecarFileName(string legacyName) =>
+			EmbeddingSidecarFileNameForModel(legacyName, ModelSha256, EmbeddingPreprocessingRevision);
+
+		internal static string EmbeddingSidecarFileNameForModel(string legacyName,
+			string modelSha256, int preprocessingRevision) {
+			if (modelSha256.Length != 64 || !modelSha256.All(Uri.IsHexDigit))
+				throw new ArgumentException("Expected the model's 64-character SHA256.", nameof(modelSha256));
+			if (preprocessingRevision <= 0)
+				throw new ArgumentOutOfRangeException(nameof(preprocessingRevision));
+			if (string.Equals(modelSha256, LegacyInt8ModelSha256, StringComparison.OrdinalIgnoreCase)
+				&& preprocessingRevision == 1)
+				return legacyName;
+
+			string filename = Path.GetFileNameWithoutExtension(legacyName);
+			string extension = Path.GetExtension(legacyName);
+			return $"{filename}.{modelSha256.ToLowerInvariant()}.p{preprocessingRevision}{extension}";
+		}
 		// Primary: mirrored release asset on the VDF repo (stable bytes, hash-pinned).
 		// Fallback: the upstream HuggingFace export the mirror was taken from.
 		const string ModelPrimaryUrl = "https://github.com/0x90d/videoduplicatefinder/releases/download/ai-models-v1/dinov2-small-int8.onnx";
