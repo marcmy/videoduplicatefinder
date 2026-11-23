@@ -37,17 +37,17 @@ namespace VDF.Core.AI {
 	/// </summary>
 	public static class AiComponents {
 		/// <summary>
-		/// CPU ONNX Runtime version. Keep in sync with the managed package until
-		/// the native runtime and wrapper are upgraded together.
+		/// CPU ONNX Runtime 1.32.0 uses the older 1.24.4 managed API.
+		/// Compatibility is gated by downloaded-native inference tests.
 		/// </summary>
-		/// <summary>CPU-only ONNX Runtime (GitHub release archives) used on Linux and forced-CPU Windows.</summary>
+		/// <summary>CPU-only ONNX Runtime (NuGet native package) used on Linux and forced-CPU Windows.</summary>
 		public const string CpuRuntimeVersion = "1.32.0";
 		/// <summary>
 		/// ONNX Runtime with the DirectML execution provider, used on Windows so AI
 		/// inference runs on any D3D12 GPU instead of burning CPU (≈160 ms of CPU time per
 		/// frame on CPU vs ≈1 ms on DirectML). Published only as a NuGet package; it uses
 		/// the system DirectML.dll (1.15+, in-box on current Windows 11) and falls back to
-		/// the CPU provider when no usable GPU/DirectML is present. Same C API as 1.23.2.
+		/// the CPU provider when no usable GPU/DirectML is present. Paired with managed 1.24.4.
 		/// </summary>
 		public const string DirectMLRuntimeVersion = "1.24.4";
 		internal const string ForceCpuRuntimeEnvVar = "VDF_AI_CPU_RUNTIME";
@@ -263,17 +263,17 @@ namespace VDF.Core.AI {
 				return (new Uri($"https://api.nuget.org/v3-flatcontainer/{package}/{DirectMLRuntimeVersion}/{nupkg}"),
 					nupkg, $"runtimes/{rid}/native");
 			}
-			string rid = RuntimeInformation.ProcessArchitecture switch {
+			string nativeRid = RuntimeInformation.ProcessArchitecture switch {
 				Architecture.X64 => $"{os}-x64",
 				Architecture.Arm64 => $"{os}-arm64",
 				_ => throw new PlatformNotSupportedException($"AI matching is not supported on {RuntimeInformation.ProcessArchitecture}.")
 			};
-			string package = UsesCudaRuntime
+			string nativePackage = UsesCudaRuntime
 				? (os == "win" ? "microsoft.ml.onnxruntime.gpu.windows" : "microsoft.ml.onnxruntime.gpu.linux")
 				: "microsoft.ml.onnxruntime";
-			string file = $"{package}.{CpuRuntimeVersion}.nupkg";
-			return (new Uri($"https://api.nuget.org/v3-flatcontainer/{package}/{CpuRuntimeVersion}/{file}"),
-				file, $"runtimes/{rid}/native");
+			string file = $"{nativePackage}.{CpuRuntimeVersion}.nupkg";
+			return (new Uri($"https://api.nuget.org/v3-flatcontainer/{nativePackage}/{CpuRuntimeVersion}/{file}"),
+				file, $"runtimes/{nativeRid}/native");
 		}
 
 		/// <summary>Downloads whatever is missing (runtime and/or model). Safe to call when Ready.</summary>
