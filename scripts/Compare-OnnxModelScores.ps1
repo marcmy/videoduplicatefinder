@@ -40,6 +40,16 @@ if ($a.modelSha256 -eq $b.modelSha256 -and $baseFile -eq $otherFile) {
     Write-Warning 'Both reports identify the same model and the same run.'
 }
 if ($a.pairs.Count -ne $b.pairs.Count) { throw 'The reports do not contain the same sample pairs.' }
+if ($null -ne $a.frameIds -and $null -ne $b.frameIds) {
+    if (($a.frameIds -join '|') -ne ($b.frameIds -join '|')) {
+        throw 'Different frame IDs. Comparisons require identical sample order.'
+    }
+}
+if ($null -ne $a.frameSha256 -and $null -ne $b.frameSha256) {
+    if (($a.frameSha256 -join '|') -ne ($b.frameSha256 -join '|')) {
+        throw 'Different RGB frame SHA-256 hashes. Regenerate/run both variants on the same corpus.'
+    }
+}
 $rows = @()
 for ($i = 0; $i -lt $a.pairs.Count; $i++) {
     $left = $a.pairs[$i]; $right = $b.pairs[$i]
