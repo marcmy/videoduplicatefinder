@@ -45,6 +45,10 @@ foreach ($item in $actualClips) {
     if (-not $expected.ContainsKey($item.BaseName)) { throw "Unlisted video found: $($item.Name)" }
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+# Previous reports might describe an incomplete/broken GPU run. Never leave
+# old shareable files behind if this run fails before writing fresh ones.
+Get-ChildItem -LiteralPath $OutputDirectory -Filter 'shareable-*.json' -File |
+    Remove-Item -Force
 $executionId = [Guid]::NewGuid().ToString('N')
 $allGroupKeys = @{}
 foreach ($mode in $Modes) {
