@@ -207,3 +207,69 @@ Source artifacts for this evaluation:
 `int8-directml-public-run1.json`, `fp16-directml-public-run1.json`,
 `fp16-cuda-public-run1.json`,
 `fp16-cuda-extended-public-run1.json`, and `manifest.json`.
+
+
+## Actual full-pipeline public-video scan results (2026-11-23)
+
+The fixed Windows x64 test build (FP16 CUDA with strict inference and cuDNN 9
+available) ran the **actual `vdf-cli scan-and-compare` pipeline**, with
+`--ai-matching --ai-partial --ai-percent 94 --ai-partial-hit-percent 89`
+on the 21 SHA-verified generated MP4 clips. User-shared artifact:
+`VDF-Full-Scan-Public-Results.zip` containing `manifest.json`,
+`shareable-int8-directml.json`, `shareable-fp16-cuda.json`,
+and `shareable-group-differences.json`.
+
+| Metric | INT8 / DirectML | FP16 / CUDA EXTENDED |
+|---|---:|---:|
+| Generated videos scanned | 21 | 21 |
+| Final duplicate groups | 4 | 4 |
+| Grouped video IDs | 14 | 14 |
+| Reported AiMatched member flags | 10 | 10 |
+| Whole-scan elapsed seconds | 6.643 | 8.029 |
+
+**Exact group memberships were identical**, with 0 baseline-only and
+0 candidate-only groups. For every grouped item, `flags` and
+`partialClipOffset` were identical. All partial offsets were zero.
+There were four groups:
+
+- `a-brightness|a-crop08|a-original|a-resize`
+- `b-brightness|b-crop08|b-original|b-resize`
+- `c-brightness|c-compression|c-original|c-resize`
+- `c-crop08|c-crop16`
+
+The group display similarities changed by up to **2.15141 percentage
+points** (mean absolute difference across the 14 member displays
+**1.03275 points**), but no reported group/flag decisions changed.
+The seven ungrouped clips were `a-compression`, `a-crop16`,
+`a-partial`, `b-compression`, `b-crop16`, `b-partial`,
+and `c-partial`. They were generated from the same three procedural
+sources, so do not equate "no cross-scene false positive" with
+comprehensive recall.
+
+**Important limitation:** The original generated clips are only
+12 seconds and the `-partial` clips are only **5 seconds**.
+VDF's dense visual-partial matcher requires **four consistent
+frame hits** and samples at an interval of at least **five seconds**.
+These five-second segments cannot provide the required four
+independent temporal sample hits. Furthermore, the dense phase
+skips already-grouped videos, potentially excluding the intended
+source when its full-length variants grouped earlier. This test
+therefore **does not validate AI partial detection**; every reported
+group was an AI union match, with no nonzero partial offsets.
+
+Elapsed wall time reflects an entire tiny video scan, including
+session initialization, decoding, file enumeration, and database
+work. It does **not** contradict the earlier ~11x FP16 CUDA batch
+inference microbenchmark or establish an end-to-end speedup;
+indeed the candidate took 8.029s versus 6.643s in this
+single short scan. A larger corpus with repetitions and
+counterbalanced run order is needed for full-pipeline performance.
+
+**Next test:** Rework the *generated-only* partial corpus to use
+longer clips (e.g., ≥30 s original and ≥20 s time-shifted excerpt),
+and run source/excerpt pairs in a separate
+`--ai-partial`-only scan, without other variants that can consume
+the sources into pre-existing groups. Preserve the present
+21-video corpus and report as the full-length matching baseline.
+Do not change 89%/94% thresholds or the production model on
+this evidence alone.
