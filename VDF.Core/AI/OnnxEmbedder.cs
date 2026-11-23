@@ -49,6 +49,8 @@ namespace VDF.Core.AI {
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
 		readonly bool profilingEnabled;
+		readonly TensorElementType inputDataType;
+		readonly TensorElementType outputDataType;
 
 		internal const string DeviceEnvVar = "VDF_AI_DEVICE";
 
@@ -70,11 +72,17 @@ namespace VDF.Core.AI {
 			UsesGpu = usesGpu;
 			Description = description;
 			inputName = session.InputMetadata.Keys.First();
+			inputDataType = session.InputMetadata[inputName].ElementDataType;
+			if (inputDataType is not (TensorElementType.Float or TensorElementType.Float16))
+				throw new NotSupportedException($"Model input uses unsupported ONNX tensor type {inputDataType}.");
 			// DINOv2 exports emit last_hidden_state (CLS token = the image embedding);
 			// keep the generic fallbacks so a future model swap keeps working.
 			if (session.OutputMetadata.ContainsKey("image_embeds")) outputName = "image_embeds";
 			else if (session.OutputMetadata.ContainsKey("pooler_output")) outputName = "pooler_output";
 			else { outputName = session.OutputMetadata.Keys.First(); clsFromHiddenState = true; }
+			outputDataType = session.OutputMetadata[outputName].ElementDataType;
+			if (outputDataType is not (TensorElementType.Float or TensorElementType.Float16))
+				throw new NotSupportedException($"Model output uses unsupported ONNX tensor type {outputDataType}.");
 		}
 
 		/// <summary>True when the requested GPU execution provider initialized.</summary>
@@ -152,21 +160,48 @@ namespace VDF.Core.AI {
 				}
 			}
 
-			using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
-				session.Run(new[] { NamedOnnxValue.CreateFromTensor(inputName, tensor) });
-			var outputTensor = (DenseTensor<float>)results.First(v => v.Name == outputName).AsTensor<float>();
-			ReadOnlySpan<int> dims = outputTensor.Dimensions;
-			int dim = dims[^1];
-			// last_hidden_state is [batch, tokens, dim]; the CLS token (index 0) is the embedding.
-			int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
-			Span<float> output = outputTensor.Buffer.Span;
+			// ONNX FP16 exports may have float16 inputs and/or outputs. Convert only
+			// when the model metadata requires it; production FP32 I/O is unchanged.
+			NamedOnnxValue input;
+			if (inputDataType == TensorElementType.Float16) {
+				var halfTensor = new DenseTensor<Float16>(new[] { batch, 3, InputSide, InputSide });
+				Span<Float16> half = halfTensor.Buffer.Span;
+				for (int i = 0; i < buffer.Length; i++)
+					half[i] = new Float16(BitConverter.HalfToUInt16Bits((Half)buffer[i]));
+				input = NamedOnnxValue.CreateFromTensor(inputName, halfTensor);
+			}
+			else input = NamedOnnxValue.CreateFromTensor(inputName, tensor);
 
+			using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = session.Run(new[] { input });
+			DisposableNamedOnnxValue result = results.First(v => v.Name == outputName);
 			var embeddings = new float[batch][];
-			for (int k = 0; k < batch; k++) {
-				var e = new float[dim];
-				output.Slice(k * stride, dim).CopyTo(e);
-				Normalize(e);
-				embeddings[k] = e;
+			if (outputDataType == TensorElementType.Float16) {
+				var outputTensor = (DenseTensor<Float16>)result.AsTensor<Float16>();
+				ReadOnlySpan<int> dims = outputTensor.Dimensions;
+				int dim = dims[^1];
+				int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
+				ReadOnlySpan<Float16> output = outputTensor.Buffer.Span;
+				for (int k = 0; k < batch; k++) {
+					var e = new float[dim];
+					for (int i = 0; i < dim; i++)
+						e[i] = (float)BitConverter.UInt16BitsToHalf(output[k * stride + i].value);
+					Normalize(e);
+					embeddings[k] = e;
+				}
+			}
+			else {
+				var outputTensor = (DenseTensor<float>)result.AsTensor<float>();
+				ReadOnlySpan<int> dims = outputTensor.Dimensions;
+				int dim = dims[^1];
+				// last_hidden_state is [batch, tokens, dim]; CLS token is embedding.
+				int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
+				ReadOnlySpan<float> output = outputTensor.Buffer.Span;
+				for (int k = 0; k < batch; k++) {
+					var e = new float[dim];
+					output.Slice(k * stride, dim).CopyTo(e);
+					Normalize(e);
+					embeddings[k] = e;
+				}
 			}
 			return embeddings;
 		}
