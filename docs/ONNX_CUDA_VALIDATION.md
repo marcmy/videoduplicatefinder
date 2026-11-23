@@ -150,3 +150,34 @@ cache invalidation and real-media threshold validation.
 
 Source model: https://huggingface.co/Xenova/dinov2-small/blob/main/onnx/model.onnx
 CUDA UINT8 limitation context: https://github.com/microsoft/onnxruntime/discussions/26735
+
+
+### FP32 profiling outcome and production migration gate (RTX 2070 SUPER)
+
+Local full-model benchmark (2026-11-22; 1 run per provider; medians from 12
+single-frame and 6 batch-8 iterations) showed FP32 CUDA **6.52 ms** single
+and **28.95 ms** batch-8 versus FP32 DirectML **13.39 ms** single and
+**86.12 ms** batch-8. Compared to CUDA INT8's **37.21 ms** single and
+**199.86 ms** batch-8, FP32 CUDA is ~5.7x and ~6.9x faster respectively.
+The JSON traces show zero inserted `MemcpyFromHost` / `MemcpyToHost` events
+and only 11 CPU node events under FP32 CUDA, compared with 171 inserted
+copies and 133 CPU node events under INT8 CUDA.
+
+Float embedding coordinate differences across FP32 CUDA/DirectML/CPU were
+<= 5.01e-7, and quantized pair scores were identical for the synthetic
+images. **This is cross-provider agreement within FP32**, not agreement
+between INT8 and FP32. Comparing the existing INT8 and new FP32 models on
+the same sample inputs, quantized pair-score changes reached ~0.07 on
+CPU, ~0.056 on DirectML, and ~0.054 on CUDA. The six synthetic samples
+did not flip VDF's 89%/94% cutoffs; real-media checks are still required.
+
+**Do not switch the production model merely by changing ModelPath.**
+`UnionEmbeddingStore` and `DenseEmbeddingStore` currently validate records
+by media file size and mtime and use fixed binary magic (`VDFAI002` and
+`VDFAI003`), **not the ONNX model SHA256 or preprocessing identity**.
+Switching models without invalidating/segregating these sidecar caches
+could silently reuse INT8 embeddings during FP32 scans and yield false
+matches or missed matches. A production migration must version both caches
+by model identity (ideally hash plus preprocessing revision), invalidate or
+separate old records, and verify representative real-media decisions first.
+Current PR intentionally leaves production model and caches unchanged.
