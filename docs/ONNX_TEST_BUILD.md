@@ -159,7 +159,7 @@ $partialCorpus = Join-Path $env:TEMP 'VDF.PublicAiPartialCorpus'
 pwsh -NoProfile -File .\New-ShareableAiPartialCorpus.ps1 -OutputDirectory $partialCorpus
 
 # Uses the existing extracted cuDNN 9 directory; no permanent PATH changes.
-$env:VDF_CUDNN_BIN = 'C:\Users\marcm\Downloads\cudnn-windows-x86_64-9.28.1.4_cuda13-archive-extracted\cudnn-windows-x86_64-9.28.1.4_cuda13-archive\bin\x64'
+$env:VDF_CUDNN_BIN = Join-Path $env:USERPROFILE 'Downloads\cudnn-windows-x86_64-9.28.1.4_cuda13-archive-extracted\cudnn-windows-x86_64-9.28.1.4_cuda13-archive\bin\x64'
 pwsh -NoProfile -File .\Compare-PublicAiPartialScans.ps1 -CorpusDirectory $partialCorpus
 ```
 
