@@ -15,6 +15,7 @@
 //
 
 using System.Linq;
+using System.Collections.Concurrent;
 using VDF.Core.AI;
 using VDF.Core.FFTools;
 using VDF.Core.Utils;
@@ -75,6 +76,7 @@ namespace VDF.Core {
 			InitProgress(videos.Count, T("Scan.Stage.AiDenseSampling"));
 			var dense = new DenseEmbeddingStore.DenseRecord?[videos.Count];
 			int extracted = 0, cached = 0, failed = 0, skippedFailed = 0;
+			var inferenceErrors = new ConcurrentQueue<Exception>();
 			using (var embedder = new OnnxEmbedder(AiComponents.ModelPath)) {
 				Logger.Instance.Info($"AI partial detection embedder: {embedder.Description}");
 				object embedLock = new();
@@ -134,8 +136,10 @@ namespace VDF.Core {
 								lock (embedLock)
 									vectors = embedder.EmbedBatchQuantized(batch);
 							}
-							catch {
+							catch (Exception e) {
 								embedderFailed = true;
+								if (AiComponents.StrictInferenceEnabled)
+									inferenceErrors.Enqueue(e);
 								throw;
 							}
 							for (int k = 0; k < vectors.Length; k++)
@@ -261,6 +265,10 @@ namespace VDF.Core {
 			if (cancelationTokenSource.IsCancellationRequested)
 				return;
 			LastDenseSamplingCounts = (extracted, cached, failed, skippedFailed);
+			if (AiComponents.StrictInferenceEnabled && !inferenceErrors.IsEmpty)
+				throw new AggregateException(
+					"AI dense keyframe inference failed in strict test mode; scan results are invalid.",
+					inferenceErrors);
 			Logger.Instance.Info($"AI partial detection: dense embeddings ready for {videos.Count - failed - skippedFailed} video(s) ({cached} cached, {extracted} computed, {failed} failed, {skippedFailed} skipped after failing on an earlier scan).");
 
 			// ── Phase B: offset-consistent matching ─────────────────────────────
