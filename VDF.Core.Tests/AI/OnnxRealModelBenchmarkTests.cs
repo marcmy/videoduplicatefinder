@@ -64,7 +64,8 @@ public sealed class OnnxRealModelBenchmarkTests {
 				: null;
 			string provider = cuda ? "cuda" : directML ? "directml" : "cpu";
 			AiInferenceDevice device = cuda || directML ? AiInferenceDevice.Gpu : AiInferenceDevice.Cpu;
-			byte[][] samples = MakeSamples();
+			SampleFrame[] corpusFrames = LoadBenchmarkFrames();
+			byte[][] samples = corpusFrames.Select(f => f.Rgb).ToArray();
 			float[][] embeddings;
 			double[] singleMs;
 			double[] batchMs;
@@ -79,7 +80,10 @@ public sealed class OnnxRealModelBenchmarkTests {
 				// Warm up the native kernels and memory allocators before measuring.
 				for (int i = 0; i < 3; i++) embedder.EmbedBatch(new[] { samples[0] });
 				for (int i = 0; i < 2; i++) embedder.EmbedBatch(batch);
-				embeddings = embedder.EmbedBatch(samples);
+				var all = new List<float[]>(samples.Length);
+				for (int first = 0; first < samples.Length; first += 8)
+					all.AddRange(embedder.EmbedBatch(samples.Skip(first).Take(8).ToArray()));
+				embeddings = all.ToArray();
 				Assert.Equal(samples.Length, embeddings.Length);
 				foreach (float[] vector in embeddings) {
 					Assert.Equal(EmbeddingMath.Dimensions, vector.Length);
@@ -116,12 +120,20 @@ public sealed class OnnxRealModelBenchmarkTests {
 						 from j in Enumerable.Range(i + 1, samples.Length - i - 1)
 						 select new {
 							 a = i, b = j,
+							 idA = corpusFrames[i].Id, idB = corpusFrames[j].Id,
+							 expectedAligned = corpusFrames[i].Source != null &&
+								 corpusFrames[j].Source != null
+								 ? (bool?)(corpusFrames[i].Source == corpusFrames[j].Source &&
+									 corpusFrames[i].Second == corpusFrames[j].Second)
+								 : null,
 							 rawCosine = Cosine(embeddings[i], embeddings[j]),
 							 quantizedSimilarity = EmbeddingMath.CosineSimilarity(q[i], q[j]),
 						 }).ToArray();
 			var profile = ProfileSummary(profilePath!);
 			var report = new {
-				formatVersion = 2,
+				formatVersion = 3,
+				corpusType = corpusFrames[0].Source == null ? "deterministic-synthetic-frames" : "generated-ffmpeg-video",
+				frameIds = corpusFrames.Select(f => f.Id).ToArray(),
 				modelVariant,
 				provider,
 				cudaGraphOptimization,
@@ -139,7 +151,7 @@ public sealed class OnnxRealModelBenchmarkTests {
 				batch8MedianMs = Median(batchMs),
 				embeddings,
 				pairs,
-				profilePath,
+				profileFileName = Path.GetFileName(profilePath),
 				profile = new { profile.gpuNodes, profile.cpuNodes, profile.otherNodes },
 			};
 			await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report,
@@ -151,6 +163,58 @@ public sealed class OnnxRealModelBenchmarkTests {
 		finally {
 			AiComponents.TestAiFolder.Value = null;
 		}
+	}
+
+	private sealed record SampleFrame(string Id, string? Source, int? Second, byte[] Rgb);
+
+	private static SampleFrame[] LoadBenchmarkFrames() {
+		string? corpusRoot = Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_CORPUS");
+		if (string.IsNullOrWhiteSpace(corpusRoot))
+			return MakeSamples().Select((rgb, index) =>
+				new SampleFrame($"synthetic-{index}", null, null, rgb)).ToArray();
+
+		// Only load a corpus created by scripts/New-ShareableAiCorpus.ps1.
+		// Filenames are deliberately confined to frames/<basename>.rgb,
+		// and reports include IDs only, never absolute user paths.
+		string root = Path.GetFullPath(corpusRoot);
+		string manifestPath = Path.Combine(root, "manifest.json");
+		using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+		var obj = manifest.RootElement;
+		if (obj.GetProperty("schemaVersion").GetInt32() != 1 ||
+			obj.GetProperty("sampleWidth").GetInt32() != OnnxEmbedder.InputSide ||
+			obj.GetProperty("sampleHeight").GetInt32() != OnnxEmbedder.InputSide ||
+			obj.GetProperty("rgbChannels").GetInt32() != 3)
+			throw new InvalidDataException("Unsupported public AI benchmark corpus manifest.");
+		var entries = obj.GetProperty("frames").EnumerateArray().ToArray();
+		if (entries.Length < 8 || entries.Length > 128)
+			throw new InvalidDataException("Expected 8 to 128 generated RGB frames.");
+
+		var samples = new List<SampleFrame>(entries.Length);
+		var ids = new HashSet<string>(StringComparer.Ordinal);
+		foreach (JsonElement entry in entries) {
+			string id = entry.GetProperty("id").GetString()
+				?? throw new InvalidDataException("Frame ID missing.");
+			string relative = entry.GetProperty("file").GetString()
+				?? throw new InvalidDataException("Frame path missing.");
+			string fileName = relative.StartsWith("frames/", StringComparison.Ordinal)
+				? relative.Substring("frames/".Length) : "";
+			if (fileName.Length == 0 || fileName != Path.GetFileName(fileName) ||
+				!fileName.EndsWith(".rgb", StringComparison.OrdinalIgnoreCase) ||
+				!ids.Add(id))
+				throw new InvalidDataException("Invalid or duplicate generated frame entry.");
+			string fullPath = Path.Combine(root, "frames", fileName);
+			byte[] rgb = File.ReadAllBytes(fullPath);
+			if (rgb.Length != OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3)
+				throw new InvalidDataException($"Unexpected RGB payload length for {id}.");
+			string actualHash = Convert.ToHexString(SHA256.HashData(rgb));
+			if (!actualHash.Equals(entry.GetProperty("sha256").GetString(),
+				StringComparison.OrdinalIgnoreCase))
+				throw new InvalidDataException($"RGB frame SHA-256 mismatch: {id}.");
+			samples.Add(new SampleFrame(id,
+				entry.GetProperty("source").GetString(),
+				entry.GetProperty("sampleSecond").GetInt32(), rgb));
+		}
+		return samples.ToArray();
 	}
 
 	private static async Task EnsureModelAsync(string modelPath, string modelUrl,
