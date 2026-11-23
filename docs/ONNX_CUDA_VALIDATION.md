@@ -181,3 +181,52 @@ matches or missed matches. A production migration must version both caches
 by model identity (ideally hash plus preprocessing revision), invalidate or
 separate old records, and verify representative real-media decisions first.
 Current PR intentionally leaves production model and caches unchanged.
+
+
+### FP16 model experiment and score-drift diagnostics
+
+FP16 is available as a separate model benchmark variant (it does not replace
+the production INT8 ONNX file). The 44.4 MB Xenova export at
+https://huggingface.co/Xenova/dinov2-small/blob/main/onnx/model_fp16.onnx
+is pinned to SHA-256
+`4e9ea6fe106e2225e28ee3c1c3d53b5b92aa4af62142f6ed6b66b6a92213cf04`.
+
+```powershell
+# PowerShell 7, .NET 11, and CUDA 13 / cuDNN 9 remain required.
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1 -Model fp16
+
+# Compare scores for the same synthetic image pairs.
+pwsh -NoProfile -File .\scripts\Compare-OnnxModelScores.ps1 -Provider cuda -CandidateModel fp16
+pwsh -NoProfile -File .\scripts\Compare-OnnxModelScores.ps1 -Provider cuda -CandidateModel fp32
+```
+
+FP16 defaults to DirectML and CUDA because CPU ONNX Runtime does not
+support many half-precision operators. You may explicitly request other
+providers with `-Providers`. The embedder recognizes FP16 tensor inputs
+and outputs by ONNX metadata, performing conversions only when required.
+
+The first model comparison found up to ~7 percentage points score movement
+between INT8 and FP32, but the largest shifts were among low-similarity
+synthetic pairs (~45–58%). Among CUDA pairs above 89% the largest observed
+shift was ~1.59 percentage points; there were no threshold flips at
+89% or 94% in this tiny synthetic dataset. These are descriptive values,
+**not bounds** on real-media drift. Do not globally retune thresholds or
+claim recall/precision parity without labeled real-video validation.
+
+### Safe persistent cache partitioning
+
+The production INT8 model hash and preprocessing revision 1 continue to
+use `UnionEmbeddings.db` and `DenseEmbeddings.db` unchanged. In contrast,
+when `AiComponents.ModelSha256` is changed to a different verified model
+or the preprocessing revision is incremented, VDF automatically uses
+`UnionEmbeddings.<sha256>.p<revision>.db` and
+`DenseEmbeddings.<sha256>.p<revision>.db` instead.
+
+This prevents the two model variants from sharing embedding records and
+preserves old caches for rollback. It is a filename partition rather than a
+binary-format migration; no old files need to be deleted. The new model
+download must also update the expected pinned SHA-256 and verify that file
+before production use. Merely replacing bytes on disk while leaving the
+configured SHA-256 unchanged is **not** a supported model switch. The FP16
+and FP32 benchmark paths remain entirely separate from these production
+sidecars.
