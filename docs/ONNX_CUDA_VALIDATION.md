@@ -230,3 +230,54 @@ before production use. Merely replacing bytes on disk while leaving the
 configured SHA-256 unchanged is **not** a supported model switch. The FP16
 and FP32 benchmark paths remain entirely separate from these production
 sidecars.
+
+
+### FP16 local benchmark results (2026-11-23) and CUDA graph-optimization follow-up
+
+Local Windows RTX 2070 Super / CUDA 13.5 / cuDNN 9.28 tests with the
+SHA-pinned FP16 export succeeded on CUDA and DirectML. Medians:
+
+| Model / provider | Single RGB frame | Eight RGB frames |
+|---|---:|---:|
+| FP32 / CUDA | 6.52 ms | 28.95 ms |
+| FP16 / CUDA | 7.81 ms | **17.81 ms** |
+| FP32 / DirectML | 13.39 ms | 86.12 ms |
+| FP16 / DirectML | 13.34 ms | 77.40 ms |
+
+FP16 CUDA has about 1.63x higher batch throughput than FP32 CUDA, but its
+single-frame latency is about 20% worse. FP16 CUDA profiling shows 634 GPU
+node events, 11 CPU events and no explicit inserted Memcpy node events.
+Both CUDA and DirectML FP16 sessions completed the real-model inference.
+
+On the six synthetic frames, CUDA FP16 vs FP32 maximum quantized pair-score
+drift was **0.211 percentage points**, and at high-similarity scores (>=89%)
+the maximum was 0.068 points. FP16 CUDA vs FP16 DirectML had up to 0.490
+points provider-dependent drift (unlike FP32 provider parity, which was
+quantized-score identical). None of the 15 synthetic pairs crossed 89% or
+94%; no samples were in the 89%-94% gap. This is not an accuracy validation
+on actual videos. Real-media thresholds must be calibrated before model
+migration. The INT8-vs-FP16 CUDA maximum difference was 5.369 points, mostly
+for low-similarity synthetic pairs.
+
+CUDA currently uses conservative ORT_ENABLE_BASIC graph optimization because
+the DirectML path previously required it for the quantized ONNX graph.
+Test alternate graph optimizations on FP16 without changing the default:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1 -Model fp16 -Providers cuda -Repeat 3
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1 -Model fp16 -Providers cuda -CudaOptimization extended -Repeat 3
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1 -Model fp16 -Providers cuda -CudaOptimization all -Repeat 3
+
+# Compare the first run's actual scores for changes at VDF thresholds:
+pwsh -NoProfile -File .\scripts\Compare-OnnxModelScores.ps1 -Provider cuda -BaselineModel fp16 -CandidateModel fp16 -CandidateOptimization extended
+pwsh -NoProfile -File .\scripts\Compare-OnnxModelScores.ps1 -Provider cuda -BaselineModel fp16 -CandidateModel fp16 -CandidateOptimization all
+```
+
+Every `dotnet test` invocation loads ONNX in a fresh process; the experimental
+graph-optimization level is passed through `VDF_AI_CUDA_GRAPH_OPT`, applied
+**only when CUDA is explicitly requested**. The default is BASIC. This does
+not enable CUDA Graph capture (a separate feature); it selects ONNX's graph
+rewrite/fusion optimization level. Reports/profiles are tagged with the
+nondefault optimization level so no baseline files are overwritten.
+Individual modes can fail or crash in the experimental runner; keep the
+normal DirectML/production INT8 configuration unchanged.
