@@ -139,3 +139,69 @@ You do **not** need to delete existing caches.
 When the application is launched normally, without `VDF_AI_MODEL`
 and the CUDA variables, it retains its existing INT8/DirectML default.
 The experimental build is for validation only.
+
+
+## Next experiment: isolated temporal AI partial-duplicate detection
+
+The original 21-video public corpus contains five-second excerpts, too short
+to satisfy the dense AI partial detector's requirement for at least four
+temporally consistent frame hits. The next experiment deliberately isolates
+the **AI partial pass**, instead of running union matching before it.
+
+The experimental test ZIP now includes two more scripts:
+`New-ShareableAiPartialCorpus.ps1` and
+`Compare-PublicAiPartialScans.ps1`. From PowerShell 7 in the **newly
+extracted** ZIP's root folder:
+
+```powershell
+# The existing 21-video baseline remains intact.
+$partialCorpus = Join-Path $env:TEMP 'VDF.PublicAiPartialCorpus'
+pwsh -NoProfile -File .\New-ShareableAiPartialCorpus.ps1 -OutputDirectory $partialCorpus
+
+# Uses the existing extracted cuDNN 9 directory; no permanent PATH changes.
+$env:VDF_CUDNN_BIN = 'C:\Users\marcm\Downloads\cudnn-windows-x86_64-9.28.1.4_cuda13-archive-extracted\cudnn-windows-x86_64-9.28.1.4_cuda13-archive\bin\x64'
+pwsh -NoProfile -File .\Compare-PublicAiPartialScans.ps1 -CorpusDirectory $partialCorpus
+```
+
+The generator creates three 90-second procedural originals and
+45-second excerpts starting at second 20, under separate test-case
+directories: **9 positive** pairs (same source, plain trim/compression/
+crop) and **3 negative** pairs (different sources). No user media is read,
+copied, or uploaded. The test runner verifies the file hashes from
+`manifest.json`, scans each two-video case separately, and enables
+only `--ai-partial --ai-partial-hit-percent 89` (not the AI union pass).
+This prevents already-grouped full-length videos from being skipped
+by the dense partial detector.
+
+INT8/DirectML and FP16/CUDA EXTENDED use separate private state
+directories, while each case has its own database and embedding caches.
+CUDA's real-inference preflight and strict error behavior remain enabled.
+
+The runner records whether each expected pair was grouped,
+**whether it was specifically marked as an AI partial match**, the
+matching flags, similarity, returned partial offset, and per-case
+elapsed time. The final comparison summarizes changed decisions.
+An unrelated pair forming a match is a potential false positive.
+
+To zip **only shareable JSON and the manifest**:
+
+```powershell
+$partialResults = Join-Path $env:TEMP 'VDF.PublicAiPartialResults'
+$files = @(Get-ChildItem -LiteralPath $partialResults -Filter 'shareable-partial-*.json' -File |
+    ForEach-Object FullName)
+$files += Join-Path $partialCorpus 'manifest.json'
+Compress-Archive -Path $files -DestinationPath "$HOME\Downloads\VDF-Public-AI-Partial-Results.zip" -Force
+```
+
+Do not include the generated videos unless you intentionally want to
+share them. Never include `private-*` scan databases or logs. The
+shareable report describes cases using stable generated IDs, not
+absolute paths. The scripts clear previous shareable outputs at the
+start and publish reports only after both inference modes succeed.
+
+**How to interpret:** A correct positive is a match with an
+`AiMatched` and `PartialClip` flag at the intended nonzero offset.
+An identical outcome count across backends is not enough if *which*
+cases matched differs. With procedural patterns, false offsets are
+possible; inspect the reported offsets. This still isn't a natural-video
+accuracy estimate or a production threshold-calibration study.
