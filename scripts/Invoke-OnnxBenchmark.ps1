@@ -6,6 +6,8 @@ param(
     [int]$Repeat = 1,
     [ValidateSet('int8','fp32','fp16')]
     [string]$Model = 'int8',
+    [ValidateSet('basic','extended','all','disabled')]
+    [string]$CudaOptimization = 'basic',
     [ValidateSet('directml','cuda','cpu')]
     [string[]]$Providers = @(),
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'VDF.OnnxBenchmark\reports')
@@ -23,7 +25,7 @@ if ($Providers.Count -eq 0) {
 
 $names = @('VDF_AI_PROVIDER','VDF_AI_CPU_RUNTIME','VDF_AI_DEVICE',
     'VDF_ONNX_BENCHMARK','VDF_ONNX_BENCH_OUTPUT','VDF_AI_PROFILE_PREFIX',
-    'VDF_ONNX_BENCH_MODEL')
+    'VDF_ONNX_BENCH_MODEL','VDF_AI_CUDA_GRAPH_OPT')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 
@@ -37,12 +39,15 @@ try {
             $env:VDF_AI_PROVIDER = if ($provider -eq 'cpu') { 'auto' } else { $provider }
             $env:VDF_AI_CPU_RUNTIME = if ($provider -eq 'cpu') { '1' } else { '0' }
             $env:VDF_AI_DEVICE = if ($provider -eq 'cpu') { 'cpu' } else { 'gpu' }
+            $env:VDF_AI_CUDA_GRAPH_OPT = if ($provider -eq 'cuda') { $CudaOptimization } else { 'basic' }
             $env:VDF_ONNX_BENCHMARK = '1'
             $env:VDF_ONNX_BENCH_MODEL = $Model
-            $env:VDF_ONNX_BENCH_OUTPUT = Join-Path $OutputDirectory ("{0}-{1}-run{2}.json" -f $Model,$provider,$run)
+            $tag = if ($provider -eq 'cuda' -and $CudaOptimization -ne 'basic') { "-$CudaOptimization" } else { '' }
+            $env:VDF_ONNX_BENCH_OUTPUT = Join-Path $OutputDirectory ("{0}-{1}{2}-run{3}.json" -f $Model,$provider,$tag,$run)
             Remove-Item Env:VDF_AI_PROFILE_PREFIX -ErrorAction SilentlyContinue
 
-            Write-Host "Benchmarking $Model $provider run $run/$Repeat..." -ForegroundColor Cyan
+            $tuning = if ($provider -eq 'cuda') { " (graph optimization: $CudaOptimization)" } else { '' }
+            Write-Host "Benchmarking $Model $provider$tuning run $run/$Repeat..." -ForegroundColor Cyan
             & dotnet test $project -c Release --filter 'FullyQualifiedName~DINOv2_RealModel_Benchmark_OptIn' --logger 'console;verbosity=normal'
             if ($LASTEXITCODE -ne 0) { throw "Benchmark failed for $provider ($LASTEXITCODE). No fallback accepted." }
             if (-not (Test-Path $env:VDF_ONNX_BENCH_OUTPUT)) { throw "Missing report: $env:VDF_ONNX_BENCH_OUTPUT" }
@@ -51,7 +56,7 @@ try {
     }
 
     Write-Host "`nMedian $Model inference timings (wall time includes VDF preprocessing)" -ForegroundColor Green
-    $results | Select-Object provider, singleMedianMs, batch8MedianMs,
+    $results | Select-Object provider, cudaGraphOptimization, singleMedianMs, batch8MedianMs,
         @{Name='Batch8PerFrameMs';Expression={[math]::Round($_.batch8MedianMs / 8, 3)}},
         @{Name='CUDA_nodes';Expression={$_.profile.gpuNodes}},
         @{Name='CPU_nodes';Expression={$_.profile.cpuNodes}} |
