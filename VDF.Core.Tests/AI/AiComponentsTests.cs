@@ -108,6 +108,47 @@ public class AiComponentsTests {
 			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 0));
 	}
 
+	[Theory]
+	[InlineData(null, "int8")]
+	[InlineData("", "int8")]
+	[InlineData(" INT8 ", "int8")]
+	[InlineData("Fp16", "fp16")]
+	public void ExperimentalModelSelection_OptInOnly(string? setting, string expected) =>
+		Assert.Equal(expected, AiComponents.ParseModelVariant(setting));
+
+	[Fact]
+	public void ExperimentalModelSelection_RejectsUnknownModel() =>
+		Assert.Throws<ArgumentException>(() => AiComponents.ParseModelVariant("fp32"));
+
+	[Fact]
+	public void ExperimentalFp16Model_UsesKnownPinnedHash() {
+		Assert.Equal(64, AiComponents.Fp16ModelSha256.Length);
+		Assert.All(AiComponents.Fp16ModelSha256, c => Assert.True(Uri.IsHexDigit(c)));
+		Assert.Equal("dinov2-small-fp16.onnx", AiComponents.Fp16ModelFileName);
+		Assert.Contains("model_fp16.onnx", AiComponents.Fp16ModelUrl);
+	}
+
+	[Fact]
+	public void EmbeddingCaches_SeparateExecutionProviderAndOptimizationMode() {
+		const string name = "UnionEmbeddings.db";
+		string fp16CudaBasic = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "cuda-1.32.0-basic");
+		string fp16CudaExtended = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "cuda-1.32.0-extended");
+		string fp16DirectMl = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "directml-1.24.4");
+		Assert.NotEqual(fp16CudaBasic, fp16CudaExtended);
+		Assert.NotEqual(fp16CudaExtended, fp16DirectMl);
+		Assert.NotEqual(fp16CudaExtended, "UnionEmbeddings.db");
+		Assert.EndsWith(".cuda-1.32.0-extended.db", fp16CudaExtended);
+		Assert.NotEqual("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileNameForModel(
+				name, AiComponents.LegacyInt8ModelSha256, 1, "cuda-1.32.0-basic"));
+		Assert.Throws<ArgumentException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel(
+				name, AiComponents.Fp16ModelSha256, 1, "../escape"));
+	}
+
 	[Fact]
 	public void ModelSha256_IsPinned() {
 		// The download verifies against this constant — a typo would brick the feature.
