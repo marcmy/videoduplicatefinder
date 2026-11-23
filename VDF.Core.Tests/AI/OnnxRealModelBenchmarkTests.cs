@@ -134,6 +134,8 @@ public sealed class OnnxRealModelBenchmarkTests {
 				formatVersion = 3,
 				corpusType = corpusFrames[0].Source == null ? "deterministic-synthetic-frames" : "generated-ffmpeg-video",
 				frameIds = corpusFrames.Select(f => f.Id).ToArray(),
+				frameSha256 = corpusFrames.Select(f =>
+					Convert.ToHexString(SHA256.HashData(f.Rgb)).ToLowerInvariant()).ToArray(),
 				modelVariant,
 				provider,
 				cudaGraphOptimization,
