@@ -30,6 +30,8 @@ jobs:
           11.0.x
     - name: Build GUI
       run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r win-x64
+    - name: Validate GUI win-x64 Native AOT publish
+      run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r win-x64 -o onnx-aot-smoke
     - name: Build CLI
       run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64
     - name: Build Web
