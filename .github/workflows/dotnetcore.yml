@@ -136,6 +136,7 @@ jobs:
             'scripts/ai-test-build/Launch-FP16-CUDA.cmd',
             'scripts/ai-test-build/Launch-INT8-DirectML.cmd',
             'scripts/ai-test-build/Compare-PublicAiFullScans.ps1',
+            'scripts/ai-test-build/Initialize-VdfCudaDependencies.ps1',
             'scripts/New-ShareableAiCorpus.ps1',
             'docs/ONNX_TEST_BUILD.md')) {
           Copy-Item $path $root -Force
@@ -143,6 +144,16 @@ jobs:
         Get-ChildItem $root -Recurse -File |
           Where-Object { $_.Extension -in '.pdb', '.dbg' } |
           Remove-Item -Force
+        # Parse every shipped PowerShell script before publishing a test build.
+        foreach ($script in (Get-ChildItem $root -Filter '*.ps1' -File)) {
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $script.FullName, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -gt 0) {
+            throw "PowerShell syntax errors in $($script.Name): $($parseErrors -join '; ')"
+          }
+        }
         Compress-Archive -Path "$root/*" -DestinationPath VDF-ONNX-FP16-Test-win-x64.zip -Force
         if ((Get-Item VDF-ONNX-FP16-Test-win-x64.zip).Length -le 0) {
           throw 'Experimental test build ZIP is empty.'
