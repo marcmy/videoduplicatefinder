@@ -150,3 +150,60 @@ add more parameterized crop/brightness/compression levels and diverse
 publicly licensed natural scenes, then compare per-pair errors and the
 full VDF matching pipeline. Keep legacy INT8 caches isolated by model
 identity and leave production INT8/DirectML as default until validation.
+
+
+## Four-way public-corpus comparison (2026-11-23)
+
+Follow-up run compares all configurations with **identical 36 frame IDs and
+SHA256 hashes** from the same generated videos. Each configuration scored
+the same 630 frame pairs. These are single-process medians, not full-scan
+benchmarks.
+
+| Configuration | Single-frame median | Eight-frame median | GPU / CPU node events |
+|---|---:|---:|---:|
+| INT8 DirectML / ORT 1.24.4 | 23.448 ms | 133.225 ms | 901 / 11 |
+| FP16 DirectML / ORT 1.24.4 | 11.217 ms | 74.837 ms | 634 / 11 |
+| FP16 CUDA BASIC / ORT 1.32.0 | 6.270 ms | 14.363 ms | 634 / 11 |
+| FP16 CUDA EXTENDED / ORT 1.32.0 | **4.168 ms** | **11.974 ms** | 374 / 11 |
+
+FP16 CUDA EXTENDED was **11.13× faster** than the INT8 DirectML baseline
+in batch-of-8 latency, and **1.20× faster** than FP16 CUDA BASIC.
+
+### Separating the score changes
+
+| Comparison | Mean abs. score drift | Max. score drift | 89% flips | 94% flips |
+|---|---:|---:|---:|---:|
+| INT8 DirectML → FP16 DirectML | 2.922 points | 11.799 points | 12 | 12 |
+| FP16 DirectML → FP16 CUDA BASIC | 0.191 points | 0.738 points | 3 | 0 |
+| FP16 CUDA BASIC → FP16 CUDA EXTENDED | 0.117 points | 0.552 points | 1 | 0 |
+| INT8 DirectML → FP16 CUDA EXTENDED | 2.934 points | 11.606 points | 10 | 12 |
+
+INT8→FP16 on the **same DirectML runtime** causes virtually all the
+meaningful matching drift. The second comparison combines *provider
+and native runtime version* (DirectML 1.24.4 vs CUDA 1.32.0), so do not
+attribute every difference to the provider alone. The third comparison
+isolates the CUDA optimization level on the same 1.32.0 runtime.
+
+Among 90 aligned frame pairs (same procedural source and timestamp), **all
+four configurations pass 79/90 at 89% and 51/90 at 94%**, but the
+individual pairs differ: compared with INT8 DirectML, FP16 CUDA EXTENDED
+changes **4 of 90 aligned decisions at each threshold**, with two new
+passes and two new failures. Switching FP16 provider/runtime and enabling
+EXTENDED produce **zero aligned-pair flips** in these samples. Among
+432 cross-source pairs, none passed either threshold on any backend.
+The remaining 108 same-source/different-time pairs cannot be treated as
+true negatives without checking their content.
+
+Therefore the precision-format change (rather than CUDA optimization)
+is the principal calibration risk. **Do not change the fixed 89% or 94%
+threshold globally based on this sample.** The pairs are correlated,
+synthetic, and scores are not full-video matching outcomes. Keep the
+model-aware cache namespace protection, and validate the eventual
+production candidate through VDF's actual union and temporal-partial
+matching pipeline on a separate reproducible public corpus.
+
+Source artifacts for this evaluation:
+`VDF-Shareable-AI-Results-v2.zip` containing
+`int8-directml-public-run1.json`, `fp16-directml-public-run1.json`,
+`fp16-cuda-public-run1.json`,
+`fp16-cuda-extended-public-run1.json`, and `manifest.json`.
