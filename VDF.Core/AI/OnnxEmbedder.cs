@@ -27,7 +27,7 @@ namespace VDF.Core.AI {
 	/// </summary>
 	/// <summary>Where AI inference should run.</summary>
 	public enum AiInferenceDevice {
-		/// <summary>GPU (DirectML) when the runtime and hardware support it, otherwise CPU.</summary>
+		/// <summary>GPU (DirectML or experimental CUDA) when available, otherwise CPU.</summary>
 		Auto,
 		/// <summary>Always CPU.</summary>
 		Cpu,
@@ -48,6 +48,7 @@ namespace VDF.Core.AI {
 		readonly string inputName;
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
+		readonly bool profilingEnabled;
 
 		internal const string DeviceEnvVar = "VDF_AI_DEVICE";
 
@@ -63,7 +64,9 @@ namespace VDF.Core.AI {
 
 		public OnnxEmbedder(string modelPath, AiInferenceDevice device) {
 			AiComponents.LoadRuntime();
-			session = CreateSession(modelPath, device, out bool usesGpu, out string description);
+			string? profilePrefix = Environment.GetEnvironmentVariable("VDF_AI_PROFILE_PREFIX");
+			profilingEnabled = !string.IsNullOrWhiteSpace(profilePrefix);
+			session = CreateSession(modelPath, device, profilePrefix, out bool usesGpu, out string description);
 			UsesGpu = usesGpu;
 			Description = description;
 			inputName = session.InputMetadata.Keys.First();
@@ -74,28 +77,32 @@ namespace VDF.Core.AI {
 			else { outputName = session.OutputMetadata.Keys.First(); clsFromHiddenState = true; }
 		}
 
-		/// <summary>True when inference runs on the GPU (DirectML execution provider).</summary>
+		/// <summary>True when the requested GPU execution provider initialized.</summary>
 		public bool UsesGpu { get; }
 		/// <summary>Human-readable execution provider description for logs.</summary>
 		public string Description { get; }
 
-		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, out bool usesGpu, out string description) {
+		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, string? profilePrefix, out bool usesGpu, out string description) {
 			usesGpu = false;
 			string? gpuFailure = null;
 			if (device != AiInferenceDevice.Cpu && (OperatingSystem.IsWindows() || AiComponents.UsesCudaRuntime)) {
 				// InferenceSession does NOT take ownership of caller-supplied options.
 				using var gpuOptions = new SessionOptions();
+				ConfigureProfiling(gpuOptions, profilePrefix);
 				try {
 					// DirectML requires sequential execution and no memory-pattern planning.
-					gpuOptions.EnableMemoryPattern = false;
-					gpuOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					if (!AiComponents.UsesCudaRuntime) {
+						gpuOptions.EnableMemoryPattern = false;
+						gpuOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					}
 					// Extended (fusion/layout) optimizations crash DirectML on the dynamically
 					// quantized DINOv2 graph (access violation in session init, ORT 1.23). Basic
 					// constant folding / redundancy elimination is safe and keeps embeddings
 					// within ~0.3% of the CPU provider, so existing caches stay comparable.
 					gpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
 					// Only the few ops DirectML cannot run stay on the CPU; keep them small.
-					gpuOptions.IntraOpNumThreads = 1;
+					if (!AiComponents.UsesCudaRuntime)
+						gpuOptions.IntraOpNumThreads = 1;
 					if (AiComponents.UsesCudaRuntime)
 						gpuOptions.AppendExecutionProvider_CUDA(0);
 					else
@@ -114,6 +121,7 @@ namespace VDF.Core.AI {
 			if (device == AiInferenceDevice.Gpu)
 				throw new PlatformNotSupportedException("GPU backend unavailable. Select VDF_AI_PROVIDER=cuda on NVIDIA Linux x64.");
 			using var options = new SessionOptions();
+			ConfigureProfiling(options, profilePrefix);
 			// The embedder shares the machine with the decode workers during hashing;
 			// give inference a portion of the cores, not all of them.
 			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
@@ -179,6 +187,16 @@ namespace VDF.Core.AI {
 			float inv = (float)(1.0 / Math.Sqrt(Math.Max(sum, 1e-12)));
 			for (int i = 0; i < v.Length; i++)
 				v[i] *= inv;
+		}
+
+		// Profiling is opt-in and stops before the benchmark writes its JSON report.
+		// Call once, after the final inference and before disposing the session.
+		internal string? EndProfiling() => profilingEnabled ? session.EndProfiling() : null;
+
+		static void ConfigureProfiling(SessionOptions options, string? prefix) {
+			if (string.IsNullOrWhiteSpace(prefix)) return;
+			options.ProfileOutputPathPrefix = prefix;
+			options.EnableProfiling = true;
 		}
 
 		public void Dispose() => session.Dispose();
