@@ -142,12 +142,21 @@ foreach ($mode in $Modes) {
         })
         $detected = $pairGroups.Count -gt 0
         $partial = $false
+        $reportedOffsetSeconds = $null
         if ($detected) {
             foreach ($group in $pairGroups) {
-                if (@($group.members | Where-Object {
+                $partialEntries = @($group.members | Where-Object {
+                    $_.clipId -eq 'excerpt' -and
                     $_.flags -match 'PartialClip' -and $_.flags -match 'AiMatched'
-                }).Count -gt 0) {
+                })
+                if ($partialEntries.Count -gt 0) {
                     $partial = $true
+                    try {
+                        $reportedOffsetSeconds = [TimeSpan]::Parse(
+                            [string]$partialEntries[0].partialOffset,
+                            [Globalization.CultureInfo]::InvariantCulture).TotalSeconds
+                    }
+                    catch { $reportedOffsetSeconds = $null }
                 }
             }
         }
@@ -157,6 +166,16 @@ foreach ($mode in $Modes) {
             expectedOffsetSeconds = $case.expectedOffsetSeconds
             detectedAnyGroup = $detected
             detectedAiPartial = $partial
+            reportedOffsetSeconds = $reportedOffsetSeconds
+            offsetErrorSeconds = if ($partial -and [bool]$case.expectedMatch -and
+                $null -ne $reportedOffsetSeconds) {
+                [math]::Round($reportedOffsetSeconds - [double]$case.expectedOffsetSeconds, 3)
+            } else { $null }
+            detectedAiPartialAtExpectedOffset = [bool](
+                $partial -and [bool]$case.expectedMatch -and
+                $null -ne $reportedOffsetSeconds -and
+                [math]::Abs($reportedOffsetSeconds - [double]$case.expectedOffsetSeconds) -le 5
+            )
             groupCount = $groups.Count
             groups = $groups
             elapsedSeconds = [math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds,3)
@@ -174,6 +193,9 @@ foreach ($mode in $Modes) {
         caseCount = $allOutcomes.Count
         positiveAiPartialDetected = @($allOutcomes | Where-Object { $_.expectedMatch -and $_.detectedAiPartial }).Count
         positiveCount = 9
+        positiveCorrectOffset = @($allOutcomes | Where-Object {
+            $_.expectedMatch -and $_.detectedAiPartialAtExpectedOffset
+        }).Count
         negativeFalseAiPartial = @($allOutcomes | Where-Object { -not $_.expectedMatch -and $_.detectedAiPartial }).Count
         negativeCount = 3
         cases = $allOutcomes
@@ -199,6 +221,10 @@ if ($modeReports.ContainsKey('int8-directml') -and $modeReports.ContainsKey('fp1
                 expectedMatch = $b.expectedMatch
                 baselineDetected = $b.detectedAiPartial
                 candidateDetected = $c.detectedAiPartial
+                baselineReportedOffsetSeconds = $b.reportedOffsetSeconds
+                candidateReportedOffsetSeconds = $c.reportedOffsetSeconds
+                baselineCorrectOffset = $b.detectedAiPartialAtExpectedOffset
+                candidateCorrectOffset = $c.detectedAiPartialAtExpectedOffset
                 changed = [bool]($b.detectedAiPartial -ne $c.detectedAiPartial)
                 baselineGroups = $b.groupCount
                 candidateGroups = $c.groupCount
