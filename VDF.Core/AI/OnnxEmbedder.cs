@@ -53,6 +53,20 @@ namespace VDF.Core.AI {
 		readonly TensorElementType outputDataType;
 
 		internal const string DeviceEnvVar = "VDF_AI_DEVICE";
+		internal const string CudaGraphOptimizationEnvVar = "VDF_AI_CUDA_GRAPH_OPT";
+
+		// CUDA-only experimental override. Production default stays BASIC until
+		// real-model correctness and performance are validated per model and GPU.
+		internal static GraphOptimizationLevel ParseCudaGraphOptimization(string? value) =>
+			value?.Trim().ToLowerInvariant() switch {
+				null or "" or "basic" => GraphOptimizationLevel.ORT_ENABLE_BASIC,
+				"extended" => GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+				"all" => GraphOptimizationLevel.ORT_ENABLE_ALL,
+				"disabled" => GraphOptimizationLevel.ORT_DISABLE_ALL,
+				_ => throw new ArgumentException(
+					"VDF_AI_CUDA_GRAPH_OPT must be basic, extended, all or disabled.",
+					CudaGraphOptimizationEnvVar)
+			};
 
 		public OnnxEmbedder(string modelPath) : this(modelPath, GetConfiguredDevice()) { }
 
@@ -107,7 +121,9 @@ namespace VDF.Core.AI {
 					// quantized DINOv2 graph (access violation in session init, ORT 1.23). Basic
 					// constant folding / redundancy elimination is safe and keeps embeddings
 					// within ~0.3% of the CPU provider, so existing caches stay comparable.
-					gpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
+					gpuOptions.GraphOptimizationLevel = AiComponents.UsesCudaRuntime
+						? ParseCudaGraphOptimization(Environment.GetEnvironmentVariable(CudaGraphOptimizationEnvVar))
+						: GraphOptimizationLevel.ORT_ENABLE_BASIC;
 					// Only the few ops DirectML cannot run stay on the CPU; keep them small.
 					if (!AiComponents.UsesCudaRuntime)
 						gpuOptions.IntraOpNumThreads = 1;
