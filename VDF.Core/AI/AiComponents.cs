@@ -62,7 +62,8 @@ namespace VDF.Core.AI {
 		public static string RuntimeVersion => UsesDirectMLRuntime ? DirectMLRuntimeVersion : CpuRuntimeVersion;
 
 		/// <summary>Runtime version plus its accelerator, for status text and diagnostics.</summary>
-		public static string RuntimeDescription => UsesCudaRuntime ? $"{CpuRuntimeVersion}, CUDA GPU" : UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}, DirectML GPU" : $"{CpuRuntimeVersion}, CPU";
+		public static string RuntimeDescription => (UsesCudaRuntime ? $"{CpuRuntimeVersion}, CUDA GPU" : UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}, DirectML GPU" : $"{CpuRuntimeVersion}, CPU")
+			+ (IsFp16Selected ? ", experimental FP16 model" : "");
 
 		/// <summary>Content of the runtime.version marker for the runtime this platform installs.</summary>
 		internal static string RuntimeVersionMarker => UsesCudaRuntime ? $"{CpuRuntimeVersion}-cuda"
@@ -81,6 +82,43 @@ namespace VDF.Core.AI {
 		public const string ModelFileName = "dinov2-small-int8.onnx";
 		/// <summary>SHA256 of the model file (Xenova/dinov2-small ONNX export, quantized, Apache-2.0).</summary>
 		public const string ModelSha256 = "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917";
+		// Test-only opt-in via the launcher. The default shipped model remains INT8.
+		internal const string ModelVariantEnvVar = "VDF_AI_MODEL";
+		internal const string Fp16ModelFileName = "dinov2-small-fp16.onnx";
+		internal const string Fp16ModelSha256 = "4e9ea6fe106e2225e28ee3c1c3d53b5b92aa4af62142f6ed6b66b6a92213cf04";
+		internal const string Fp16ModelUrl = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model_fp16.onnx";
+
+		internal static string ParseModelVariant(string? value) =>
+			value?.Trim().ToLowerInvariant() switch {
+				null or "" or "int8" => "int8",
+				"fp16" => "fp16",
+				_ => throw new ArgumentException("VDF_AI_MODEL must be int8 or fp16.", ModelVariantEnvVar)
+			};
+		internal static string SelectedModelVariant => ParseModelVariant(Environment.GetEnvironmentVariable(ModelVariantEnvVar));
+		internal static bool IsFp16Selected => SelectedModelVariant == "fp16";
+		internal static string SelectedModelFileName => IsFp16Selected ? Fp16ModelFileName : ModelFileName;
+		internal static string SelectedModelSha256 => IsFp16Selected ? Fp16ModelSha256 : ModelSha256;
+
+		// The original INT8 DirectML/CPU caches predate model identification.
+		// New model/provider/optimization combinations MUST NOT reuse them.
+		internal static string? SelectedCacheExecutionProfile {
+			get {
+				if (!IsFp16Selected && !UsesCudaRuntime)
+					return null; // preserve original INT8 cache filenames
+				if (UsesCudaRuntime) {
+					var optimization = OnnxEmbedder.ParseCudaGraphOptimization(
+						Environment.GetEnvironmentVariable(OnnxEmbedder.CudaGraphOptimizationEnvVar));
+					string mode = optimization switch {
+						GraphOptimizationLevel.ORT_ENABLE_EXTENDED => "extended",
+						GraphOptimizationLevel.ORT_ENABLE_ALL => "all",
+						GraphOptimizationLevel.ORT_DISABLE_ALL => "disabled",
+						_ => "basic"
+					};
+					return $"cuda-{CpuRuntimeVersion}-{mode}";
+				}
+				return UsesDirectMLRuntime ? $"directml-{DirectMLRuntimeVersion}" : $"cpu-{CpuRuntimeVersion}";
+			}
+		}
 		// The legacy VDF sidecar files have no model fingerprint in their header.
 		// These exact bytes are known to have generated their contents. Keep this
 		// constant independent of ModelSha256 if the production model changes.
@@ -96,21 +134,28 @@ namespace VDF.Core.AI {
 		/// This is a filename partition, not a migration or destructive cleanup.
 		/// </summary>
 		internal static string EmbeddingSidecarFileName(string legacyName) =>
-			EmbeddingSidecarFileNameForModel(legacyName, ModelSha256, EmbeddingPreprocessingRevision);
+			EmbeddingSidecarFileNameForModel(legacyName, SelectedModelSha256,
+				EmbeddingPreprocessingRevision, SelectedCacheExecutionProfile);
 
 		internal static string EmbeddingSidecarFileNameForModel(string legacyName,
-			string modelSha256, int preprocessingRevision) {
+			string modelSha256, int preprocessingRevision, string? executionProfile = null) {
 			if (modelSha256.Length != 64 || !modelSha256.All(Uri.IsHexDigit))
 				throw new ArgumentException("Expected the model's 64-character SHA256.", nameof(modelSha256));
 			if (preprocessingRevision <= 0)
 				throw new ArgumentOutOfRangeException(nameof(preprocessingRevision));
 			if (string.Equals(modelSha256, LegacyInt8ModelSha256, StringComparison.OrdinalIgnoreCase)
-				&& preprocessingRevision == 1)
+				&& preprocessingRevision == 1 && string.IsNullOrEmpty(executionProfile))
 				return legacyName;
 
+			string suffix = "";
+			if (!string.IsNullOrEmpty(executionProfile)) {
+				if (!executionProfile.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '.'))
+					throw new ArgumentException("Invalid execution profile cache tag.", nameof(executionProfile));
+				suffix = $".{executionProfile.ToLowerInvariant()}";
+			}
 			string filename = Path.GetFileNameWithoutExtension(legacyName);
 			string extension = Path.GetExtension(legacyName);
-			return $"{filename}.{modelSha256.ToLowerInvariant()}.p{preprocessingRevision}{extension}";
+			return $"{filename}.{modelSha256.ToLowerInvariant()}.p{preprocessingRevision}{suffix}{extension}";
 		}
 		// Primary: mirrored release asset on the VDF repo (stable bytes, hash-pinned).
 		// Fallback: the upstream HuggingFace export the mirror was taken from.
@@ -119,7 +164,7 @@ namespace VDF.Core.AI {
 		const string VersionMarkerFileName = "runtime.version";
 
 		public static string AiFolder => TestAiFolder.Value ?? Path.Combine(CoreUtils.StateFolder, "ai");
-		public static string ModelPath => TestOverrideModelPath ?? Path.Combine(AiFolder, ModelFileName);
+		public static string ModelPath => TestOverrideModelPath ?? Path.Combine(AiFolder, SelectedModelFileName);
 
 		/// <summary>
 		/// Test hook: points ModelPath at the checked-in tiny embedder and makes
@@ -148,7 +193,7 @@ namespace VDF.Core.AI {
 
 		public static AiComponentsState GetState() {
 			bool runtime = FindRuntimeLibrary() != null && HasCurrentRuntimeVersion();
-			bool model = File.Exists(ModelPath);
+			bool model = IsSelectedModelValid();
 			if (runtime && model) return AiComponentsState.Ready;
 			if (runtime) return AiComponentsState.ModelMissing;
 			if (model) return AiComponentsState.RuntimeMissing;
@@ -169,8 +214,23 @@ namespace VDF.Core.AI {
 			if (state != AiComponentsState.Ready)
 				throw new InvalidOperationException(
 					$"AI matching components are not available ({state}). " +
-					$"Download them in Settings → Matching, or place onnxruntime {RuntimeVersion} and {ModelFileName} into '{AiFolder}'.");
+					$"Download them in Settings → Matching, or place onnxruntime {RuntimeVersion} and {SelectedModelFileName} into '{AiFolder}'.");
 			LoadRuntime();
+		}
+
+		// For experimental FP16, validate even a pre-existing file: a mismatched
+		// model must never silently be used merely because the filename exists.
+		// Preserve legacy INT8's existing cheap readiness checks.
+		internal static bool IsSelectedModelValid() {
+			if (!File.Exists(ModelPath)) return false;
+			if (!IsFp16Selected || TestOverrideModelPath != null) return true;
+			try {
+				using var stream = File.OpenRead(ModelPath);
+				return Convert.ToHexString(SHA256.HashData(stream))
+					.Equals(SelectedModelSha256, StringComparison.OrdinalIgnoreCase);
+			}
+			catch (IOException) { return false; }
+			catch (UnauthorizedAccessException) { return false; }
 		}
 
 		static bool HasCurrentRuntimeVersion() {
@@ -315,7 +375,7 @@ namespace VDF.Core.AI {
 			var downloads = new List<Func<CancellationToken, Task>>(2);
 			if (FindRuntimeLibrary() == null || !HasCurrentRuntimeVersion())
 				downloads.Add(ct => DownloadRuntimeAsync(http, progress, ct));
-			if (!File.Exists(ModelPath))
+			if (!IsSelectedModelValid())
 				downloads.Add(ct => DownloadModelAsync(http, progress, ct));
 			// The two archives come from different hosts (onnxruntime GitHub release vs
 			// the model mirror), so fetching them concurrently roughly halves the
@@ -418,17 +478,24 @@ namespace VDF.Core.AI {
 			string tempPath = ModelPath + $".{Guid.NewGuid():N}.download";
 			Action<long, long?> onProgress = (done, total) => progress?.Report(new AiDownloadProgress("AI model", done, total));
 			try {
-				try {
-					await DownloadUtils.DownloadFileAsync(http, new Uri(ModelPrimaryUrl), tempPath, "AI model", onProgress, token);
+				if (IsFp16Selected) {
+					await DownloadUtils.DownloadFileAsync(http, new Uri(Fp16ModelUrl),
+						tempPath, "AI FP16 model (experimental)", onProgress, token);
 				}
-				catch (Exception e) when (e is not OperationCanceledException) {
-					Logger.Instance.Info($"AI model mirror unavailable ({e.Message}), falling back to upstream source.");
-					await DownloadUtils.DownloadFileAsync(http, new Uri(ModelFallbackUrl), tempPath, "AI model", onProgress, token);
+				else {
+					try {
+						await DownloadUtils.DownloadFileAsync(http, new Uri(ModelPrimaryUrl), tempPath, "AI model", onProgress, token);
+					}
+					catch (Exception e) when (e is not OperationCanceledException) {
+						Logger.Instance.Info($"AI model mirror unavailable ({e.Message}), falling back to upstream source.");
+						await DownloadUtils.DownloadFileAsync(http, new Uri(ModelFallbackUrl), tempPath, "AI model", onProgress, token);
+					}
 				}
 
-				string hash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(tempPath, token)));
-				if (!hash.Equals(ModelSha256, StringComparison.OrdinalIgnoreCase))
-					throw new IOException($"AI model download failed the integrity check (SHA256 {hash}, expected {ModelSha256}).");
+				using var stream = File.OpenRead(tempPath);
+				string hash = Convert.ToHexString(SHA256.HashData(stream));
+				if (!hash.Equals(SelectedModelSha256, StringComparison.OrdinalIgnoreCase))
+					throw new IOException($"AI model download failed the integrity check (SHA256 {hash}, expected {SelectedModelSha256}).");
 				File.Move(tempPath, ModelPath, overwrite: true);
 			}
 			finally {
