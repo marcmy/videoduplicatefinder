@@ -96,8 +96,13 @@ foreach ($name in $graphs.Keys) {
         Add-Case -Id "p-$name-$($variant.name)" -SourceName $name -ExcerptName $name -Variant $variant.name -ExpectedMatch $true
     }
 }
-foreach ($pair in @(@('a','b'),@('b','c'),@('c','a'))) {
-    Add-Case -Id "n-$($pair[0])-$($pair[1])" -SourceName $pair[0] -ExcerptName $pair[1] -Variant 'trim' -ExpectedMatch $false
+$negativePairs = @(
+    @{ source='a'; excerpt='b' },
+    @{ source='b'; excerpt='c' },
+    @{ source='c'; excerpt='a' }
+)
+foreach ($pair in $negativePairs) {
+    Add-Case -Id "n-$($pair.source)-$($pair.excerpt)" -SourceName $pair.source -ExcerptName $pair.excerpt -Variant 'trim' -ExpectedMatch $false
 }
 
 $manifest = [ordered]@{
