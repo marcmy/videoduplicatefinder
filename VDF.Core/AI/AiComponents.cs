@@ -37,11 +37,10 @@ namespace VDF.Core.AI {
 	/// </summary>
 	public static class AiComponents {
 		/// <summary>
-		/// Pinned ONNX Runtime version. Must match the Microsoft.ML.OnnxRuntime.Managed
-		/// PackageReference. 1.23.2 is the newest release that still ships osx-x86_64
-		/// binaries (1.24+ dropped Intel macs, which VDF releases still target).
+		/// CPU ONNX Runtime version. Keep in sync with the managed package until
+		/// the native runtime and wrapper are upgraded together.
 		/// </summary>
-		/// <summary>CPU-only ONNX Runtime (GitHub release archives) used on Linux/macOS.</summary>
+		/// <summary>CPU-only ONNX Runtime (GitHub release archives) used on Linux and forced-CPU Windows.</summary>
 		public const string CpuRuntimeVersion = "1.23.2";
 		/// <summary>
 		/// ONNX Runtime with the DirectML execution provider, used on Windows so AI
@@ -147,7 +146,7 @@ namespace VDF.Core.AI {
 		internal static string? FindRuntimeLibrary() {
 			try {
 				if (!Directory.Exists(AiFolder)) return null;
-				// Windows: onnxruntime.dll — Linux: libonnxruntime.so.<ver> — macOS: libonnxruntime.<ver>.dylib
+				// Windows: onnxruntime.dll — Linux: libonnxruntime.so.<ver>
 				return Directory.EnumerateFiles(AiFolder)
 					.Where(f => {
 						string name = Path.GetFileName(f);
@@ -247,9 +246,8 @@ namespace VDF.Core.AI {
 		internal static (Uri Url, string ArchiveFileName, string? NativeDirectory) GetRuntimeDownloadPlan() {
 			string os =
 				RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win" :
-				RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx" :
 				RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "linux" :
-				throw new PlatformNotSupportedException("AI matching is not supported on this operating system.");
+				throw new PlatformNotSupportedException("This VDF fork supports only Windows and Linux.");
 			if (UsesDirectMLRuntime) {
 				string rid = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
 				const string package = "microsoft.ml.onnxruntime.directml";
@@ -258,7 +256,7 @@ namespace VDF.Core.AI {
 					nupkg, $"runtimes/{rid}/native");
 			}
 			string arch = RuntimeInformation.ProcessArchitecture switch {
-				Architecture.X64 => os == "osx" ? "x86_64" : "x64",
+				Architecture.X64 => "x64",
 				Architecture.Arm64 => os == "linux" ? "aarch64" : "arm64",
 				_ => throw new PlatformNotSupportedException($"AI matching is not supported on {RuntimeInformation.ProcessArchitecture}.")
 			};
@@ -339,7 +337,7 @@ namespace VDF.Core.AI {
 				ArchiveUtils.Extract(archivePath, extractDir,
 					archiveName.EndsWith(".tgz", StringComparison.OrdinalIgnoreCase) ? ArchiveKind.TarGz : ArchiveKind.Zip);
 
-				// Purge any previously installed runtime BEFORE copying: the Linux/macOS
+				// Purge any previously installed runtime BEFORE copying: the Linux
 				// library names carry the version (libonnxruntime.so.1.23.2), so upgraded
 				// installs would otherwise accumulate versions and FindRuntimeLibrary's
 				// tie-break could keep loading the stale one while the marker claims the
