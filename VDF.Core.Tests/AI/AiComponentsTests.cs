@@ -86,6 +86,29 @@ public class AiComponentsTests {
 	}
 
 	[Fact]
+	public void EmbeddingSidecars_KeepLegacyInt8AndIsolateFutureModels() {
+		// Existing users retain their unmodified untagged INT8 cache files.
+		Assert.Equal("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileName("UnionEmbeddings.db"));
+		Assert.Equal("DenseEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileName("DenseEmbeddings.db"));
+
+		const string futureHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		string union = AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 1);
+		string dense = AiComponents.EmbeddingSidecarFileNameForModel("DenseEmbeddings.db", futureHash, 1);
+		Assert.Equal($"UnionEmbeddings.{futureHash}.p1.db", union);
+		Assert.Equal($"DenseEmbeddings.{futureHash}.p1.db", dense);
+		Assert.NotEqual(union, AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 2));
+		Assert.NotEqual("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db",
+				AiComponents.LegacyInt8ModelSha256, 2));
+		Assert.Throws<ArgumentException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", "bad", 1));
+		Assert.Throws<ArgumentOutOfRangeException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 0));
+	}
+
+	[Fact]
 	public void ModelSha256_IsPinned() {
 		// The download verifies against this constant — a typo would brick the feature.
 		Assert.Equal(64, AiComponents.ModelSha256.Length);
