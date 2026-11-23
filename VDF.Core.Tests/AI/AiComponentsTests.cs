@@ -26,28 +26,22 @@ public class AiComponentsTests {
 		(Uri url, string archive, string? nativeDirectory) = AiComponents.GetRuntimeDownloadPlan();
 
 		Assert.Contains(AiComponents.RuntimeVersion, archive);
+		Assert.StartsWith("https://api.nuget.org/v3-flatcontainer/", url.AbsoluteUri);
+		Assert.EndsWith(".nupkg", archive);
+		Assert.StartsWith("runtimes/", nativeDirectory);
+		Assert.EndsWith("/native", nativeDirectory);
 		if (AiComponents.UsesDirectMLRuntime) {
-			// Windows: the DirectML build, published only on NuGet.
 			Assert.Equal(AiComponents.DirectMLRuntimeVersion, AiComponents.RuntimeVersion);
-			Assert.StartsWith("https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/", url.AbsoluteUri);
-			Assert.EndsWith(".nupkg", archive);
-			Assert.StartsWith("runtimes/win-", nativeDirectory);
-			Assert.EndsWith("/native", nativeDirectory);
+			Assert.Contains("microsoft.ml.onnxruntime.directml", url.AbsoluteUri);
 			Assert.EndsWith("-directml", AiComponents.RuntimeVersionMarker);
 		}
+		else if (AiComponents.UsesCudaRuntime) {
+			Assert.Contains(".gpu.", url.AbsoluteUri);
+			Assert.EndsWith("-cuda", AiComponents.RuntimeVersionMarker);
+		}
 		else {
-			Assert.Equal(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersion);
-			Assert.Contains("github.com/microsoft/onnxruntime/releases/download", url.AbsoluteUri);
-			Assert.Contains($"v{AiComponents.RuntimeVersion}", url.AbsoluteUri);
-			Assert.Null(nativeDirectory);
-			Assert.Equal(AiComponents.RuntimeVersion, AiComponents.RuntimeVersionMarker);
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-				Assert.StartsWith("onnxruntime-win-", archive);
-				Assert.EndsWith(".zip", archive);
-			}
-			else {
-				Assert.EndsWith(".tgz", archive);
-			}
+			Assert.Contains("/microsoft.ml.onnxruntime/", url.AbsoluteUri);
+			Assert.EndsWith("-cpu", AiComponents.RuntimeVersionMarker);
 		}
 	}
 
@@ -58,6 +52,31 @@ public class AiComponentsTests {
 		if (!AiComponents.UsesDirectMLRuntime)
 			return;
 		Assert.NotEqual(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersionMarker);
+	}
+
+	[Fact]
+	public async Task DownloadedNativeRuntime_ExecutesModel_OptIn() {
+		// Opt-in only: run in a separate dotnet test process.
+		if (Environment.GetEnvironmentVariable("VDF_TEST_ONNX_DOWNLOAD") != "1") return;
+		string dir = Directory.CreateTempSubdirectory("vdf-onnx-smoke").FullName;
+		try {
+			AiComponents.TestAiFolder.Value = dir;
+			File.Copy(TestModels.TinyEmbedderPath, AiComponents.ModelPath);
+			await AiComponents.DownloadAsync(null, CancellationToken.None);
+			AiComponents.EnsureReady();
+			bool gpu = Environment.GetEnvironmentVariable("VDF_TEST_ONNX_GPU") == "1";
+			using var embedder = new OnnxEmbedder(AiComponents.ModelPath,
+				gpu ? AiInferenceDevice.Gpu : AiInferenceDevice.Cpu);
+			Assert.Equal(gpu, embedder.UsesGpu);
+			var result = embedder.EmbedBatch(new[] { new byte[OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3] });
+			Assert.Single(result);
+			Assert.Equal(EmbeddingMath.Dimensions, result[0].Length);
+			Assert.All(result[0], x => Assert.True(float.IsFinite(x)));
+		}
+		finally {
+			AiComponents.TestAiFolder.Value = null;
+			try { Directory.Delete(dir, true); } catch (IOException) { }
+		}
 	}
 
 	[Fact]

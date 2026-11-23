@@ -41,7 +41,7 @@ namespace VDF.Core.AI {
 		/// the native runtime and wrapper are upgraded together.
 		/// </summary>
 		/// <summary>CPU-only ONNX Runtime (GitHub release archives) used on Linux and forced-CPU Windows.</summary>
-		public const string CpuRuntimeVersion = "1.23.2";
+		public const string CpuRuntimeVersion = "1.32.0";
 		/// <summary>
 		/// ONNX Runtime with the DirectML execution provider, used on Windows so AI
 		/// inference runs on any D3D12 GPU instead of burning CPU (≈160 ms of CPU time per
@@ -49,22 +49,30 @@ namespace VDF.Core.AI {
 		/// the system DirectML.dll (1.15+, in-box on current Windows 11) and falls back to
 		/// the CPU provider when no usable GPU/DirectML is present. Same C API as 1.23.2.
 		/// </summary>
-		public const string DirectMLRuntimeVersion = "1.23.0";
+		public const string DirectMLRuntimeVersion = "1.24.4";
 		internal const string ForceCpuRuntimeEnvVar = "VDF_AI_CPU_RUNTIME";
+		internal const string ProviderEnvVar = "VDF_AI_PROVIDER";
+		internal static bool UsesCudaRuntime =>
+			(OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
+			&& RuntimeInformation.ProcessArchitecture == Architecture.X64
+			&& !IsForceCpuRuntimeRequested()
+			&& string.Equals(Environment.GetEnvironmentVariable(ProviderEnvVar), "cuda", StringComparison.OrdinalIgnoreCase);
 
 		/// <summary>The ONNX Runtime version this platform installs.</summary>
 		public static string RuntimeVersion => UsesDirectMLRuntime ? DirectMLRuntimeVersion : CpuRuntimeVersion;
 
 		/// <summary>Runtime version plus its accelerator, for status text and diagnostics.</summary>
-		public static string RuntimeDescription => UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}, DirectML GPU" : $"{CpuRuntimeVersion}, CPU";
+		public static string RuntimeDescription => UsesCudaRuntime ? $"{CpuRuntimeVersion}, CUDA GPU" : UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}, DirectML GPU" : $"{CpuRuntimeVersion}, CPU";
 
 		/// <summary>Content of the runtime.version marker for the runtime this platform installs.</summary>
-		internal static string RuntimeVersionMarker => UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}-directml" : CpuRuntimeVersion;
+		internal static string RuntimeVersionMarker => UsesCudaRuntime ? $"{CpuRuntimeVersion}-cuda"
+			: UsesDirectMLRuntime ? $"{DirectMLRuntimeVersion}-directml" : $"{CpuRuntimeVersion}-cpu";
 
 		internal static bool UsesDirectMLRuntime =>
 			OperatingSystem.IsWindows()
 			&& RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64
-			&& !IsForceCpuRuntimeRequested();
+			&& !IsForceCpuRuntimeRequested()
+			&& !UsesCudaRuntime;
 
 		static bool IsForceCpuRuntimeRequested() {
 			string? value = Environment.GetEnvironmentVariable(ForceCpuRuntimeEnvVar);
@@ -255,14 +263,17 @@ namespace VDF.Core.AI {
 				return (new Uri($"https://api.nuget.org/v3-flatcontainer/{package}/{DirectMLRuntimeVersion}/{nupkg}"),
 					nupkg, $"runtimes/{rid}/native");
 			}
-			string arch = RuntimeInformation.ProcessArchitecture switch {
-				Architecture.X64 => "x64",
-				Architecture.Arm64 => os == "linux" ? "aarch64" : "arm64",
+			string rid = RuntimeInformation.ProcessArchitecture switch {
+				Architecture.X64 => $"{os}-x64",
+				Architecture.Arm64 => $"{os}-arm64",
 				_ => throw new PlatformNotSupportedException($"AI matching is not supported on {RuntimeInformation.ProcessArchitecture}.")
 			};
-			string ext = os == "win" ? "zip" : "tgz";
-			string file = $"onnxruntime-{os}-{arch}-{CpuRuntimeVersion}.{ext}";
-			return (new Uri($"https://github.com/microsoft/onnxruntime/releases/download/v{CpuRuntimeVersion}/{file}"), file, null);
+			string package = UsesCudaRuntime
+				? (os == "win" ? "microsoft.ml.onnxruntime.gpu.windows" : "microsoft.ml.onnxruntime.gpu.linux")
+				: "microsoft.ml.onnxruntime";
+			string file = $"{package}.{CpuRuntimeVersion}.nupkg";
+			return (new Uri($"https://api.nuget.org/v3-flatcontainer/{package}/{CpuRuntimeVersion}/{file}"),
+				file, $"runtimes/{rid}/native");
 		}
 
 		/// <summary>Downloads whatever is missing (runtime and/or model). Safe to call when Ready.</summary>
@@ -349,8 +360,8 @@ namespace VDF.Core.AI {
 						try { File.Delete(old); } catch { /* loaded/locked — overwritten below */ }
 				}
 
-				// Release archives lay out onnxruntime-<rid>-<ver>/lib/<libraries>; the DirectML
-				// NuGet package keeps them in runtimes/<rid>/native. Flatten into AiFolder.
+				// NuGet packages lay out the provider and core binaries in
+				// runtimes/<rid>/native. Keep them together in AiFolder.
 				string? libDir = nativeDirectory != null
 					? Path.Combine(extractDir, nativeDirectory.Replace('/', Path.DirectorySeparatorChar))
 					: Directory.EnumerateDirectories(extractDir, "lib", SearchOption.AllDirectories).FirstOrDefault();

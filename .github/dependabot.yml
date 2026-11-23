@@ -33,15 +33,13 @@ updates:
         patterns:
           - "Avalonia"
           - "Avalonia.*"
-    # Temporarily keep the managed wrapper and test runtime on the 1.23.x line:
-    # Windows currently downloads ONNX Runtime DirectML 1.23.0 separately.
-    # Upgrade these packages together with the native CPU/DirectML runtimes
-    # (and verify AI inference) before allowing Dependabot to update them.
+    # Managed/test ONNX stays on 1.24.x to match DirectML 1.24.4.
+    # CPU/CUDA native 1.32.0 requires separate ABI/inference verification.
     ignore:
       - dependency-name: "Microsoft.ML.OnnxRuntime"
-        versions: [">= 1.24.0"]
+        versions: [">= 1.25.0"]
       - dependency-name: "Microsoft.ML.OnnxRuntime.Managed"
-        versions: [">= 1.24.0"]
+        versions: [">= 1.25.0"]
       # ReactiveUI 12.1+ splits the Rx API into separate namespaces/packages.
       # Defer minor/major updates until view-model and binding migration is tested.
       # Allow 12.0.x patch updates to continue.

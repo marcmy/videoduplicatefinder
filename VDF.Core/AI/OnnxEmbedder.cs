@@ -82,7 +82,7 @@ namespace VDF.Core.AI {
 		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, out bool usesGpu, out string description) {
 			usesGpu = false;
 			string? gpuFailure = null;
-			if (device != AiInferenceDevice.Cpu && OperatingSystem.IsWindows()) {
+			if (device != AiInferenceDevice.Cpu && (OperatingSystem.IsWindows() || AiComponents.UsesCudaRuntime)) {
 				// InferenceSession does NOT take ownership of caller-supplied options.
 				using var gpuOptions = new SessionOptions();
 				try {
@@ -96,10 +96,13 @@ namespace VDF.Core.AI {
 					gpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
 					// Only the few ops DirectML cannot run stay on the CPU; keep them small.
 					gpuOptions.IntraOpNumThreads = 1;
-					gpuOptions.AppendExecutionProvider_DML(0);
+					if (AiComponents.UsesCudaRuntime)
+						gpuOptions.AppendExecutionProvider_CUDA(0);
+					else
+						gpuOptions.AppendExecutionProvider_DML(0);
 					var gpuSession = new InferenceSession(modelPath, gpuOptions);
 					usesGpu = true;
-					description = "DirectML (GPU 0)";
+					description = AiComponents.UsesCudaRuntime ? "CUDA (GPU 0)" : "DirectML (GPU 0)";
 					return gpuSession;
 				}
 				catch (Exception e) when (device == AiInferenceDevice.Auto && e is not OutOfMemoryException) {
@@ -108,6 +111,8 @@ namespace VDF.Core.AI {
 				}
 			}
 
+			if (device == AiInferenceDevice.Gpu)
+				throw new PlatformNotSupportedException("GPU backend unavailable. Select VDF_AI_PROVIDER=cuda on NVIDIA Linux x64.");
 			using var options = new SessionOptions();
 			// The embedder shares the machine with the decode workers during hashing;
 			// give inference a portion of the cores, not all of them.
