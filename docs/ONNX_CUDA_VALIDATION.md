@@ -281,3 +281,44 @@ rewrite/fusion optimization level. Reports/profiles are tagged with the
 nondefault optimization level so no baseline files are overwritten.
 Individual modes can fail or crash in the experimental runner; keep the
 normal DirectML/production INT8 configuration unchanged.
+
+
+### FP16 CUDA graph-optimization experiment results (three runs per mode)
+
+Measured locally on an RTX 2070 Super, CUDA 13.5, cuDNN 9.28, native
+ONNX Runtime 1.32.0; each run includes 12 single-frame and 6 batch-8
+unprofiled timing samples. Values below are **median of the three run
+medians**; they are not whole-application scan benchmarks.
+
+| CUDA optimization | Single-frame (ms) | Batch-8 (ms) | GPU node events | CPU node events |
+|---|---:|---:|---:|---:|
+| BASIC | 10.54 | 17.29 | 634 | 11 |
+| EXTENDED | 5.94 | 13.97 | 374 | 11 |
+| ALL | 5.68 | 12.52 | 374 | 11 |
+
+EXTENDED and ALL have *identical* execution-provider assignments, operator
+type/count histograms, all embedding coordinates, and all reported cosine
+scores across the six deterministic images. Both graph variants fuse
+25 LayerNormalization, 12 Gelu, and 12 FusedMatMul CUDA operators,
+eliminating many unfused arithmetic operators; GPU node event count
+drops 41%. Compared with BASIC, EXTENDED achieves ~1.24x faster
+batch-8 medians and ALL ~1.38x. The observed ALL/EXTENDED timing gap
+is not attributable to different graph operator structures; more
+randomized-order measurements are needed to separate clock/thermal noise.
+
+Compared with BASIC, EXTENDED/ALL have maximum **0.2914 percentage-point**
+change in the quantized pair similarity among all 15 synthetic pairs,
+and maximum **0.1116 points** for the high-similarity pairs (>=89%).
+There are no 89% or 94% classification flips in these samples, but there
+are no pairs between 89% and 94%. Real-world accuracy/threshold testing
+remains mandatory. BASIC timing also varied from an earlier run
+(7.81ms single to ~10.54ms), so avoid treating one run as definitive.
+
+**Production choice:** leave `VDF_AI_CUDA_GRAPH_OPT=basic` as default for
+now. Changing CUDA optimization levels does change embeddings slightly,
+even with identical model SHA256 and preprocessing; the current cache
+partitioning only covers model SHA/preprocessing revision and not
+optimizer mode. A production optimizer change requires either adding the
+execution-profile/optimizer identity to the cache namespace, or a
+controlled cache regeneration/revalidation. Preserve existing INT8
+sidecars and do not compare embeddings across different models.
