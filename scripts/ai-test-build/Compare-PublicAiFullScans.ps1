@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $CorpusDirectory = [IO.Path]::GetFullPath($CorpusDirectory)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-$cli = Join-Path $PSScriptRoot 'CLI\VDF.CLI.exe'
+$cli = Join-Path $PSScriptRoot 'CLI\vdf-cli.exe'
 if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
     throw "CLI executable not found: $cli. Extract the whole test-build ZIP first."
 }

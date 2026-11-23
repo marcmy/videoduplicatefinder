@@ -123,7 +123,7 @@ jobs:
         if (!(Test-Path onnx-aot-smoke/VDF.GUI.exe -PathType Leaf)) {
           throw 'Native AOT GUI executable missing from ONNX test build.'
         }
-        if (!(Test-Path onnx-test-cli/VDF.CLI.exe -PathType Leaf)) {
+        if (!(Test-Path onnx-test-cli/vdf-cli.exe -PathType Leaf)) {
           throw 'CLI executable missing from ONNX test build.'
         }
         $root = 'onnx-test-package'

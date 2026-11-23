@@ -9,7 +9,7 @@ param(
     [string[]]$CommandArguments = @()
 )
 $ErrorActionPreference = 'Stop'
-$exe = if ($Cli) { Join-Path $PSScriptRoot 'CLI\VDF.CLI.exe' }
+$exe = if ($Cli) { Join-Path $PSScriptRoot 'CLI\vdf-cli.exe' }
        else { Join-Path $PSScriptRoot 'GUI\VDF.GUI.exe' }
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "The test build executable was not found: $exe. Extract the entire ZIP first."

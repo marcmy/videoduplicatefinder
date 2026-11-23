@@ -11,7 +11,7 @@ Open the PR's latest **Windows 64-bit** GitHub Actions run; at the bottom
 of the run, download the artifact
 `vdf-onnx-fp16-experimental-win-x64`. Unzip the GitHub artifact, then
 extract `VDF-ONNX-FP16-Test-win-x64.zip` to a writable folder.
-The bundle must contain `GUI/VDF.GUI.exe`, `CLI/VDF.CLI.exe`, and
+The bundle must contain `GUI/VDF.GUI.exe`, `CLI/vdf-cli.exe`, and
 the `Launch-*.cmd` scripts.
 
 Needs Windows x64, an NVIDIA GPU supported by your installed ONNX CUDA
