@@ -47,3 +47,33 @@ On Linux x64 run the same filtered test with
 
 The smoke test uses the checked-in tiny ONNX model; it is **not sufficient**
 for the real-model correctness or GPU performance gates.
+
+
+## Windows CUDA 13 / cuDNN 9 troubleshooting
+
+The NVIDIA driver's `nvidia-smi` CUDA UMD value is **not** proof the CUDA
+runtime or cuDNN DLLs are installed and visible to a .NET process.
+
+If inference fails at `AveragePool` with
+`cuDNN is unavailable ... cudnn64_9.dll ... error 2`, the CUDA provider
+got as far as execution but cannot locate the cuDNN 9 library. This is
+**not** a valid passing compatibility test. Install NVIDIA cuDNN 9 for CUDA
+13 from https://developer.nvidia.com/cudnn-downloads and ensure the
+directory containing `cudnn64_9.dll` is on PATH for the test process.
+
+From the same PowerShell session:
+
+```powershell
+where.exe cudnn64_9.dll
+where.exe cudart64_13.dll
+$env:CUDA_PATH
+# If installed but absent from PATH, find it and add its bin directory
+$cudnn = Get-ChildItem "$env:ProgramFiles\NVIDIA\CUDNN" -Recurse -File \
+  -Filter cudnn64_9.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($cudnn) { $env:PATH = "$($cudnn.DirectoryName);$env:PATH" }
+```
+
+Windows can retain a loaded `onnxruntime.dll` until the test host exits.
+The smoke test handles cleanup failures so the original inference error is
+not masked. After the test host exits, stale `vdf-onnx-smoke*` directories
+under the system temporary directory can be removed.
