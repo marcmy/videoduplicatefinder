@@ -21,6 +21,29 @@ PowerShell 7. The first AI-enabled scan downloads an ONNX Runtime package
 and the SHA256-pinned model. FFmpeg must be on PATH for the full-video
 test corpus and CLI scan. Run the two modes **separately**.
 
+**cuDNN dependency:** CUDA's ONNX Runtime session can initialize while
+`cudnn64_9.dll` remains undiscoverable; the first DINOv2 convolution
+then fails with a CUDA kernel error. The bundled
+`Initialize-VdfCudaDependencies.ps1` verifies that cuDNN 9 is available
+before the FP16 run. It searches the current PATH, an optional
+`VDF_CUDNN_BIN` directory, and common NVIDIA/CUDA installation roots
+without scanning arbitrary media folders. If several installs are found,
+select the correct one explicitly (do not mix cuDNN CUDA variants):
+
+```powershell
+$env:VDF_CUDNN_BIN = 'C:\Program Files\NVIDIA\CUDNN\v9.x\bin'
+# Replace that EXAMPLE with the real folder containing cudnn64_9.dll.
+```
+
+Paths under Python/conda environments may be used if they contain the
+matching cuDNN 9 DLLs. The helper only modifies the *current process*
+PATH and never downloads or copies GPU DLLs. The FP16 CUDA
+`EnsureReady()` now executes a real inference before a scan starts.
+When `VDF_AI_STRICT_INFERENCE=1` is set by the test scripts, any
+later ONNX failure in union/dense AI matching aborts the run rather
+than producing an apparently successful but incomplete comparison.
+Normal nonexperimental VDF remains best-effort as before.
+
 ## Launch the GUI
 
 Double-click either:
@@ -70,7 +93,10 @@ The resulting shareable files live in
 `shareable-group-differences.json`.
 Results contain generated clip IDs, similarity scores, matching flags,
 and group memberships; **not absolute media paths**. The script
-removes the raw path-bearing CLI result JSON after sanitizing it.
+removes the raw path-bearing CLI result JSON after sanitizing it,
+and clears previous shareable result files at the start of each run
+so stale results from a prior failed scan cannot be mistaken for a
+new successful comparison.
 If an error interrupts the run, keep its `private-*` state folders
 private.
 
