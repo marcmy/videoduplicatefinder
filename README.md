@@ -1,4 +1,6 @@
 # Video Duplicate Finder
+
+> **Fork support policy:** Windows and Linux only (x64/ARM64); macOS is not supported. The fork currently publishes only the Windows x64 GUI. Linux builds and tests remain supported, but no Linux release archive is published yet.
 Video Duplicate Finder is a cross-platform software to find duplicated video (and image) files on hard disk based on similarity. Unlike other duplicate finders this one also finds duplicates which have a different resolution, frame rate and even watermarked.
 
 # Features
@@ -9,7 +11,7 @@ Video Duplicate Finder is a cross-platform software to find duplicated video (an
 - Finds duplicate videos / images based on similarity (optional scan against pHash at zero cost)
 - Partial clip detection — finds when a shorter video is a partial clip of a longer one (audio fingerprinting)
 - Optional AI matching — neural image embeddings find cropped, mirrored, zoomed and heavily edited copies the classic methods miss, and locate trimmed clips inside longer recordings without needing audio. Runs 100% locally.
-- Desktop GUI (Windows, Linux, macOS)
+- Desktop GUI (Windows and Linux)
 - Headless CLI for scripting and automation
 - Web UI for remote/headless/NAS use
 - Docker image for easy self-hosting
@@ -60,24 +62,21 @@ CLI: `--ai-matching`, `--ai-percent`, `--ai-partial`, `--ai-partial-hit-percent`
 - On first use VDF downloads two components (**~100 MB** once): the ONNX Runtime library from the [official Microsoft release](https://github.com/microsoft/onnxruntime/releases) and the embedding model (integrity-checked against a pinned SHA256). They are stored next to the scan database. The GUI asks before downloading; CLI/Web/Docker download automatically when an AI option is enabled.
 - **Everything runs locally on your CPU.** No cloud services, no accounts, nothing is uploaded — the model analyzes your frames on your machine, full stop.
 - Cost: roughly 50 ms per file during hashing; embeddings are cached in the scan database (~2 KB per file), so rescans stay fast. Visual partial detection keeps its keyframe cache in a separate `DenseEmbeddings.db` sidecar (~25 KB per video) that cleans itself up.
-- Supported on all release platforms (Windows, Linux x64/ARM64, macOS Intel & Apple Silicon).
+- Supported on Windows and Linux (x64/ARM64). No macOS support in this fork.
 
 ---
 
 # Downloads
 
-[Daily build](https://github.com/0x90d/videoduplicatefinder/releases/tag/4.1.x) — attachments are automatically rebuilt and replaced on every commit.
+[This fork's rolling Windows x64 GUI release](https://github.com/marcmy/videoduplicatefinder/releases/tag/4.1.x) contains `GUI-win-x64.zip`. The fork also runs Linux CI, but does not currently publish Linux binaries, CLI archives, or Web archives.
 
-[Versioned releases](https://github.com/0x90d/videoduplicatefinder/releases) (tags like `v4.1.1`) are published now and then, and their files never change afterwards. Package managers and anyone who needs a fixed download should use those.
+The [upstream releases](https://github.com/0x90d/videoduplicatefinder/releases) are produced by the original project; they are not builds of this fork.
 
 > **Prefer the classic interface?** 4.1 introduces a redesigned interface. The final classic-UI build stays available on the [4.0.x release](https://github.com/0x90d/videoduplicatefinder/releases/tag/4.0.x) — databases and settings are compatible both ways.
 
 > **Upgrading from 3.x:** your scan database is migrated automatically on first load. Cached image hashes are recomputed on the next scan (image processing moved from ImageSharp to FFmpeg); video hashes are unaffected. Downgrading back to 3.x after the migration is not recommended. The last 3.x build remains available on the [3.0.x release](https://github.com/0x90d/videoduplicatefinder/releases/tag/3.0.x).
 
-Available packages per platform:
-- `GUI-<platform>` — desktop application
-- `CLI-<platform>` — command-line tool
-- `Web-<platform>` — self-contained web server
+The GUI, CLI, and Web applications can be built from source for Windows and Linux.
 
 ---
 
@@ -85,7 +84,7 @@ Available packages per platform:
 
 ### Requirements
 
-FFmpeg and FFprobe are required. On first launch VDF attempts to download them automatically (Windows and Linux, x64 and ARM64; on macOS install them with Homebrew: `brew install ffmpeg`).
+FFmpeg and FFprobe are required. On first launch VDF attempts to download them automatically (Windows and Linux, x64 and ARM64).
 Native FFmpeg binding requires FFmpeg 9.x shared libraries (not the master branch). If it finds the FFmpeg 8 an older VDF downloaded, it says so and offers the FFmpeg 9 download.
 
 #### Windows
@@ -117,20 +116,6 @@ cp videoduplicatefinder.desktop ~/.local/share/applications/
 
 The app will then appear in your application launcher with its icon.
 
-#### macOS
-```bash
-brew install ffmpeg
-```
-Extract the archive — it contains `Video Duplicate Finder.app`. Double-click it to launch.
-
-If macOS blocks the app with "cannot be opened because the developer cannot be verified", right-click the `.app` and choose **Open**, then confirm. You only need to do this once.
-
-If macOS still refuses to launch the bundle (e.g. "library load disallowed by system policy" on macOS 14+ / Tahoe), clear the quarantine flag and re-sign every binary in the bundle ad-hoc:
-```bash
-xattr -cr "Video Duplicate Finder.app"
-codesign --force --deep --sign - "Video Duplicate Finder.app"
-```
-
 ---
 
 # CLI (Command-line Interface)
@@ -143,9 +128,9 @@ Same as the GUI: FFmpeg and FFprobe must be on your `PATH` or in the same direct
 
 ### Installation
 
-Download `CLI-<platform>` from the [releases page](https://github.com/0x90d/videoduplicatefinder/releases/tag/4.1.x) and extract it.
+Build the CLI from source for Windows or Linux. This fork does not currently publish CLI archives.
 
-On Linux/macOS, make the binary executable:
+On Linux, make the binary executable:
 ```bash
 chmod +x vdf-cli
 ```
@@ -245,9 +230,9 @@ FFmpeg and FFprobe are required. When running outside Docker, VDF.Web will attem
 
 ### Installation (self-contained archive)
 
-Download `Web-<platform>` from the [releases page](https://github.com/0x90d/videoduplicatefinder/releases/tag/4.1.x) and extract it.
+Build the Web application from source for Windows or Linux. This fork does not currently publish Web archives.
 
-On Linux/macOS:
+On Linux:
 ```bash
 chmod +x VDF.Web
 ./VDF.Web
@@ -268,12 +253,10 @@ ASPNETCORE_URLS=http://+:8080 ./VDF.Web
 Web settings and login credentials are saved to:
 - Windows: `%APPDATA%\VDF\`
 - Linux: `~/.config/VDF/` (or `$XDG_CONFIG_HOME/VDF/`)
-- macOS: `~/Library/Preferences/VDF/`
 
 The scan database (`ScannedFiles.db`) is stored next to the executable if that folder is writable; otherwise it falls back to:
 - Windows: `%LOCALAPPDATA%\VDF\`
 - Linux: `~/.local/state/VDF/` (or `$XDG_STATE_HOME/VDF/`)
-- macOS: `~/Library/Application Support/VDF/`
 
 ---
 

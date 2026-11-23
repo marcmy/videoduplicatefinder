@@ -1,0 +1,8 @@
+<Project>
+  <!-- Reject macOS builds even when cross-publishing from Windows/Linux.
+       Linux is supported, but this fork does not publish a Linux GUI yet. -->
+  <Target Name="ValidateSupportedPlatform" BeforeTargets="PrepareForBuild;Publish"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) Or '$(RuntimeIdentifier)' == 'osx-x64' Or '$(RuntimeIdentifier)' == 'osx-arm64'">
+    <Error Text="This VDF fork supports only Windows and Linux; macOS builds are disabled." />
+  </Target>
+</Project>

@@ -68,12 +68,8 @@ namespace VDF.GUI {
 				.UsePlatformDetect()
 				.With(new X11PlatformOptions { UseDBusFilePicker = false })
 				.With(new FontManagerOptions {
-					// Without explicit fallbacks, Avalonia's default font on macOS does not
-					// resolve CJK glyphs through CoreText, producing U+FFFD replacement chars.
+					// Windows CJK fonts plus a Noto fallback for Linux installations.
 					FontFallbacks = new[] {
-						new FontFallback { FontFamily = new FontFamily("PingFang SC") },
-						new FontFallback { FontFamily = new FontFamily("Hiragino Sans") },
-						new FontFallback { FontFamily = new FontFamily("Apple SD Gothic Neo") },
 						new FontFallback { FontFamily = new FontFamily("Microsoft YaHei") },
 						new FontFallback { FontFamily = new FontFamily("Yu Gothic") },
 						new FontFallback { FontFamily = new FontFamily("Malgun Gothic") },

@@ -136,7 +136,6 @@ public class AiComponentsTests {
 	static string BrokenRuntimeFolder() {
 		string folder = Directory.CreateTempSubdirectory("vdf-ai-broken").FullName;
 		string name = OperatingSystem.IsWindows() ? "onnxruntime.dll"
-			: OperatingSystem.IsMacOS() ? $"libonnxruntime.{AiComponents.RuntimeVersion}.dylib"
 			: $"libonnxruntime.so.{AiComponents.RuntimeVersion}";
 		File.WriteAllBytes(Path.Combine(folder, name), new byte[4096]);
 		return folder;
