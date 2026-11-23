@@ -51,7 +51,7 @@ $seconds = @(2, [math]::Min(8, $DurationSeconds - 2))
 
 foreach ($spec in $specs) {
     $original = Join-Path $clipsDir "$($spec.id)-original.mp4"
-    Run-Ffmpeg @('-f','lavfi','-i',$spec.graph,'-t',"$DurationSeconds",
+    Run-Ffmpeg -Arguments @('-f','lavfi','-i',$spec.graph,'-t',"$DurationSeconds",
         '-an','-pix_fmt','yuv420p','-c:v','libx264','-preset','veryfast',
         '-crf','18','-threads','2','-movflags','+faststart',$original)
 
@@ -63,7 +63,7 @@ foreach ($spec in $specs) {
             if ($null -ne $t.filter) { $args += @('-vf', $t.filter) }
             $args += @('-c:v','libx264','-preset','veryfast','-crf',"$($t.crf)",
                 '-pix_fmt','yuv420p','-threads','2','-movflags','+faststart',$clipPath)
-            Run-Ffmpeg $args
+            Run-Ffmpeg -Arguments $args
         }
         $clips.Add([pscustomobject]@{
             id = [IO.Path]::GetFileNameWithoutExtension($clipName)
@@ -75,7 +75,7 @@ foreach ($spec in $specs) {
         foreach ($second in $seconds) {
             $frameName = "$($spec.id)-$($t.variant)-t$second.rgb"
             $framePath = Join-Path $framesDir $frameName
-            Run-Ffmpeg @('-ss',"$second",'-i',$clipPath,
+            Run-Ffmpeg -Arguments @('-ss',"$second",'-i',$clipPath,
                 '-frames:v','1','-vf','scale=224:224:flags=bicubic,format=rgb24',
                 '-f','rawvideo','-pix_fmt','rgb24',$framePath)
             if ((Get-Item -LiteralPath $framePath).Length -ne 224*224*3) {
@@ -95,7 +95,7 @@ foreach ($spec in $specs) {
     # matching pipeline should distinguish a temporal subset from unrelated footage.
     $partialName = "$($spec.id)-partial.mp4"
     $partialPath = Join-Path $clipsDir $partialName
-    Run-Ffmpeg @('-ss','4','-i',$original,'-t','5','-an',
+    Run-Ffmpeg -Arguments @('-ss','4','-i',$original,'-t','5','-an',
         '-c:v','libx264','-preset','veryfast','-crf','27',
         '-pix_fmt','yuv420p','-threads','2',$partialPath)
     $clips.Add([pscustomobject]@{
