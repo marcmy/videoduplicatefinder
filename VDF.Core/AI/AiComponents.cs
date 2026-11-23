@@ -83,6 +83,9 @@ namespace VDF.Core.AI {
 		/// <summary>SHA256 of the model file (Xenova/dinov2-small ONNX export, quantized, Apache-2.0).</summary>
 		public const string ModelSha256 = "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917";
 		// Test-only opt-in via the launcher. The default shipped model remains INT8.
+		internal const string StrictInferenceEnvVar = "VDF_AI_STRICT_INFERENCE";
+		internal static bool StrictInferenceEnabled =>
+			Environment.GetEnvironmentVariable(StrictInferenceEnvVar) is "1" or "true";
 		internal const string ModelVariantEnvVar = "VDF_AI_MODEL";
 		internal const string Fp16ModelFileName = "dinov2-small-fp16.onnx";
 		internal const string Fp16ModelSha256 = "4e9ea6fe106e2225e28ee3c1c3d53b5b92aa4af62142f6ed6b66b6a92213cf04";
