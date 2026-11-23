@@ -8,22 +8,28 @@ param(
     [string]$BaselineModel = 'int8',
     [ValidateSet('int8','fp32','fp16')]
     [string]$CandidateModel = 'fp32',
+    [ValidateSet('basic','extended','all','disabled')]
+    [string]$BaselineOptimization = 'basic',
+    [ValidateSet('basic','extended','all','disabled')]
+    [string]$CandidateOptimization = 'basic',
     [int]$Run = 1,
     [string]$ReportDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'VDF.OnnxBenchmark\reports'),
     [double[]]$Thresholds = @(89,94)
 )
 $ErrorActionPreference = 'Stop'
-$baseFile = Join-Path $ReportDirectory ("{0}-{1}-run{2}.json" -f $BaselineModel,$Provider,$Run)
+$baseTag = if ($Provider -eq 'cuda' -and $BaselineOptimization -ne 'basic') { "-$BaselineOptimization" } else { '' }
+$otherTag = if ($Provider -eq 'cuda' -and $CandidateOptimization -ne 'basic') { "-$CandidateOptimization" } else { '' }
+$baseFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $BaselineModel,$Provider,$baseTag,$Run)
 if (-not (Test-Path $baseFile) -and $BaselineModel -eq 'int8') {
     $baseFile = Join-Path $ReportDirectory ("{0}-run{1}.json" -f $Provider,$Run)
 }
-$otherFile = Join-Path $ReportDirectory ("{0}-{1}-run{2}.json" -f $CandidateModel,$Provider,$Run)
+$otherFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $CandidateModel,$Provider,$otherTag,$Run)
 if (-not (Test-Path $baseFile)) { throw "Baseline JSON missing: $baseFile" }
 if (-not (Test-Path $otherFile)) { throw "Candidate JSON missing: $otherFile" }
 $a = Get-Content -LiteralPath $baseFile -Raw | ConvertFrom-Json
 $b = Get-Content -LiteralPath $otherFile -Raw | ConvertFrom-Json
-if ($a.modelSha256 -eq $b.modelSha256) {
-    Write-Warning 'Both reports identify the same ONNX model SHA-256.'
+if ($a.modelSha256 -eq $b.modelSha256 -and $baseFile -eq $otherFile) {
+    Write-Warning 'Both reports identify the same model and the same run.'
 }
 if ($a.pairs.Count -ne $b.pairs.Count) { throw 'The reports do not contain the same sample pairs.' }
 $rows = @()
@@ -43,7 +49,7 @@ for ($i = 0; $i -lt $a.pairs.Count; $i++) {
     }
 }
 $summary = $rows | Sort-Object AbsoluteDelta -Descending
-Write-Host "Baseline: $BaselineModel/$Provider; candidate: $CandidateModel/$Provider" -ForegroundColor Cyan
+Write-Host "Baseline: $BaselineModel/$Provider ($BaselineOptimization); candidate: $CandidateModel/$Provider ($CandidateOptimization)" -ForegroundColor Cyan
 Write-Host ("Max absolute difference: {0:N3} percentage points; mean absolute difference: {1:N3}" -f
     $summary[0].AbsoluteDelta, (($rows | Measure-Object -Property AbsoluteDelta -Average).Average))
 foreach ($threshold in $Thresholds) {
