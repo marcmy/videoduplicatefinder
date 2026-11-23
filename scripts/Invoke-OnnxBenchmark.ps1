@@ -4,8 +4,10 @@
 param(
     [ValidateRange(1, 100)]
     [int]$Repeat = 1,
-    [ValidateSet('int8','fp32')]
+    [ValidateSet('int8','fp32','fp16')]
     [string]$Model = 'int8',
+    [ValidateSet('directml','cuda','cpu')]
+    [string[]]$Providers = @(),
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'VDF.OnnxBenchmark\reports')
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +15,11 @@ $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $project = Join-Path $repo 'VDF.Core.Tests\VDF.Core.Tests.csproj'
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $OutputDirectory = (Resolve-Path $OutputDirectory).Path
+# Float16 CPU kernels are not broadly supported by ONNX Runtime. Benchmark
+# GPU providers by default; CPU can still be explicitly requested.
+if ($Providers.Count -eq 0) {
+    $Providers = if ($Model -eq 'fp16') { @('directml','cuda') } else { @('directml','cuda','cpu') }
+}
 
 $names = @('VDF_AI_PROVIDER','VDF_AI_CPU_RUNTIME','VDF_AI_DEVICE',
     'VDF_ONNX_BENCHMARK','VDF_ONNX_BENCH_OUTPUT','VDF_AI_PROFILE_PREFIX',
@@ -23,7 +30,7 @@ foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVari
 try {
     $results = @()
     foreach ($run in 1..$Repeat) {
-        foreach ($provider in @('directml', 'cuda', 'cpu')) {
+        foreach ($provider in $Providers) {
             if ($provider -ne 'cpu' -and -not $IsWindows) {
                 if ($provider -eq 'directml') { continue }
             }
@@ -53,7 +60,7 @@ try {
     $baseline = $results | Where-Object { $_.provider -eq 'directml' } | Select-Object -First 1
     if (-not $baseline) { $baseline = $results | Where-Object { $_.provider -eq 'cpu' } | Select-Object -First 1 }
     foreach ($item in $results) {
-        if ($item -eq $baseline) { continue }
+        if (-not $baseline -or $item -eq $baseline) { continue }
         $maxDrift = 0.0
         $flips94 = 0
         $flips89 = 0
