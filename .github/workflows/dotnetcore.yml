@@ -110,3 +110,46 @@ jobs:
         Write-Host "Using verified shared FFmpeg from $bin"
     - name: Run Integration Tests
       run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+
+    # This is a PR-only experimental artifact, NOT a 4.1 production release.
+    # The GUI and CLI use the opt-in FP16 model only through bundled launchers.
+    - name: Publish ONNX test CLI
+      run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64 -o onnx-test-cli
+
+    - name: Package ONNX FP16 experimental test build
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (!(Test-Path onnx-aot-smoke/VDF.GUI.exe -PathType Leaf)) {
+          throw 'Native AOT GUI executable missing from ONNX test build.'
+        }
+        if (!(Test-Path onnx-test-cli/VDF.CLI.exe -PathType Leaf)) {
+          throw 'CLI executable missing from ONNX test build.'
+        }
+        $root = 'onnx-test-package'
+        New-Item -ItemType Directory -Path "$root/GUI","$root/CLI" -Force | Out-Null
+        Copy-Item onnx-aot-smoke/* "$root/GUI/" -Recurse -Force
+        Copy-Item onnx-test-cli/* "$root/CLI/" -Recurse -Force
+        foreach ($path in @('scripts/ai-test-build/Launch-AiTest.ps1',
+            'scripts/ai-test-build/Launch-FP16-CUDA.cmd',
+            'scripts/ai-test-build/Launch-INT8-DirectML.cmd',
+            'scripts/ai-test-build/Compare-PublicAiFullScans.ps1',
+            'scripts/New-ShareableAiCorpus.ps1',
+            'docs/ONNX_TEST_BUILD.md')) {
+          Copy-Item $path $root -Force
+        }
+        Get-ChildItem $root -Recurse -File |
+          Where-Object { $_.Extension -in '.pdb', '.dbg' } |
+          Remove-Item -Force
+        Compress-Archive -Path "$root/*" -DestinationPath VDF-ONNX-FP16-Test-win-x64.zip -Force
+        if ((Get-Item VDF-ONNX-FP16-Test-win-x64.zip).Length -le 0) {
+          throw 'Experimental test build ZIP is empty.'
+        }
+
+    - name: Upload ONNX FP16 experimental test ZIP
+      uses: actions/upload-artifact@v7
+      with:
+        name: vdf-onnx-fp16-experimental-win-x64
+        path: VDF-ONNX-FP16-Test-win-x64.zip
+        retention-days: 14
+        if-no-files-found: error
