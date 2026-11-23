@@ -136,6 +136,8 @@ jobs:
             'scripts/ai-test-build/Launch-FP16-CUDA.cmd',
             'scripts/ai-test-build/Launch-INT8-DirectML.cmd',
             'scripts/ai-test-build/Compare-PublicAiFullScans.ps1',
+            'scripts/ai-test-build/New-ShareableAiPartialCorpus.ps1',
+            'scripts/ai-test-build/Compare-PublicAiPartialScans.ps1',
             'scripts/ai-test-build/Initialize-VdfCudaDependencies.ps1',
             'scripts/New-ShareableAiCorpus.ps1',
             'docs/ONNX_TEST_BUILD.md')) {
