@@ -492,10 +492,12 @@ namespace VDF.Core.AI {
 					}
 				}
 
-				using var stream = File.OpenRead(tempPath);
-				string hash = Convert.ToHexString(SHA256.HashData(stream));
-				if (!hash.Equals(SelectedModelSha256, StringComparison.OrdinalIgnoreCase))
-					throw new IOException($"AI model download failed the integrity check (SHA256 {hash}, expected {SelectedModelSha256}).");
+				using (var stream = File.OpenRead(tempPath)) {
+					string hash = Convert.ToHexString(SHA256.HashData(stream));
+					if (!hash.Equals(SelectedModelSha256, StringComparison.OrdinalIgnoreCase))
+						throw new IOException($"AI model download failed the integrity check (SHA256 {hash}, expected {SelectedModelSha256}).");
+				}
+				// Close the verification stream before replacing the file on Windows.
 				File.Move(tempPath, ModelPath, overwrite: true);
 			}
 			finally {
