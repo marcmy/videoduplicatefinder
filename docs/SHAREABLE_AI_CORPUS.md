@@ -93,3 +93,60 @@ frame-selection, temporal matching, or database scan. It also cannot infer
 precision and recall on real-world natural footage from synthetic textures.
 Keep production thresholds and model unchanged until separate full-pipeline
 validation.
+
+
+## First public-corpus results (2026-11-23, RTX 2070 Super)
+
+The complete shareable artifact contains only `manifest.json` and two
+backend benchmark reports. Their 36 frame IDs and per-frame SHA-256 values
+match exactly, so all 630 cross-model pairs are like-for-like. The source
+corpus consists of 3 procedural FFmpeg sources, 6 transforms per source and
+2 times. The 90 "aligned" pairs are same-generator, same-timestamp,
+different-transform samples (15 pairs per timestamp, 2 timestamps per
+generator, 3 generators). There are 108 same-generator but different-time
+pairs, and 432 cross-generator pairs. Pairs are heavily correlated; 630
+is **not** the independent sample size for accuracy inference.
+
+| Backend | Single-frame median | Batch-of-eight median | GPU node events | CPU node events |
+|---|---:|---:|---:|---:|
+| INT8 DirectML (existing production path) | 23.4479 ms | 133.2250 ms | 901 | 11 |
+| FP16 CUDA EXTENDED (candidate) | 4.1682 ms | 11.9739 ms | 374 | 11 |
+
+This is a 5.63x single-frame and 11.13x batched **embedding inference**
+speedup, not a full VDF scan speedup. One benchmark run per provider.
+
+The maximum absolute **quantized similarity score** change across all
+630 pairs is **11.6064 percentage points** (between two different source
+patterns, far below the classification thresholds). For the 90 aligned
+variant pairs, mean absolute drift is **1.233 points**, maximum
+**6.2372 points**; their average score remains ~93.7% under both models.
+This illustrates why maximum drift alone is not a good accuracy metric.
+
+| Comparison / threshold | INT8 pass | FP16 pass | INT8-only | FP16-only | Agreement |
+|---|---:|---:|---:|---:|---:|
+| All 630 pairs at 89% | 145 | 145 | 5 | 5 | 620/630 |
+| All 630 pairs at 94% | 85 | 91 | 3 | 9 | 618/630 |
+| Aligned 90 pairs at 89% | 79 | 79 | 2 | 2 | 86/90 |
+| Aligned 90 pairs at 94% | 51 | 51 | 2 | 2 | 86/90 |
+| Cross-source 432 pairs at 89% or 94% | 0 | 0 | 0 | 0 | 432/432 |
+
+At 94%, `c-crop08-t8` vs `c-crop16-t8` changes from **90.0552%** to
+**96.2924%** (+6.2372 points, same-generated-source and timestamp).
+Conversely, `b-crop08-t8` vs `b-crop16-t8` changes from 94.7734%
+to 92.3740% (−2.3994 points). Some other shifts involve the *same*
+source at different timestamps and are **not labeled negative**. No
+cross-source pair passed either threshold in this particular corpus,
+but unrelated natural video content remains untested.
+
+This is **not evidence of equivalent real-video recall or precision**.
+At the aligned-pair level the 89% and 94% pass *counts* match, but
+specific pair identities differ; 4/90 aligned decisions flip at each
+threshold. Such changes can affect near-threshold matching, and frame
+scores are not the same as full-video, union or temporal-partial decisions.
+
+**Do not globally change the 89% or 94% cutoffs yet.** A better
+experimental next step is to mine borderline aligned *generated* pairs,
+add more parameterized crop/brightness/compression levels and diverse
+publicly licensed natural scenes, then compare per-pair errors and the
+full VDF matching pipeline. Keep legacy INT8 caches isolated by model
+identity and leave production INT8/DirectML as default until validation.
