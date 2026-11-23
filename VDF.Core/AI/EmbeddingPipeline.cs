@@ -54,6 +54,7 @@ namespace VDF.Core.AI {
 		readonly CancellationToken token;
 		readonly Task worker;
 		volatile bool faulted;
+		Exception? inferenceFailure;
 		int embeddedCount;
 
 		public EmbeddingPipeline(string modelPath, UnionEmbeddingStore store, CancellationToken token) {
@@ -84,9 +85,15 @@ namespace VDF.Core.AI {
 		}
 
 		/// <summary>No more frames will arrive; returns when everything queued is embedded.</summary>
-		public Task CompleteAsync() {
+		public async Task CompleteAsync() {
 			queue.CompleteAdding();
-			return worker;
+			await worker;
+			// Normal VDF remains best-effort if the AI pass has a problem.
+			// An explicit diagnostic test build must never turn failed ONNX
+			// inference into a seemingly successful scan comparison.
+			if (AiComponents.StrictInferenceEnabled && inferenceFailure is { } error)
+				throw new InvalidOperationException(
+					"AI inference failed in strict test mode; scan results are invalid.", error);
 		}
 
 		void WorkerLoop() {
@@ -137,6 +144,7 @@ namespace VDF.Core.AI {
 				// One inference failure must not tear down the scan: fault, then keep
 				// draining so bounded Add in the decode workers never blocks forever.
 				faulted = true;
+				inferenceFailure = e;
 				Logger.Instance.Error($"AI embedding stage failed — continuing scan without AI matching for the remaining files: {e}");
 				try {
 					while (queue.TryTake(out var dropped, Timeout.Infinite)) {
