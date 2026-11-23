@@ -114,9 +114,11 @@ jobs:
     # This is a PR-only experimental artifact, NOT a 4.1 production release.
     # The GUI and CLI use the opt-in FP16 model only through bundled launchers.
     - name: Publish ONNX test CLI
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
       run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64 -o onnx-test-cli
 
     - name: Package ONNX FP16 experimental test build
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
@@ -147,6 +149,7 @@ jobs:
         }
 
     - name: Upload ONNX FP16 experimental test ZIP
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
       uses: actions/upload-artifact@v7
       with:
         name: vdf-onnx-fp16-experimental-win-x64
