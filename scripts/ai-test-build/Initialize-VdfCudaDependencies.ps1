@@ -47,7 +47,8 @@ function Initialize-VdfCudaDependencies {
             Get-ChildItem -LiteralPath $root -Recurse -Depth 6 -File -Filter $filename -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.DirectoryName }
         }
-    ) | Sort-Object -Unique
+    )
+    $matches = @($matches | Sort-Object -Unique)
     if ($matches.Count -eq 1) {
         $env:PATH = "$($matches[0])$separator$env:PATH"
         Write-Host "cuDNN 9 discovered and added for this process: $($matches[0])" -ForegroundColor Green
