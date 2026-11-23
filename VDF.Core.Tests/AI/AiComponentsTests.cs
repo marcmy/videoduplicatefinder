@@ -76,7 +76,12 @@ public class AiComponentsTests {
 		}
 		finally {
 			AiComponents.TestAiFolder.Value = null;
-			try { Directory.Delete(dir, true); } catch (IOException) { }
+			// Windows keeps the native ONNX DLL loaded until the test host exits.
+			// Do not mask the real ONNX/CUDA failure with a cleanup exception.
+			// An unloaded test folder can be removed after the host process exits.
+			try { Directory.Delete(dir, recursive: true); }
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
 		}
 	}
 
