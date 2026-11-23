@@ -60,6 +60,11 @@ foreach ($mode in $Modes) {
     $env:VDF_AI_PROVIDER = if ($mode -eq 'fp16-cuda') { 'cuda' } else { 'directml' }
     $env:VDF_AI_DEVICE = 'gpu'
     $env:VDF_AI_CUDA_GRAPH_OPT = if ($mode -eq 'fp16-cuda') { 'extended' } else { 'basic' }
+    $env:VDF_AI_STRICT_INFERENCE = '1'
+    if ($mode -eq 'fp16-cuda') {
+        . (Join-Path $PSScriptRoot 'Initialize-VdfCudaDependencies.ps1')
+        Initialize-VdfCudaDependencies
+    }
     $argsForCli = @('scan-and-compare','--include',$clips,'--db',$db,
         '--ai-matching','--ai-partial','--ai-percent','94','--ai-partial-hit-percent','89',
         '--format','json','--output',$raw)

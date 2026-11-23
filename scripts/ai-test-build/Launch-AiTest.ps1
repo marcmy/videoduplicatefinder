@@ -23,6 +23,11 @@ $env:VDF_AI_MODEL = if ($Mode -eq 'fp16-cuda') { 'fp16' } else { 'int8' }
 $env:VDF_AI_PROVIDER = if ($Mode -eq 'fp16-cuda') { 'cuda' } else { 'directml' }
 $env:VDF_AI_DEVICE = 'gpu' # fail rather than silently fall back to CPU
 $env:VDF_AI_CUDA_GRAPH_OPT = if ($Mode -eq 'fp16-cuda') { 'extended' } else { 'basic' }
+$env:VDF_AI_STRICT_INFERENCE = '1'
+if ($Mode -eq 'fp16-cuda') {
+    . (Join-Path $PSScriptRoot 'Initialize-VdfCudaDependencies.ps1')
+    Initialize-VdfCudaDependencies
+}
 Write-Host ("VDF ONNX TEST: {0}; state {1}" -f $Mode, $env:VDF_DATA_DIR) -ForegroundColor Cyan
 Write-Host 'Experimental build. Test only generated media; do not use your normal scan database.'
 & $exe @CommandArguments
