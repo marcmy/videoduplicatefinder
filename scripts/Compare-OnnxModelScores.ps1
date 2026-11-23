@@ -4,6 +4,10 @@
 param(
     [ValidateSet('cuda','directml','cpu')]
     [string]$Provider = 'cuda',
+    [ValidateSet('','directml','cuda','cpu')]
+    [string]$BaselineProvider = '',
+    [ValidateSet('','directml','cuda','cpu')]
+    [string]$CandidateProvider = '',
     [ValidateSet('int8','fp32','fp16')]
     [string]$BaselineModel = 'int8',
     [ValidateSet('int8','fp32','fp16')]
@@ -18,14 +22,16 @@ param(
     [double[]]$Thresholds = @(89,94)
 )
 $ErrorActionPreference = 'Stop'
-$baseTag = if ($Provider -eq 'cuda' -and $BaselineOptimization -ne 'basic') { "-$BaselineOptimization" } else { '' }
-$otherTag = if ($Provider -eq 'cuda' -and $CandidateOptimization -ne 'basic') { "-$CandidateOptimization" } else { '' }
+$baseProvider = if ($BaselineProvider) { $BaselineProvider } else { $Provider }
+$candidateProvider = if ($CandidateProvider) { $CandidateProvider } else { $Provider }
+$baseTag = if ($baseProvider -eq 'cuda' -and $BaselineOptimization -ne 'basic') { "-$BaselineOptimization" } else { '' }
+$otherTag = if ($candidateProvider -eq 'cuda' -and $CandidateOptimization -ne 'basic') { "-$CandidateOptimization" } else { '' }
 if ($CorpusTag) { $baseTag += "-$CorpusTag"; $otherTag += "-$CorpusTag" }
-$baseFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $BaselineModel,$Provider,$baseTag,$Run)
+$baseFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $BaselineModel,$baseProvider,$baseTag,$Run)
 if (-not (Test-Path $baseFile) -and $BaselineModel -eq 'int8' -and -not $CorpusTag) {
-    $baseFile = Join-Path $ReportDirectory ("{0}-run{1}.json" -f $Provider,$Run)
+    $baseFile = Join-Path $ReportDirectory ("{0}-run{1}.json" -f $baseProvider,$Run)
 }
-$otherFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $CandidateModel,$Provider,$otherTag,$Run)
+$otherFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $CandidateModel,$candidateProvider,$otherTag,$Run)
 if (-not (Test-Path $baseFile)) { throw "Baseline JSON missing: $baseFile" }
 if (-not (Test-Path $otherFile)) { throw "Candidate JSON missing: $otherFile" }
 $a = Get-Content -LiteralPath $baseFile -Raw | ConvertFrom-Json
@@ -53,7 +59,7 @@ for ($i = 0; $i -lt $a.pairs.Count; $i++) {
     }
 }
 $summary = $rows | Sort-Object AbsoluteDelta -Descending
-Write-Host "Baseline: $BaselineModel/$Provider ($BaselineOptimization); candidate: $CandidateModel/$Provider ($CandidateOptimization)" -ForegroundColor Cyan
+Write-Host "Baseline: $BaselineModel/$baseProvider ($BaselineOptimization); candidate: $CandidateModel/$candidateProvider ($CandidateOptimization)" -ForegroundColor Cyan
 Write-Host ("Max absolute difference: {0:N3} percentage points; mean absolute difference: {1:N3}" -f
     $summary[0].AbsoluteDelta, (($rows | Measure-Object -Property AbsoluteDelta -Average).Average))
 foreach ($threshold in $Thresholds) {
