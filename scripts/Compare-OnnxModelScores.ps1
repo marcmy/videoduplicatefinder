@@ -12,6 +12,7 @@ param(
     [string]$BaselineOptimization = 'basic',
     [ValidateSet('basic','extended','all','disabled')]
     [string]$CandidateOptimization = 'basic',
+    [ValidateSet('','public')][string]$CorpusTag = '',
     [int]$Run = 1,
     [string]$ReportDirectory = (Join-Path ([IO.Path]::GetTempPath()) 'VDF.OnnxBenchmark\reports'),
     [double[]]$Thresholds = @(89,94)
@@ -19,8 +20,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $baseTag = if ($Provider -eq 'cuda' -and $BaselineOptimization -ne 'basic') { "-$BaselineOptimization" } else { '' }
 $otherTag = if ($Provider -eq 'cuda' -and $CandidateOptimization -ne 'basic') { "-$CandidateOptimization" } else { '' }
+if ($CorpusTag) { $baseTag += "-$CorpusTag"; $otherTag += "-$CorpusTag" }
 $baseFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $BaselineModel,$Provider,$baseTag,$Run)
-if (-not (Test-Path $baseFile) -and $BaselineModel -eq 'int8') {
+if (-not (Test-Path $baseFile) -and $BaselineModel -eq 'int8' -and -not $CorpusTag) {
     $baseFile = Join-Path $ReportDirectory ("{0}-run{1}.json" -f $Provider,$Run)
 }
 $otherFile = Join-Path $ReportDirectory ("{0}-{1}{2}-run{3}.json" -f $CandidateModel,$Provider,$otherTag,$Run)
@@ -41,7 +43,9 @@ for ($i = 0; $i -lt $a.pairs.Count; $i++) {
     $leftScore = [double]$left.quantizedSimilarity * 100
     $rightScore = [double]$right.quantizedSimilarity * 100
     $rows += [pscustomobject]@{
-        Pair = "$($left.a)-$($left.b)"
+        Pair = if ($null -ne $left.idA -and $null -ne $left.idB) {
+            "$($left.idA) / $($left.idB)" } else { "$($left.a)-$($left.b)" }
+        ExpectedAligned = $left.expectedAligned
         BaselinePct = $leftScore
         CandidatePct = $rightScore
         DeltaPoints = [math]::Round($rightScore - $leftScore, 3)
@@ -62,6 +66,13 @@ foreach ($threshold in $Thresholds) {
     })
     Write-Host ("Threshold {0}%: {1} flips in {2} pairs; {3} pair(s) within 5 points of threshold" -f
         $threshold, $flips.Count, $rows.Count, $near.Count)
+    if ($CorpusTag -eq 'public') {
+        $aligned = @($rows | Where-Object { $_.ExpectedAligned -eq $true })
+        $changedAligned = @($flips | Where-Object { $_.ExpectedAligned -eq $true })
+        $changedOther = @($flips | Where-Object { $_.ExpectedAligned -ne $true })
+        Write-Host ("  Aligned synthetic-source pairs: {0}; decision flips: {1}; other pairs flipping: {2}" -f
+            $aligned.Count, $changedAligned.Count, $changedOther.Count)
+    }
 }
 $summary | Select-Object -First 15 Pair,
     @{Name='BaselinePct';Expression={[math]::Round($_.BaselinePct,3)}},
