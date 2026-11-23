@@ -59,11 +59,11 @@ foreach ($spec in $specs) {
         $clipName = "$($spec.id)-$($t.variant).mp4"
         $clipPath = Join-Path $clipsDir $clipName
         if ($t.variant -ne 'original') {
-            $args = @('-i',$original,'-an')
-            if ($null -ne $t.filter) { $args += @('-vf', $t.filter) }
-            $args += @('-c:v','libx264','-preset','veryfast','-crf',"$($t.crf)",
+            $ffArgs = @('-i',$original,'-an')
+            if ($null -ne $t.filter) { $ffArgs += @('-vf', $t.filter) }
+            $ffArgs += @('-c:v','libx264','-preset','veryfast','-crf',"$($t.crf)",
                 '-pix_fmt','yuv420p','-threads','2','-movflags','+faststart',$clipPath)
-            Run-Ffmpeg -Arguments $args
+            Run-Ffmpeg -Arguments $ffArgs
         }
         $clips.Add([pscustomobject]@{
             id = [IO.Path]::GetFileNameWithoutExtension($clipName)
