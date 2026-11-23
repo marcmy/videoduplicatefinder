@@ -16,6 +16,7 @@
 
 using System.Runtime.InteropServices;
 using VDF.Core.AI;
+using VDF.TestSupport;
 
 namespace VDF.Core.Tests.AI;
 
@@ -26,28 +27,22 @@ public class AiComponentsTests {
 		(Uri url, string archive, string? nativeDirectory) = AiComponents.GetRuntimeDownloadPlan();
 
 		Assert.Contains(AiComponents.RuntimeVersion, archive);
+		Assert.StartsWith("https://api.nuget.org/v3-flatcontainer/", url.AbsoluteUri);
+		Assert.EndsWith(".nupkg", archive);
+		Assert.StartsWith("runtimes/", nativeDirectory);
+		Assert.EndsWith("/native", nativeDirectory);
 		if (AiComponents.UsesDirectMLRuntime) {
-			// Windows: the DirectML build, published only on NuGet.
 			Assert.Equal(AiComponents.DirectMLRuntimeVersion, AiComponents.RuntimeVersion);
-			Assert.StartsWith("https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/", url.AbsoluteUri);
-			Assert.EndsWith(".nupkg", archive);
-			Assert.StartsWith("runtimes/win-", nativeDirectory);
-			Assert.EndsWith("/native", nativeDirectory);
+			Assert.Contains("microsoft.ml.onnxruntime.directml", url.AbsoluteUri);
 			Assert.EndsWith("-directml", AiComponents.RuntimeVersionMarker);
 		}
+		else if (AiComponents.UsesCudaRuntime) {
+			Assert.Contains(".gpu.", url.AbsoluteUri);
+			Assert.EndsWith("-cuda", AiComponents.RuntimeVersionMarker);
+		}
 		else {
-			Assert.Equal(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersion);
-			Assert.Contains("github.com/microsoft/onnxruntime/releases/download", url.AbsoluteUri);
-			Assert.Contains($"v{AiComponents.RuntimeVersion}", url.AbsoluteUri);
-			Assert.Null(nativeDirectory);
-			Assert.Equal(AiComponents.RuntimeVersion, AiComponents.RuntimeVersionMarker);
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-				Assert.StartsWith("onnxruntime-win-", archive);
-				Assert.EndsWith(".zip", archive);
-			}
-			else {
-				Assert.EndsWith(".tgz", archive);
-			}
+			Assert.Contains("/microsoft.ml.onnxruntime/", url.AbsoluteUri);
+			Assert.EndsWith("-cpu", AiComponents.RuntimeVersionMarker);
 		}
 	}
 
@@ -58,6 +53,100 @@ public class AiComponentsTests {
 		if (!AiComponents.UsesDirectMLRuntime)
 			return;
 		Assert.NotEqual(AiComponents.CpuRuntimeVersion, AiComponents.RuntimeVersionMarker);
+	}
+
+	[Fact]
+	public async Task DownloadedNativeRuntime_ExecutesModel_OptIn() {
+		// Opt-in only: run in a separate dotnet test process.
+		if (Environment.GetEnvironmentVariable("VDF_TEST_ONNX_DOWNLOAD") != "1") return;
+		string dir = Directory.CreateTempSubdirectory("vdf-onnx-smoke").FullName;
+		try {
+			AiComponents.TestAiFolder.Value = dir;
+			File.Copy(TestModels.TinyEmbedderPath, AiComponents.ModelPath);
+			await AiComponents.DownloadAsync(null, CancellationToken.None);
+			AiComponents.EnsureReady();
+			bool gpu = Environment.GetEnvironmentVariable("VDF_TEST_ONNX_GPU") == "1";
+			using var embedder = new OnnxEmbedder(AiComponents.ModelPath,
+				gpu ? AiInferenceDevice.Gpu : AiInferenceDevice.Cpu);
+			Assert.Equal(gpu, embedder.UsesGpu);
+			var result = embedder.EmbedBatch(new[] { new byte[OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3] });
+			Assert.Single(result);
+			Assert.Equal(EmbeddingMath.Dimensions, result[0].Length);
+			Assert.All(result[0], x => Assert.True(float.IsFinite(x)));
+		}
+		finally {
+			AiComponents.TestAiFolder.Value = null;
+			// Windows keeps the native ONNX DLL loaded until the test host exits.
+			// Do not mask the real ONNX/CUDA failure with a cleanup exception.
+			// An unloaded test folder can be removed after the host process exits.
+			try { Directory.Delete(dir, recursive: true); }
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
+		}
+	}
+
+	[Fact]
+	public void EmbeddingSidecars_KeepLegacyInt8AndIsolateFutureModels() {
+		// Existing users retain their unmodified untagged INT8 cache files.
+		Assert.Equal("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileName("UnionEmbeddings.db"));
+		Assert.Equal("DenseEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileName("DenseEmbeddings.db"));
+
+		const string futureHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		string union = AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 1);
+		string dense = AiComponents.EmbeddingSidecarFileNameForModel("DenseEmbeddings.db", futureHash, 1);
+		Assert.Equal($"UnionEmbeddings.{futureHash}.p1.db", union);
+		Assert.Equal($"DenseEmbeddings.{futureHash}.p1.db", dense);
+		Assert.NotEqual(union, AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 2));
+		Assert.NotEqual("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db",
+				AiComponents.LegacyInt8ModelSha256, 2));
+		Assert.Throws<ArgumentException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", "bad", 1));
+		Assert.Throws<ArgumentOutOfRangeException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel("UnionEmbeddings.db", futureHash, 0));
+	}
+
+	[Theory]
+	[InlineData(null, "int8")]
+	[InlineData("", "int8")]
+	[InlineData(" INT8 ", "int8")]
+	[InlineData("Fp16", "fp16")]
+	public void ExperimentalModelSelection_OptInOnly(string? setting, string expected) =>
+		Assert.Equal(expected, AiComponents.ParseModelVariant(setting));
+
+	[Fact]
+	public void ExperimentalModelSelection_RejectsUnknownModel() =>
+		Assert.Throws<ArgumentException>(() => AiComponents.ParseModelVariant("fp32"));
+
+	[Fact]
+	public void ExperimentalFp16Model_UsesKnownPinnedHash() {
+		Assert.Equal(64, AiComponents.Fp16ModelSha256.Length);
+		Assert.All(AiComponents.Fp16ModelSha256, c => Assert.True(Uri.IsHexDigit(c)));
+		Assert.Equal("dinov2-small-fp16.onnx", AiComponents.Fp16ModelFileName);
+		Assert.Contains("model_fp16.onnx", AiComponents.Fp16ModelUrl);
+	}
+
+	[Fact]
+	public void EmbeddingCaches_SeparateExecutionProviderAndOptimizationMode() {
+		const string name = "UnionEmbeddings.db";
+		string fp16CudaBasic = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "cuda-1.32.0-basic");
+		string fp16CudaExtended = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "cuda-1.32.0-extended");
+		string fp16DirectMl = AiComponents.EmbeddingSidecarFileNameForModel(name,
+			AiComponents.Fp16ModelSha256, 1, "directml-1.24.4");
+		Assert.NotEqual(fp16CudaBasic, fp16CudaExtended);
+		Assert.NotEqual(fp16CudaExtended, fp16DirectMl);
+		Assert.NotEqual(fp16CudaExtended, "UnionEmbeddings.db");
+		Assert.EndsWith(".cuda-1.32.0-extended.db", fp16CudaExtended);
+		Assert.NotEqual("UnionEmbeddings.db",
+			AiComponents.EmbeddingSidecarFileNameForModel(
+				name, AiComponents.LegacyInt8ModelSha256, 1, "cuda-1.32.0-basic"));
+		Assert.Throws<ArgumentException>(() =>
+			AiComponents.EmbeddingSidecarFileNameForModel(
+				name, AiComponents.Fp16ModelSha256, 1, "../escape"));
 	}
 
 	[Fact]

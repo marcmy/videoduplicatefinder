@@ -27,7 +27,7 @@ namespace VDF.Core.AI {
 	/// </summary>
 	/// <summary>Where AI inference should run.</summary>
 	public enum AiInferenceDevice {
-		/// <summary>GPU (DirectML) when the runtime and hardware support it, otherwise CPU.</summary>
+		/// <summary>GPU (DirectML or experimental CUDA) when available, otherwise CPU.</summary>
 		Auto,
 		/// <summary>Always CPU.</summary>
 		Cpu,
@@ -48,8 +48,25 @@ namespace VDF.Core.AI {
 		readonly string inputName;
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
+		readonly bool profilingEnabled;
+		readonly TensorElementType inputDataType;
+		readonly TensorElementType outputDataType;
 
 		internal const string DeviceEnvVar = "VDF_AI_DEVICE";
+		internal const string CudaGraphOptimizationEnvVar = "VDF_AI_CUDA_GRAPH_OPT";
+
+		// CUDA-only experimental override. Production default stays BASIC until
+		// real-model correctness and performance are validated per model and GPU.
+		internal static GraphOptimizationLevel ParseCudaGraphOptimization(string? value) =>
+			value?.Trim().ToLowerInvariant() switch {
+				null or "" or "basic" => GraphOptimizationLevel.ORT_ENABLE_BASIC,
+				"extended" => GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+				"all" => GraphOptimizationLevel.ORT_ENABLE_ALL,
+				"disabled" => GraphOptimizationLevel.ORT_DISABLE_ALL,
+				_ => throw new ArgumentException(
+					"VDF_AI_CUDA_GRAPH_OPT must be basic, extended, all or disabled.",
+					CudaGraphOptimizationEnvVar)
+			};
 
 		public OnnxEmbedder(string modelPath) : this(modelPath, GetConfiguredDevice()) { }
 
@@ -63,43 +80,60 @@ namespace VDF.Core.AI {
 
 		public OnnxEmbedder(string modelPath, AiInferenceDevice device) {
 			AiComponents.LoadRuntime();
-			session = CreateSession(modelPath, device, out bool usesGpu, out string description);
+			string? profilePrefix = Environment.GetEnvironmentVariable("VDF_AI_PROFILE_PREFIX");
+			profilingEnabled = !string.IsNullOrWhiteSpace(profilePrefix);
+			session = CreateSession(modelPath, device, profilePrefix, out bool usesGpu, out string description);
 			UsesGpu = usesGpu;
 			Description = description;
 			inputName = session.InputMetadata.Keys.First();
+			inputDataType = session.InputMetadata[inputName].ElementDataType;
+			if (inputDataType is not (TensorElementType.Float or TensorElementType.Float16))
+				throw new NotSupportedException($"Model input uses unsupported ONNX tensor type {inputDataType}.");
 			// DINOv2 exports emit last_hidden_state (CLS token = the image embedding);
 			// keep the generic fallbacks so a future model swap keeps working.
 			if (session.OutputMetadata.ContainsKey("image_embeds")) outputName = "image_embeds";
 			else if (session.OutputMetadata.ContainsKey("pooler_output")) outputName = "pooler_output";
 			else { outputName = session.OutputMetadata.Keys.First(); clsFromHiddenState = true; }
+			outputDataType = session.OutputMetadata[outputName].ElementDataType;
+			if (outputDataType is not (TensorElementType.Float or TensorElementType.Float16))
+				throw new NotSupportedException($"Model output uses unsupported ONNX tensor type {outputDataType}.");
 		}
 
-		/// <summary>True when inference runs on the GPU (DirectML execution provider).</summary>
+		/// <summary>True when the requested GPU execution provider initialized.</summary>
 		public bool UsesGpu { get; }
 		/// <summary>Human-readable execution provider description for logs.</summary>
 		public string Description { get; }
 
-		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, out bool usesGpu, out string description) {
+		static InferenceSession CreateSession(string modelPath, AiInferenceDevice device, string? profilePrefix, out bool usesGpu, out string description) {
 			usesGpu = false;
 			string? gpuFailure = null;
-			if (device != AiInferenceDevice.Cpu && OperatingSystem.IsWindows()) {
+			if (device != AiInferenceDevice.Cpu && (OperatingSystem.IsWindows() || AiComponents.UsesCudaRuntime)) {
 				// InferenceSession does NOT take ownership of caller-supplied options.
 				using var gpuOptions = new SessionOptions();
+				ConfigureProfiling(gpuOptions, profilePrefix);
 				try {
 					// DirectML requires sequential execution and no memory-pattern planning.
-					gpuOptions.EnableMemoryPattern = false;
-					gpuOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					if (!AiComponents.UsesCudaRuntime) {
+						gpuOptions.EnableMemoryPattern = false;
+						gpuOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					}
 					// Extended (fusion/layout) optimizations crash DirectML on the dynamically
 					// quantized DINOv2 graph (access violation in session init, ORT 1.23). Basic
 					// constant folding / redundancy elimination is safe and keeps embeddings
 					// within ~0.3% of the CPU provider, so existing caches stay comparable.
-					gpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
+					gpuOptions.GraphOptimizationLevel = AiComponents.UsesCudaRuntime
+						? ParseCudaGraphOptimization(Environment.GetEnvironmentVariable(CudaGraphOptimizationEnvVar))
+						: GraphOptimizationLevel.ORT_ENABLE_BASIC;
 					// Only the few ops DirectML cannot run stay on the CPU; keep them small.
-					gpuOptions.IntraOpNumThreads = 1;
-					gpuOptions.AppendExecutionProvider_DML(0);
+					if (!AiComponents.UsesCudaRuntime)
+						gpuOptions.IntraOpNumThreads = 1;
+					if (AiComponents.UsesCudaRuntime)
+						gpuOptions.AppendExecutionProvider_CUDA(0);
+					else
+						gpuOptions.AppendExecutionProvider_DML(0);
 					var gpuSession = new InferenceSession(modelPath, gpuOptions);
 					usesGpu = true;
-					description = "DirectML (GPU 0)";
+					description = AiComponents.UsesCudaRuntime ? "CUDA (GPU 0)" : "DirectML (GPU 0)";
 					return gpuSession;
 				}
 				catch (Exception e) when (device == AiInferenceDevice.Auto && e is not OutOfMemoryException) {
@@ -108,7 +142,10 @@ namespace VDF.Core.AI {
 				}
 			}
 
+			if (device == AiInferenceDevice.Gpu)
+				throw new PlatformNotSupportedException("GPU backend unavailable. Select VDF_AI_PROVIDER=cuda on NVIDIA Linux x64.");
 			using var options = new SessionOptions();
+			ConfigureProfiling(options, profilePrefix);
 			// The embedder shares the machine with the decode workers during hashing;
 			// give inference a portion of the cores, not all of them.
 			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
@@ -139,21 +176,48 @@ namespace VDF.Core.AI {
 				}
 			}
 
-			using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
-				session.Run(new[] { NamedOnnxValue.CreateFromTensor(inputName, tensor) });
-			var outputTensor = (DenseTensor<float>)results.First(v => v.Name == outputName).AsTensor<float>();
-			ReadOnlySpan<int> dims = outputTensor.Dimensions;
-			int dim = dims[^1];
-			// last_hidden_state is [batch, tokens, dim]; the CLS token (index 0) is the embedding.
-			int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
-			Span<float> output = outputTensor.Buffer.Span;
+			// ONNX FP16 exports may have float16 inputs and/or outputs. Convert only
+			// when the model metadata requires it; production FP32 I/O is unchanged.
+			NamedOnnxValue input;
+			if (inputDataType == TensorElementType.Float16) {
+				var halfTensor = new DenseTensor<Float16>(new[] { batch, 3, InputSide, InputSide });
+				Span<Float16> half = halfTensor.Buffer.Span;
+				for (int i = 0; i < buffer.Length; i++)
+					half[i] = new Float16(BitConverter.HalfToUInt16Bits((Half)buffer[i]));
+				input = NamedOnnxValue.CreateFromTensor(inputName, halfTensor);
+			}
+			else input = NamedOnnxValue.CreateFromTensor(inputName, tensor);
 
+			using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = session.Run(new[] { input });
+			DisposableNamedOnnxValue result = results.First(v => v.Name == outputName);
 			var embeddings = new float[batch][];
-			for (int k = 0; k < batch; k++) {
-				var e = new float[dim];
-				output.Slice(k * stride, dim).CopyTo(e);
-				Normalize(e);
-				embeddings[k] = e;
+			if (outputDataType == TensorElementType.Float16) {
+				var outputTensor = (DenseTensor<Float16>)result.AsTensor<Float16>();
+				ReadOnlySpan<int> dims = outputTensor.Dimensions;
+				int dim = dims[^1];
+				int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
+				ReadOnlySpan<Float16> output = outputTensor.Buffer.Span;
+				for (int k = 0; k < batch; k++) {
+					var e = new float[dim];
+					for (int i = 0; i < dim; i++)
+						e[i] = (float)BitConverter.UInt16BitsToHalf(output[k * stride + i].value);
+					Normalize(e);
+					embeddings[k] = e;
+				}
+			}
+			else {
+				var outputTensor = (DenseTensor<float>)result.AsTensor<float>();
+				ReadOnlySpan<int> dims = outputTensor.Dimensions;
+				int dim = dims[^1];
+				// last_hidden_state is [batch, tokens, dim]; CLS token is embedding.
+				int stride = clsFromHiddenState && dims.Length == 3 ? dims[1] * dim : dim;
+				ReadOnlySpan<float> output = outputTensor.Buffer.Span;
+				for (int k = 0; k < batch; k++) {
+					var e = new float[dim];
+					output.Slice(k * stride, dim).CopyTo(e);
+					Normalize(e);
+					embeddings[k] = e;
+				}
 			}
 			return embeddings;
 		}
@@ -174,6 +238,16 @@ namespace VDF.Core.AI {
 			float inv = (float)(1.0 / Math.Sqrt(Math.Max(sum, 1e-12)));
 			for (int i = 0; i < v.Length; i++)
 				v[i] *= inv;
+		}
+
+		// Profiling is opt-in and stops before the benchmark writes its JSON report.
+		// Call once, after the final inference and before disposing the session.
+		internal string? EndProfiling() => profilingEnabled ? session.EndProfiling() : null;
+
+		static void ConfigureProfiling(SessionOptions options, string? prefix) {
+			if (string.IsNullOrWhiteSpace(prefix)) return;
+			options.ProfileOutputPathPrefix = prefix;
+			options.EnableProfiling = true;
 		}
 
 		public void Dispose() => session.Dispose();

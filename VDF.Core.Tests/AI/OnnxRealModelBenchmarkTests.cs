@@ -1,0 +1,328 @@
+// Real DINOv2 benchmark. Deliberately opt-in: downloads the SHA-pinned model
+// and versioned ONNX native library; GPU validation requires a local GPU runner.
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
+using VDF.Core.AI;
+using Xunit.Abstractions;
+
+namespace VDF.Core.Tests.AI;
+
+public sealed class OnnxRealModelBenchmarkTests {
+	// SHA256 from Xenova/dinov2-small/onnx/model.onnx on Hugging Face.
+	// The FP32 model is benchmark-only; VDF production retains its pinned INT8 model.
+	private const string Fp32Url = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
+	private const string Fp32Sha256 = "83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea";
+	private const string Fp16Url = "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model_fp16.onnx";
+	private const string Fp16Sha256 = "4e9ea6fe106e2225e28ee3c1c3d53b5b92aa4af62142f6ed6b66b6a92213cf04";
+	private readonly ITestOutputHelper output;
+	public OnnxRealModelBenchmarkTests(ITestOutputHelper output) => this.output = output;
+
+	[Fact]
+	public async Task DINOv2_RealModel_Benchmark_OptIn() {
+		if (Environment.GetEnvironmentVariable("VDF_ONNX_BENCHMARK") != "1") return;
+		string? target = Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_OUTPUT");
+		if (string.IsNullOrWhiteSpace(target))
+			throw new ArgumentException("Set VDF_ONNX_BENCH_OUTPUT to the JSON report path.");
+
+		string reportPath = Path.GetFullPath(target);
+		Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+		string componentDir = Path.Combine(Path.GetTempPath(), "VDF.OnnxBenchmark", "components");
+		Directory.CreateDirectory(componentDir);
+		// Each backend runs as a separate dotnet test process. ONNX native DLLs
+		// remain loaded for the lifetime of that process on Windows.
+		AiComponents.TestAiFolder.Value = componentDir;
+		try {
+			await AiComponents.DownloadAsync(progress: null, CancellationToken.None);
+			AiComponents.EnsureReady();
+			string modelVariant = (Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_MODEL") ?? "int8")
+				.Trim().ToLowerInvariant();
+			Assert.True(modelVariant is "int8" or "fp32" or "fp16",
+				"VDF_ONNX_BENCH_MODEL must be 'int8', 'fp32' or 'fp16'.");
+			string modelPath = modelVariant switch {
+				"fp32" => Path.Combine(componentDir, "dinov2-small-fp32.onnx"),
+				"fp16" => Path.Combine(componentDir, "dinov2-small-fp16.onnx"),
+				_ => AiComponents.ModelPath
+			};
+			string modelSha256 = modelVariant switch {
+				"fp32" => Fp32Sha256, "fp16" => Fp16Sha256, _ => AiComponents.ModelSha256
+			};
+			if (modelVariant == "fp32" || modelVariant == "fp16")
+				await EnsureModelAsync(modelPath,
+					modelVariant == "fp16" ? Fp16Url : Fp32Url,
+					modelSha256, CancellationToken.None);
+			using (var stream = File.OpenRead(modelPath)) {
+				string hash = Convert.ToHexString(SHA256.HashData(stream));
+				Assert.Equal(modelSha256, hash, ignoreCase: true);
+			}
+
+			bool cuda = AiComponents.UsesCudaRuntime;
+			bool directML = AiComponents.UsesDirectMLRuntime;
+			string? cudaGraphOptimization = cuda
+				? (Environment.GetEnvironmentVariable(OnnxEmbedder.CudaGraphOptimizationEnvVar) ?? "basic")
+					.Trim().ToLowerInvariant()
+				: null;
+			string provider = cuda ? "cuda" : directML ? "directml" : "cpu";
+			AiInferenceDevice device = cuda || directML ? AiInferenceDevice.Gpu : AiInferenceDevice.Cpu;
+			SampleFrame[] corpusFrames = LoadBenchmarkFrames();
+			byte[][] samples = corpusFrames.Select(f => f.Rgb).ToArray();
+			float[][] embeddings;
+			double[] singleMs;
+			double[] batchMs;
+			string description;
+			var batch = new[] {
+				samples[0], samples[1], samples[2], samples[3],
+				samples[4], samples[5], samples[0], samples[2]
+			};
+			using (var embedder = new OnnxEmbedder(modelPath, device)) {
+				description = embedder.Description;
+				Assert.Equal(cuda || directML, embedder.UsesGpu);
+				// Warm up the native kernels and memory allocators before measuring.
+				for (int i = 0; i < 3; i++) embedder.EmbedBatch(new[] { samples[0] });
+				for (int i = 0; i < 2; i++) embedder.EmbedBatch(batch);
+				var all = new List<float[]>(samples.Length);
+				for (int first = 0; first < samples.Length; first += 8)
+					all.AddRange(embedder.EmbedBatch(samples.Skip(first).Take(8).ToArray()));
+				embeddings = all.ToArray();
+				Assert.Equal(samples.Length, embeddings.Length);
+				foreach (float[] vector in embeddings) {
+					Assert.Equal(EmbeddingMath.Dimensions, vector.Length);
+					Assert.All(vector, v => Assert.True(float.IsFinite(v)));
+					double norm = Math.Sqrt(vector.Sum(v => (double)v * v));
+					Assert.InRange(norm, 0.999, 1.001);
+				}
+				singleMs = Measure(embedder, new[] { samples[0] }, 12);
+				batchMs = Measure(embedder, batch, 6);
+			}
+
+			// Enable ONNX profiling only in a SECOND session. Profiling can add
+			// overhead and would contaminate the timing measurements above.
+			string? oldPrefix = Environment.GetEnvironmentVariable("VDF_AI_PROFILE_PREFIX");
+			string? profilePath;
+			try {
+				string optimizationTag = cuda && cudaGraphOptimization != "basic"
+					? $"-{cudaGraphOptimization}" : "";
+				string prefix = Path.Combine(Path.GetDirectoryName(reportPath)!,
+					$"onnx-profile-{modelVariant}-{provider}{optimizationTag}-{Environment.ProcessId}");
+				Environment.SetEnvironmentVariable("VDF_AI_PROFILE_PREFIX", prefix);
+				using var embedder = new OnnxEmbedder(modelPath, device);
+				embedder.EmbedBatch(batch);
+				profilePath = embedder.EndProfiling();
+			}
+			finally {
+				Environment.SetEnvironmentVariable("VDF_AI_PROFILE_PREFIX", oldPrefix);
+			}
+			Assert.False(string.IsNullOrWhiteSpace(profilePath));
+			Assert.True(File.Exists(profilePath), "ONNX profiling output was not written.");
+
+			byte[][] q = embeddings.Select(e => EmbeddingMath.QuantizeUnitVector(e)).ToArray();
+			var pairs = (from i in Enumerable.Range(0, samples.Length)
+						 from j in Enumerable.Range(i + 1, samples.Length - i - 1)
+						 select new {
+							 a = i, b = j,
+							 idA = corpusFrames[i].Id, idB = corpusFrames[j].Id,
+							 expectedAligned = corpusFrames[i].Source != null &&
+								 corpusFrames[j].Source != null
+								 ? (bool?)(corpusFrames[i].Source == corpusFrames[j].Source &&
+									 corpusFrames[i].Second == corpusFrames[j].Second)
+								 : null,
+							 rawCosine = Cosine(embeddings[i], embeddings[j]),
+							 quantizedSimilarity = EmbeddingMath.CosineSimilarity(q[i], q[j]),
+						 }).ToArray();
+			var profile = ProfileSummary(profilePath!);
+			var report = new {
+				formatVersion = 3,
+				corpusType = corpusFrames[0].Source == null ? "deterministic-synthetic-frames" : "generated-ffmpeg-video",
+				frameIds = corpusFrames.Select(f => f.Id).ToArray(),
+				frameSha256 = corpusFrames.Select(f =>
+					Convert.ToHexString(SHA256.HashData(f.Rgb)).ToLowerInvariant()).ToArray(),
+				modelVariant,
+				provider,
+				cudaGraphOptimization,
+				description,
+				nativeRuntime = AiComponents.RuntimeVersion,
+				managedRuntime = "1.24.4",
+				modelSha256,
+				operatingSystem = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+				architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+				processorCount = Environment.ProcessorCount,
+				generatedUtc = DateTimeOffset.UtcNow,
+				singleMs,
+				batch8Ms = batchMs,
+				singleMedianMs = Median(singleMs),
+				batch8MedianMs = Median(batchMs),
+				embeddings,
+				pairs,
+				profileFileName = Path.GetFileName(profilePath),
+				profile = new { profile.gpuNodes, profile.cpuNodes, profile.otherNodes },
+			};
+			await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report,
+				new JsonSerializerOptions { WriteIndented = true }));
+			output.WriteLine($"DINOv2 {modelVariant} {provider}: 1-frame median {Median(singleMs):F2} ms, 8-frame median {Median(batchMs):F2} ms");
+			output.WriteLine($"Profile: {profilePath}; GPU nodes: {profile.gpuNodes}, CPU nodes: {profile.cpuNodes}");
+			output.WriteLine($"JSON report: {reportPath}");
+		}
+		finally {
+			AiComponents.TestAiFolder.Value = null;
+		}
+	}
+
+	private sealed record SampleFrame(string Id, string? Source, int? Second, byte[] Rgb);
+
+	private static SampleFrame[] LoadBenchmarkFrames() {
+		string? corpusRoot = Environment.GetEnvironmentVariable("VDF_ONNX_BENCH_CORPUS");
+		if (string.IsNullOrWhiteSpace(corpusRoot))
+			return MakeSamples().Select((rgb, index) =>
+				new SampleFrame($"synthetic-{index}", null, null, rgb)).ToArray();
+
+		// Only load a corpus created by scripts/New-ShareableAiCorpus.ps1.
+		// Filenames are deliberately confined to frames/<basename>.rgb,
+		// and reports include IDs only, never absolute user paths.
+		string root = Path.GetFullPath(corpusRoot);
+		string manifestPath = Path.Combine(root, "manifest.json");
+		using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+		var obj = manifest.RootElement;
+		if (obj.GetProperty("schemaVersion").GetInt32() != 1 ||
+			obj.GetProperty("sampleWidth").GetInt32() != OnnxEmbedder.InputSide ||
+			obj.GetProperty("sampleHeight").GetInt32() != OnnxEmbedder.InputSide ||
+			obj.GetProperty("rgbChannels").GetInt32() != 3)
+			throw new InvalidDataException("Unsupported public AI benchmark corpus manifest.");
+		var entries = obj.GetProperty("frames").EnumerateArray().ToArray();
+		if (entries.Length < 8 || entries.Length > 128)
+			throw new InvalidDataException("Expected 8 to 128 generated RGB frames.");
+
+		var samples = new List<SampleFrame>(entries.Length);
+		var ids = new HashSet<string>(StringComparer.Ordinal);
+		foreach (JsonElement entry in entries) {
+			string id = entry.GetProperty("id").GetString()
+				?? throw new InvalidDataException("Frame ID missing.");
+			string relative = entry.GetProperty("file").GetString()
+				?? throw new InvalidDataException("Frame path missing.");
+			string fileName = relative.StartsWith("frames/", StringComparison.Ordinal)
+				? relative.Substring("frames/".Length) : "";
+			if (fileName.Length == 0 || fileName != Path.GetFileName(fileName) ||
+				!fileName.EndsWith(".rgb", StringComparison.OrdinalIgnoreCase) ||
+				!ids.Add(id))
+				throw new InvalidDataException("Invalid or duplicate generated frame entry.");
+			string fullPath = Path.Combine(root, "frames", fileName);
+			byte[] rgb = File.ReadAllBytes(fullPath);
+			if (rgb.Length != OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3)
+				throw new InvalidDataException($"Unexpected RGB payload length for {id}.");
+			string actualHash = Convert.ToHexString(SHA256.HashData(rgb));
+			if (!actualHash.Equals(entry.GetProperty("sha256").GetString(),
+				StringComparison.OrdinalIgnoreCase))
+				throw new InvalidDataException($"RGB frame SHA-256 mismatch: {id}.");
+			samples.Add(new SampleFrame(id,
+				entry.GetProperty("source").GetString(),
+				entry.GetProperty("sampleSecond").GetInt32(), rgb));
+		}
+		return samples.ToArray();
+	}
+
+	private static async Task EnsureModelAsync(string modelPath, string modelUrl,
+		string expectedSha256, CancellationToken token) {
+		if (File.Exists(modelPath)) {
+			using var existing = File.OpenRead(modelPath);
+			if (Convert.ToHexString(SHA256.HashData(existing))
+				.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+				return;
+		}
+		string tempPath = modelPath + "." + Guid.NewGuid().ToString("N") + ".download";
+		try {
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+			timeout.CancelAfter(TimeSpan.FromMinutes(15));
+			using var http = new HttpClient();
+			using var response = await http.GetAsync(modelUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+			response.EnsureSuccessStatusCode();
+			if (response.Content.Headers.ContentLength is > 200_000_000)
+				throw new IOException("Unexpectedly large ONNX model.");
+			await using (var dest = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+				FileShare.None, 81920, useAsync: true))
+				await response.Content.CopyToAsync(dest, timeout.Token);
+			using (var stream = File.OpenRead(tempPath)) {
+				string actual = Convert.ToHexString(SHA256.HashData(stream));
+				if (!actual.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+					throw new IOException($"ONNX model SHA256 mismatch: got {actual}; expected {expectedSha256}.");
+			}
+			File.Move(tempPath, modelPath, overwrite: true);
+		}
+		finally {
+			if (File.Exists(tempPath)) File.Delete(tempPath);
+		}
+	}
+
+	private static double[] Measure(OnnxEmbedder model, byte[][] frames, int iterations) {
+		var durations = new double[iterations];
+		for (int i = 0; i < iterations; i++) {
+			long start = Stopwatch.GetTimestamp();
+			model.EmbedBatch(frames);
+			durations[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+		}
+		return durations;
+	}
+
+	private static double Median(double[] timings) {
+		double[] sorted = timings.Order().ToArray();
+		int mid = sorted.Length / 2;
+		return sorted.Length % 2 == 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+	}
+
+	private static float Cosine(float[] a, float[] b) {
+		double dot = 0;
+		for (int i = 0; i < a.Length; i++) dot += (double)a[i] * b[i];
+		return (float)Math.Clamp(dot, -1, 1);
+	}
+
+	private static (int gpuNodes, int cpuNodes, int otherNodes) ProfileSummary(string profilePath) {
+		using var doc = JsonDocument.Parse(File.ReadAllText(profilePath));
+		int gpu = 0, cpu = 0, other = 0;
+		foreach (var ev in doc.RootElement.EnumerateArray()) {
+			if (!ev.TryGetProperty("cat", out var cat) || cat.GetString() != "Node") continue;
+			if (!ev.TryGetProperty("args", out var args) ||
+				!args.TryGetProperty("provider", out var provider)) continue;
+			string p = provider.GetString() ?? "";
+			if (p.Contains("CUDA", StringComparison.OrdinalIgnoreCase) ||
+				p.Contains("Dml", StringComparison.OrdinalIgnoreCase)) gpu++;
+			else if (p.Contains("CPU", StringComparison.OrdinalIgnoreCase)) cpu++;
+			else other++;
+		}
+		return (gpu, cpu, other);
+	}
+
+	// Identical on every backend: textured gradient, a lightly altered version,
+	// spatial shift, stripes, a second texture, and an exact duplicate.
+	// These exercise output stability; they are NOT a substitute for real video
+	// samples around VDF's 94% and 89% decision thresholds.
+	private static byte[][] MakeSamples() {
+		int side = OnnxEmbedder.InputSide;
+		byte[] gradient = new byte[side * side * 3];
+		byte[] altered = new byte[gradient.Length];
+		byte[] shifted = new byte[gradient.Length];
+		byte[] stripes = new byte[gradient.Length];
+		byte[] texture = new byte[gradient.Length];
+		for (int y = 0; y < side; y++)
+		for (int x = 0; x < side; x++) {
+			int i = (y * side + x) * 3;
+			int checker = ((x / 11 + y / 13) % 2) * 45;
+			gradient[i] = (byte)((x + checker) % 256);
+			gradient[i + 1] = (byte)((y * 2 + checker) % 256);
+			gradient[i + 2] = (byte)((x + y + checker) % 256);
+			for (int c = 0; c < 3; c++)
+				altered[i + c] = (byte)Math.Clamp(gradient[i + c] + (x + y) % 7 - 3, 0, 255);
+			stripes[i] = (byte)((x / 9 % 2) * 230);
+			stripes[i + 1] = (byte)((y / 17 % 2) * 200);
+			stripes[i + 2] = (byte)((x / 9 + y / 17) % 2 * 255);
+			int hash = unchecked((x * 73856093) ^ (y * 19349663) ^ 12345);
+			texture[i] = (byte)hash;
+			texture[i + 1] = (byte)(hash >> 8);
+			texture[i + 2] = (byte)(hash >> 16);
+		}
+		for (int y = 0; y < side; y++)
+		for (int x = 0; x < side; x++) {
+			int from = (Math.Clamp(y - 3, 0, side - 1) * side +
+				Math.Clamp(x - 5, 0, side - 1)) * 3;
+			Array.Copy(gradient, from, shifted, (y * side + x) * 3, 3);
+		}
+		return new[] { gradient, altered, shifted, stripes, texture, (byte[])gradient.Clone() };
+	}
+}

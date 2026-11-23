@@ -56,7 +56,7 @@ namespace VDF.Core.AI {
 
 		internal static string StorePath =>
 			TestOverrideStorePath ??
-			FileUtils.SafePathCombine(CoreUtils.ResolveDatabaseFolder(Utils.DatabaseUtils.CustomDatabaseFolder), "DenseEmbeddings.db");
+			FileUtils.SafePathCombine(CoreUtils.ResolveDatabaseFolder(Utils.DatabaseUtils.CustomDatabaseFolder), AiComponents.EmbeddingSidecarFileName("DenseEmbeddings.db"));
 
 		/// <summary>Test hook: isolates store tests from the real database folder.</summary>
 		internal static string? TestOverrideStorePath;

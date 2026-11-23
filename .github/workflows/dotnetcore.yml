@@ -30,12 +30,18 @@ jobs:
           11.0.x
     - name: Build GUI
       run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q --self-contained -r win-x64
+    - name: Validate GUI win-x64 Native AOT publish
+      run: dotnet publish VDF.GUI/VDF.GUI.csproj -c Release -v q -p:PublishAot=true -r win-x64 -o onnx-aot-smoke
     - name: Build CLI
       run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64
     - name: Build Web
       run: dotnet publish VDF.Web/VDF.Web.csproj -c Release -v q --self-contained -r win-x64
     - name: Run Unit Tests
       run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
+    - name: Smoke test downloaded ONNX DirectML 1.24.4 native runtime
+      env:
+        VDF_TEST_ONNX_DOWNLOAD: '1'
+      run: dotnet test VDF.Core.Tests/VDF.Core.Tests.csproj -c Release -v q --filter "FullyQualifiedName~DownloadedNativeRuntime_ExecutesModel_OptIn" --logger "console;verbosity=minimal"
     - name: Run CLI Tests
       run: dotnet test VDF.CLI.Tests/VDF.CLI.Tests.csproj -c Release -v q --logger "console;verbosity=minimal"
     - name: Run GUI Tests
@@ -104,3 +110,62 @@ jobs:
         Write-Host "Using verified shared FFmpeg from $bin"
     - name: Run Integration Tests
       run: dotnet test VDF.IntegrationTests/VDF.IntegrationTests.csproj -c Release -v normal
+
+    # This is a PR-only experimental artifact, NOT a 4.1 production release.
+    # The GUI and CLI use the opt-in FP16 model only through bundled launchers.
+    - name: Publish ONNX test CLI
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
+      run: dotnet publish VDF.CLI/VDF.CLI.csproj -c Release -v q --self-contained -r win-x64 -o onnx-test-cli
+
+    - name: Package ONNX FP16 experimental test build
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (!(Test-Path onnx-aot-smoke/VDF.GUI.exe -PathType Leaf)) {
+          throw 'Native AOT GUI executable missing from ONNX test build.'
+        }
+        if (!(Test-Path onnx-test-cli/vdf-cli.exe -PathType Leaf)) {
+          throw 'CLI executable missing from ONNX test build.'
+        }
+        $root = 'onnx-test-package'
+        New-Item -ItemType Directory -Path "$root/GUI","$root/CLI" -Force | Out-Null
+        Copy-Item onnx-aot-smoke/* "$root/GUI/" -Recurse -Force
+        Copy-Item onnx-test-cli/* "$root/CLI/" -Recurse -Force
+        foreach ($path in @('scripts/ai-test-build/Launch-AiTest.ps1',
+            'scripts/ai-test-build/Launch-FP16-CUDA.cmd',
+            'scripts/ai-test-build/Launch-INT8-DirectML.cmd',
+            'scripts/ai-test-build/Compare-PublicAiFullScans.ps1',
+            'scripts/ai-test-build/New-ShareableAiPartialCorpus.ps1',
+            'scripts/ai-test-build/Compare-PublicAiPartialScans.ps1',
+            'scripts/ai-test-build/Initialize-VdfCudaDependencies.ps1',
+            'scripts/New-ShareableAiCorpus.ps1',
+            'docs/ONNX_TEST_BUILD.md')) {
+          Copy-Item $path $root -Force
+        }
+        Get-ChildItem $root -Recurse -File |
+          Where-Object { $_.Extension -in '.pdb', '.dbg' } |
+          Remove-Item -Force
+        # Parse every shipped PowerShell script before publishing a test build.
+        foreach ($script in (Get-ChildItem $root -Filter '*.ps1' -File)) {
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $script.FullName, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -gt 0) {
+            throw "PowerShell syntax errors in $($script.Name): $($parseErrors -join '; ')"
+          }
+        }
+        Compress-Archive -Path "$root/*" -DestinationPath VDF-ONNX-FP16-Test-win-x64.zip -Force
+        if ((Get-Item VDF-ONNX-FP16-Test-win-x64.zip).Length -le 0) {
+          throw 'Experimental test build ZIP is empty.'
+        }
+
+    - name: Upload ONNX FP16 experimental test ZIP
+      if: github.head_ref == 'feat/onnx132-cuda-validation' || github.ref_name == 'feat/onnx132-cuda-validation'
+      uses: actions/upload-artifact@v7
+      with:
+        name: vdf-onnx-fp16-experimental-win-x64
+        path: VDF-ONNX-FP16-Test-win-x64.zip
+        retention-days: 14
+        if-no-files-found: error

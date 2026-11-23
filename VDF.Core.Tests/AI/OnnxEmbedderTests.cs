@@ -44,6 +44,22 @@ public class OnnxEmbedderTests {
 		return img;
 	}
 
+	[Theory]
+	[InlineData(null, Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_BASIC)]
+	[InlineData("", Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_BASIC)]
+	[InlineData("BASIC", Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_BASIC)]
+	[InlineData(" extended ", Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED)]
+	[InlineData("all", Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_ALL)]
+	[InlineData("disabled", Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_DISABLE_ALL)]
+	public void CudaGraphOptimization_ParsesOptInLevels(
+		string? setting, Microsoft.ML.OnnxRuntime.GraphOptimizationLevel expected) {
+		Assert.Equal(expected, OnnxEmbedder.ParseCudaGraphOptimization(setting));
+	}
+
+	[Fact]
+	public void CudaGraphOptimization_RejectsInvalidLevel() =>
+		Assert.Throws<ArgumentException>(() => OnnxEmbedder.ParseCudaGraphOptimization("surprise"));
+
 	[Fact]
 	public void EmbedBatch_ReturnsNormalized384DimVectors() {
 		using var embedder = new OnnxEmbedder(TestModels.TinyEmbedderPath);
