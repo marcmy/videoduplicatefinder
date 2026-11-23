@@ -77,3 +77,43 @@ Windows can retain a loaded `onnxruntime.dll` until the test host exits.
 The smoke test handles cleanup failures so the original inference error is
 not masked. After the test host exits, stale `vdf-onnx-smoke*` directories
 under the system temporary directory can be removed.
+
+
+## Real DINOv2 CUDA vs DirectML vs CPU benchmark
+
+The native-library smoke test uses the small test fixture. Run the real-model
+benchmark separately on your NVIDIA Windows x64 system (PowerShell 7) **after**
+configuring CUDA 13 and cuDNN 9 in the current shell:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1
+```
+
+The script uses a **separate dotnet test process per provider** so Windows
+does not keep the wrong ONNX DLL loaded. It runs in this order: DirectML
+(native 1.24.4), CUDA (native 1.32.0) and CPU (native 1.32.0), with the
+managed wrapper kept at 1.24.4. Each run verifies the real DINOv2 model's
+pinned SHA-256 and requests **strict GPU mode** where appropriate. A failed
+provider does **not** silently become a CPU benchmark.
+
+The first run downloads and caches the DINOv2 model in a dedicated temporary
+`VDF.OnnxBenchmark/components` folder; later runs reuse it and swap native
+libraries between processes. The folder is separate from your actual VDF
+scan database and AI installation.
+
+Per-provider JSON reports and ONNX profiling traces are written to
+`$env:TEMP\VDF.OnnxBenchmark\reports`. The script prints median inference
+times for one frame and a batch of eight (inclusive of VDF preprocessing),
+and compares the quantized pair scores at VDF's 94% and 89% thresholds.
+It reports GPU and CPU execution-node counts from ONNX profiles. These are
+operator-placement diagnostics, **not** percentage GPU utilization or proof
+of performance improvement. Compare actual latency and end-to-end scan times.
+
+Use `-Repeat 3` for multiple passes. The six deterministic synthetic images
+are deliberately reproducible across CPU/DirectML/CUDA; they are **not**
+representative real video frames, and the threshold-flip counts do not prove
+real-world accuracy. Follow up with a representative media corpus and full
+VDF scans before considering CUDA as the default.
+
+Do not run different provider benchmarks simultaneously against the same
+component folder: the on-demand downloader replaces the ONNX native files.
