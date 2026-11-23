@@ -117,3 +117,36 @@ VDF scans before considering CUDA as the default.
 
 Do not run different provider benchmarks simultaneously against the same
 component folder: the on-demand downloader replaces the ONNX native files.
+
+
+### FP32 model comparison (diagnosing CUDA's UINT8 CPU fallback)
+
+The supplied INT8 profile on RTX 2070 Super showed 72 `MatMulInteger`
+operators executing on CPU under CUDA, while DirectML executed them on
+GPU. Those operators had `uint8` activation inputs. CUDA also placed 49
+`DynamicQuantizeLinear` operators on CPU, leading to 171 inserted Memcpy
+nodes. The issue is graph/provider partitioning, not a missing driver.
+
+Test a non-quantized export **without changing production VDF models**:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-OnnxBenchmark.ps1 -Model fp32
+```
+
+The FP32 model is fetched from the same Xenova DINOv2-small repository at
+`onnx/model.onnx` (~88.5 MB), SHA256 pinned to
+`83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea`.
+It is cached separately as `dinov2-small-fp32.onnx`; no production
+download URL, model cache, default execution provider, or release artifact
+changes. On first use it also initializes the native runtime/model cache,
+so allow for downloading.
+
+`-Model int8` is the default. JSON report names and profiler traces
+include the selected variant, allowing INT8 and FP32 runs to coexist.
+Compare CPU/GPU node placement, latency, full embedding vectors and
+similarity pairs. Changing INT8 to FP32 can change embedding values and
+existing cached matching scores, so a production change would require
+cache invalidation and real-media threshold validation.
+
+Source model: https://huggingface.co/Xenova/dinov2-small/blob/main/onnx/model.onnx
+CUDA UINT8 limitation context: https://github.com/microsoft/onnxruntime/discussions/26735
